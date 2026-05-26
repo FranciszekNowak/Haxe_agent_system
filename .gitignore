@@ -1,0 +1,40 @@
+# Environment files (contain secrets)
+.env
+.env.local
+.env.*.local
+
+# OS-specific files
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node modules (if any tooling needs them)
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Scratch folder contents (keep folder, exclude contents)
+scratch/*
+!scratch/.gitkeep
+
+# Backup files
+*.bak
+*.backup
+
+# Temporary files
+*.tmp
+*.temp
+
+# Claude Code local cache (if it creates any)
+.claude-cache/
+
+# Operating system thumbnails
+ehthumbs.db
