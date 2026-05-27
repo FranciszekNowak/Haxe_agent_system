@@ -109,3 +109,48 @@ Phase 0 - Infrastructure setup. We're provisioning the foundations: VPS,
 n8n, Redis, Supabase, Bedrock access, git repo, dev/prod isolation.
 
 No agent code yet. Just infrastructure preparation.
+
+## Self-improving documentation
+
+**When to propose updates to this file:**
+
+Suggest a CLAUDE.md update when you encounter:
+- A non-obvious pattern in this codebase that you had to figure out
+- A correction I made that reveals a preference or convention not yet documented
+- An environment-specific gotcha (Windows path issue, n8n behavior, etc.)
+- A workflow that worked well and should become the default
+- A reference to a file or pattern that took multiple turns to locate
+
+When proposing updates, follow this format:
+1. State what you learned in one sentence
+2. Identify which section of CLAUDE.md it belongs in
+3. Show the exact text to add or modify
+4. Wait for my explicit approval before writing
+
+Do NOT update CLAUDE.md autonomously. Always propose first.
+
+## What belongs where
+
+**CLAUDE.md (this file)**: 
+- Stable conventions, decisions, and patterns the whole project depends on
+- Things that should be shared via git (every team member benefits)
+- Architecture-level rules
+
+**MEMORY.md (Claude Code's auto-memory)**:
+- Session-specific learnings still being validated
+- Personal debugging insights specific to this machine
+- Workflow habits that haven't crystallized into team conventions yet
+
+**ADRs in architecture/decisions/**:
+- Major architectural decisions with full context, reasoning, alternatives
+- Things future-me needs to remember WHY, not just WHAT
+
+When proposing a learning, suggest which of the three places it belongs.
+
+## Recently learned (rolling buffer)
+
+This section accumulates learnings until I review and either promote them to 
+the appropriate permanent section above or remove them. Append new entries 
+below with date and context.
+
+[Empty - Claude will append entries here as we work]
