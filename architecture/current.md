@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v7
-Last updated: 2026-05-29
-Supersedes: v6
+Version: v8
+Last updated: 2026-05-30
+Supersedes: v7
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -258,6 +258,8 @@ After any significant chunk of design work, before moving on:
 Claude Code prompts are disposable execution instructions; they reference these
 durable docs rather than re-explaining context.
 
+current.md is updated via targeted diffs, not full-file rewrites, to avoid silently dropping accumulated detail.
+
 ---
 
 ## 11. Build phases
@@ -270,6 +272,48 @@ durable docs rather than re-explaining context.
 - **Phase 5** — team rollout.
 
 Target: 7–9 weeks to v1.
+
+---
+
+## Infrastructure status (Phase 0)
+
+- **VPS**: Cyberfolks vroot_SPRINT, AlmaLinux 10, 185.25.149.174 (KVM, 4 vCPU / 8 GB / 100 GB, hostname vps57524999).
+- **Access**: key-based SSH (ed25519). Non-root sudo user `franciszek` (wheel + docker groups); root reserved for exceptions. firewalld open on ssh/http/https. **Password auth left ON** until the office machine is keyed, then disabled. See ADR-0010.
+- **AWS**: account 000500193947 (tax registration corrected to Skalus). Root MFA via passkey. IAM user `haxe-agents-bedrock`. Billing alert 50 USD/mo. Region eu-central-1.
+- **Supabase**: provisioned eu-central-1; schema migration 001 applied.
+- **Secrets**: all in 1Password; four distinct VPS-related credentials labeled separately. `.env` never committed.
+- **Next**: Docker stack (n8n main/worker + postgres + redis) via docker-compose, built in Claude Code.
+
+### Credential architecture
+
+```
+YOUR LAPTOP                         THE VPS (185.25.149.174)
+-----------                         ------------------------
+SSH private key  ──key auth──────►  franciszek account
+                                      │
+                                      ├─ /opt/haxe-agents/
+                                      │    ├─ docker-compose.yml  (also in git repo)
+                                      │    ├─ .env                (VPS ONLY, never git)
+                                      │    └─ .env.example        (also in git repo)
+                                      │
+                                      ├─ Docker containers (private network):
+                                      │    ├─ n8n-main    listens 127.0.0.1:5678  (private)
+                                      │    ├─ n8n-worker  (no public port)
+                                      │    ├─ n8n-postgres  port 5432, internal only
+                                      │    │    └─ stores n8n workflows + ENCRYPTED Tier-3 creds
+                                      │    └─ n8n-redis     port 6379, internal only
+                                      │
+                                      └─ (later) Nginx  listens 0.0.0.0:443  (public, TLS)
+                                                          └─ forwards to n8n localhost:5678
+
+1PASSWORD (off-server source of truth):
+  - SSH passwords (Tier 1)
+  - N8N_ENCRYPTION_KEY, Postgres pw, n8n UI login (Tier 2)
+  - Bedrock / Supabase / ClickUp / Gmail keys (Tier 3)
+
+GIT REPO (no secrets ever):
+  - docker-compose.yml, .env.example, architecture docs
+```
 
 ---
 
