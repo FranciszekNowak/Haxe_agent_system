@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v8
+Version: v9
 Last updated: 2026-05-30
-Supersedes: v7
+Supersedes: v8
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -264,7 +264,7 @@ current.md is updated via targeted diffs, not full-file rewrites, to avoid silen
 
 ## 11. Build phases
 
-- **Phase 0** — infrastructure (git, AWS, 1Password, Supabase, VPS, Redis, n8n queue mode). ~80% done; blocked on VPS payment.
+- **Phase 0** — infrastructure (git, AWS, 1Password, Supabase, VPS, Docker stack, Nginx + TLS). **Complete** (2026-05-30).
 - **Phase 1** — ClickUp foundation (Agent System Space, custom fields, first personas).
 - **Phase 2** — NPD agent: main workflow, caller scoping, sessions, queue integration.
 - **Phase 3** — email + due-date triggering + queue tuning.
@@ -275,45 +275,117 @@ Target: 7–9 weeks to v1.
 
 ---
 
-## Infrastructure status (Phase 0)
+## Infrastructure status (Phase 0) — Complete
 
 - **VPS**: Cyberfolks vroot_SPRINT, AlmaLinux 10, 185.25.149.174 (KVM, 4 vCPU / 8 GB / 100 GB, hostname vps57524999).
-- **Access**: key-based SSH (ed25519). Non-root sudo user `franciszek` (wheel + docker groups); root reserved for exceptions. firewalld open on ssh/http/https. **Password auth left ON** until the office machine is keyed, then disabled. See ADR-0010.
-- **AWS**: account 000500193947 (tax registration corrected to Skalus). Root MFA via passkey. IAM user `haxe-agents-bedrock`. Billing alert 50 USD/mo. Region eu-central-1.
+- **Access**: key-based SSH (ed25519), passphrase removed to enable non-interactive automation. Non-root sudo user `franciszek` (wheel + docker + NOPASSWD sudoers); root reserved for exceptions. firewalld: ssh/http/https open. Password auth left ON until office machine is keyed. See ADR-010.
+- **Docker stack**: `/opt/haxe-agents/`, four containers on private bridge network `n8n-internal`. See ADR-011.
+  - `n8n-postgres` (postgres:16) — n8n's internal DB; named volume; healthcheck-gated.
+  - `n8n-redis` (redis:7-alpine) — queue backing; AOF persistence enabled; named volume.
+  - `n8n-main` (n8nio/n8n:2.22.5) — UI, webhooks, scheduler; binds to 127.0.0.1:5678 only.
+  - `n8n-worker` (n8nio/n8n:2.22.5) — queue consumer; concurrency 5.
+- **Public endpoint**: `https://agents.haxe.ai` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing). HTTP → HTTPS redirect active. See ADR-012.
+- **AWS**: account 000500193947 (Skalus). Root MFA via passkey. IAM user `haxe-agents-bedrock`. Billing alert 50 USD/mo. Region eu-central-1.
 - **Supabase**: provisioned eu-central-1; schema migration 001 applied.
-- **Secrets**: all in 1Password; four distinct VPS-related credentials labeled separately. `.env` never committed.
-- **Next**: Docker stack (n8n main/worker + postgres + redis) via docker-compose, built in Claude Code.
+- **Secrets**: all in 1Password; `.env` on VPS only, never committed. `N8N_ENCRYPTION_KEY` rotated after initial deploy.
+- **Next**: Phase 1 — ClickUp foundation (Agent System Space, custom fields, first personas).
 
 ### Credential architecture
 
 ```
 YOUR LAPTOP                         THE VPS (185.25.149.174)
 -----------                         ------------------------
-SSH private key  ──key auth──────►  franciszek account
-                                      │
+SSH private key  ──key auth──────►  franciszek account (NOPASSWD sudo)
+(no passphrase)                       │
                                       ├─ /opt/haxe-agents/
                                       │    ├─ docker-compose.yml  (also in git repo)
                                       │    ├─ .env                (VPS ONLY, never git)
                                       │    └─ .env.example        (also in git repo)
                                       │
-                                      ├─ Docker containers (private network):
-                                      │    ├─ n8n-main    listens 127.0.0.1:5678  (private)
+                                      ├─ Docker containers (private bridge network):
+                                      │    ├─ n8n-main    127.0.0.1:5678  (localhost only)
                                       │    ├─ n8n-worker  (no public port)
                                       │    ├─ n8n-postgres  port 5432, internal only
                                       │    │    └─ stores n8n workflows + ENCRYPTED Tier-3 creds
                                       │    └─ n8n-redis     port 6379, internal only
                                       │
-                                      └─ (later) Nginx  listens 0.0.0.0:443  (public, TLS)
-                                                          └─ forwards to n8n localhost:5678
+                                      └─ Nginx  0.0.0.0:443  (public, TLS)
+                                           ├─ agents.haxe.ai → localhost:5678
+                                           └─ Let's Encrypt cert, auto-renewing via certbot
 
 1PASSWORD (off-server source of truth):
-  - SSH passwords (Tier 1)
-  - N8N_ENCRYPTION_KEY, Postgres pw, n8n UI login (Tier 2)
-  - Bedrock / Supabase / ClickUp / Gmail keys (Tier 3)
+  - SSH key (no passphrase — keep key only on trusted machines) (Tier 1)
+  - N8N_ENCRYPTION_KEY, Postgres pw, n8n UI owner login (Tier 2)
+  - Bedrock / Supabase / ClickUp / Gmail keys (Tier 3, entered in n8n UI)
 
 GIT REPO (no secrets ever):
-  - docker-compose.yml, .env.example, architecture docs
+  - docker-compose.yml, .env.example, nginx-agents.conf, architecture docs
 ```
+### Docker architecture
+═══════════════════════════════════════════════════════════════════════════════
+  THE VPS (one physical-ish machine, one Linux KERNEL, one real filesystem)
+  AlmaLinux 10 @ 185.25.149.174
+═══════════════════════════════════════════════════════════════════════════════
+
+  REAL HOST FILESYSTEM (everything actually exists here)
+  ├── /opt/haxe-agents/
+  │     ├── docker-compose.yml        ← describes the structure below
+  │     └── .env                      ← secrets, read at startup, injected as env vars
+  │                                      (NOT a volume — in-memory only)
+  ├── /var/lib/docker/volumes/        ← WHERE VOLUMES REALLY LIVE (persistent)
+  │     ├── n8n-postgres-data/_data/  ──────────┐
+  │     ├── n8n-redis-data/_data/     ────────┐ │
+  │     └── n8n-main-data/_data/      ──────┐ │ │
+  └── /home/franciszek/  /root/  ...        │ │ │   (invisible to containers)
+                                            │ │ │
+        the KERNEL presents each process    │ │ │  mounted
+        a private VIEW via namespaces:      │ │ │  into
+                                            │ │ │  containers
+  ┌─────────────────────────────────────── │ │ │ ──────────────────────────────┐
+  │ DOCKER private bridge network "n8n-internal"                                │
+  │ (containers resolve each other by NAME, like DNS)                           │
+  │                                            │ │ │                            │
+  │  ┌──────────────────────┐                  │ │ │                            │
+  │  │ n8n-main             │   port mapping:   │ │ │                            │
+  │  │  image: n8nio/n8n    │   127.0.0.1:5678 ─┼─┼─┼──► reachable ONLY on host  │
+  │  │  (pinned version)    │                  │ │ │     loopback (private);     │
+  │  │  sees: /home/node/.n8n ◄────volume──────┘ │ │     SSH-tunnel to use it    │
+  │  │  namespaces: own fs/net/PID                │ │                            │
+  │  └──────────┬───────────┘                    │ │                            │
+  │             │ enqueues jobs                   │ │                            │
+  │             ▼                                 │ │                            │
+  │  ┌──────────────────────┐                     │ │                           │
+  │  │ n8n-redis            │                      │ │                           │
+  │  │  image: redis (pin)  │                      │ │                           │
+  │  │  port 6379           │   AOF persistence    │ │                           │
+  │  │  (internal only)     │   /data ◄──volume────┘ │                           │
+  │  └──────────┬───────────┘                        │                           │
+  │             │ workers pull jobs                  │                           │
+  │             ▼                                     │                           │
+  │  ┌──────────────────────┐                         │                          │
+  │  │ n8n-worker           │   no port mapping        │                          │
+  │  │  image: n8nio/n8n    │   (nothing exposed)      │                          │
+  │  │  executes workflows  │                          │                          │
+  │  └──────────┬───────────┘                          │                          │
+  │             │ reads/writes                          │                         │
+  │             ▼                                        │                         │
+  │  ┌──────────────────────┐                            │                         │
+  │  │ n8n-postgres         │   n8n's INTERNAL db         │                        │
+  │  │  image: postgres(pin)│   (workflows, exec history, │                        │
+  │  │  port 5432           │    encrypted credentials)   │                        │
+  │  │  (internal only)     │   /var/lib/postgresql/data ◄┘ volume                 │
+  │  └──────────────────────┘                                                      │
+  │                                                                                │
+  │  startup order enforced by depends_on + healthchecks:                          │
+  │    postgres healthy AND redis healthy  ──►  THEN n8n-main / n8n-worker start    │
+  └────────────────────────────────────────────────────────────────────────────────┘
+
+  cgroups (not drawn): cap each container's CPU / RAM share of the host's 8 GB.
+
+  THREE KERNEL MECHANISMS AT WORK:
+   • namespaces → each container sees its own filesystem/network/process world
+   • volumes    → deliberate holes connecting a container path to persistent host storage
+   • cgroups    → resource ceilings per container
 
 ---
 
