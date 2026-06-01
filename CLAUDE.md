@@ -153,4 +153,36 @@ This section accumulates learnings until I review and either promote them to
 the appropriate permanent section above or remove them. Append new entries 
 below with date and context.
 
-[Empty - Claude will append entries here as we work]
+### 2026-06-01 — Changeset merge ritual for architecture docs
+
+`prompts/MERGE_PROMPT.md` is the reusable prompt for applying a changeset
+handed off from a chat session. A changeset is a **targeted diff** to
+`architecture/current.md` (plus zero or more new ADR files), NOT a replacement
+document. Mechanics learned applying one this session:
+
+- **Apply only the named edits; treat every unmentioned line as immutable.**
+  Detailed accumulated sections (diagrams, tables, the credential/Docker
+  architecture blocks) must survive byte-for-byte unless explicitly edited.
+  Preserving accumulated detail is the entire point of the ritual.
+- **Changesets can be stale — reconcile against reality, don't apply blindly.**
+  This one's version examples lagged the live file (it said "v7/v8"; the doc was
+  already v9), and its "password auth still ENABLED" claim was already false.
+  When the changeset's replacement block is *thinner* than the live doc, MERGE
+  (take the factual updates, keep the existing detail) rather than overwrite —
+  and flag the merge for the operator instead of silently choosing.
+- **New ADRs:** add as complete files; assign the next free contiguous number;
+  renumber on collision; verify the `decisions/` sequence stays gap-free.
+  Strip any `> NOTE FOR MERGE` placeholder lines and set the real number.
+- **ADR numbering:** the *filename* number is canonical — `current.md` cites
+  "ADR-010" etc. Match the recent `# ADR-0NN:` heading style and the filename.
+- **ADRs are append-only.** When reality supersedes one (password auth got
+  disabled, contradicting ADR-010's "deferred" section), append a dated
+  `> Update YYYY-MM-DD (supersedes ...)` note — never edit the original claim.
+- **Process:** apply to working tree → produce `git diff` + a report (applied
+  cleanly / needed adaptation / could-not-apply with reason) → WAIT for
+  approval → commit → push only when explicitly told. To review a diff that
+  includes new untracked files, `git add -N <file>` first so `git diff` shows
+  them.
+
+Candidate for promotion to a permanent "Working with architecture docs"
+subsection once stable.
