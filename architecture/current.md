@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v10
+Version: v11
 Last updated: 2026-06-01
-Supersedes: v9
+Supersedes: v10
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -84,10 +84,26 @@ senior-management intervention.
 
 ---
 
+## Core model — one generic pipeline (no per-process agents)
+
+There is exactly ONE agent mechanism, built once in n8n. No per-process, per-task, or per-stage agents. Innate behaviour, identical for every process and person:
+
+1. Trigger — autonomous (ClickUp status/field webhooks + the daily due-date scan, gated by `Czy dla AI`) or explicit pull (@-mention / ~command on a ClickUp task). Both modes are retained; see §3 for the full invocation taxonomy and caller-scoping. (Build order: the Phase 2 spine exercises the pull path first; autonomous triggering follows immediately, Phase 3.)
+2. Read ClickUp via universal conventions: task description = checklist of steps; linked doc leaves = detailed/paste-ready guidance; parent chain = context (materials in parent; spec in parent's description; verification in the verification subtask).
+3. Read two config inputs (also data, not code): the GLOBAL agent-rules doc (red-team, quality-first, never-invent-specs, self-critique against the task's leaf checklist, conventions, brand non-negotiables) and the invoking PERSON's agent-preferences doc.
+4. Assemble → invoke model (routed by importance/sensitivity via the centralized model-invocation sub-workflow).
+5. Post output back to ClickUp (material in parent; draft as comment; @-mention reviewer). Never auto-finalize.
+
+All task-specific behaviour is DATA in ClickUp (checklist-in-description + doc leaves); n8n holds only the generic procedure + conventions. A named ~command is data in the same spirit: n8n keeps a command registry (`command_name` → ClickUp prompt-doc link/ID, plus optional metadata) and loads the command's prompt from its ClickUp doc at runtime — never hardcoded in n8n. Adding a capability = authoring a ClickUp checklist + leaf (and, for a named command, one registry row), not writing an agent. This is what scales to every process/person and to 10→100→1000 people with no per-process engineering. KM self-sufficiency is enforced intrinsically (the model sees only ClickUp), and the pipeline's genericity DEPENDS on structural discipline — which is why gap-detection is load-bearing. See the generic-pipeline ADR (ADR-015).
+
+---
+
 ## 3. Invocation model
 
-The agent is a single logical entity with multiple effective personalities,
-selected per process type via prompt/persona, not via separate accounts.
+The agent is one generic pipeline (see Core model above), not a set of per-process
+personas. Process-specific behaviour comes from ClickUp data; a named `~command`
+resolves its prompt from a ClickUp doc via the command registry rather than from a
+hardcoded persona. The same single mechanism serves every process and person.
 
 - **Autonomous** invocations (webhooks, daily due-date producer) run only when
   the task's `Czy dla AI` field = `Tak`.
@@ -178,6 +194,16 @@ exists. Tier 3+ is rare and human-triggered. This avoids navel-gazing
 
 ---
 
+## KM maintenance — human-only edits; AI proposes, monitors, nudges
+
+A chief goal of the system is to monitor and maintain the quality and scope of the internal KM system (docs cascade with paste-ready leaves + Why-toggles; templates with checklist-in-description + doc-links + self-links; rules). AI never edits the KM system — humans are the sole writers; AI is proposer + monitor + nudger only (preserves ownership, deliberate friction, anti-bloat).
+
+Loop: (1) exercise — every run consumes leaves; heavy correction ⟺ deficient leaf; (2) propose — runs/evaluator emit Tier-1/2/3 proposals into Supabase; (3) human curates + implements the leaf edit themselves; (4) measure implementation — a logs column records whether a doc/description edit occurred within ~20–60 min of acceptance, and (conditionally) whether it corresponds to the accepted proposal (lightweight-model diff-compare IF the ClickUp API exposes diffs; else timestamp-only); (5) nudge — the evaluator/GM agent surfaces accepted-but-unimplemented proposals + gap-audit findings. Gap-detection: a periodic KM-audit flags missing Why-toggles, dead/empty links, undocumented processes, stale leaves — proposes, never fixes. Why-toggles are a Chesterton's-fence guardrail, required on contested/judgment rules.
+
+Abandoned: AI write-back to docs; self-sufficiency as a separate probe; compounding-by-correlation (insufficient n). This whole layer is DEFERRED until the generic pipeline is proven end-to-end. See ADR-016.
+
+---
+
 ## 5. Database
 
 Supabase (eu-central-1). Seven tables. Authoritative DDL: `supabase/migrations/001_initial_schema.sql`.
@@ -237,9 +263,12 @@ or on significant underlying data change.
 
 ## 8. Skills (invocable commands)
 
-Each skill is a folder under `skills/` with a SKILL.md, examples, and gotchas.
-Adding a skill = new persona file + SKILL.md + an entry in the orchestrator's
-persona-dispatch map. Adding an agent is mostly content work, not code.
+Each named `~command` maps to a ClickUp doc that holds its prompt; the prompt content
+lives in CU Docs (version-controlled mirror under `skills/`), never hardcoded in n8n.
+n8n holds a **command registry** — a table keyed by `command_name` → CU prompt-doc
+link/ID, plus optional metadata — which the generic pipeline reads at runtime to load
+the right prompt. Adding a command = author the CU doc + add one registry row: data,
+not code (see ADR-015). There is no per-command agent and no hardcoded persona-dispatch.
 
 | Skill | Type | Description | Human gate |
 |---|---|---|---|
@@ -286,9 +315,9 @@ current.md is updated via targeted diffs, not full-file rewrites, to avoid silen
 
 ## 11. Build phases
 
-- **Phase 0** — infrastructure (git, AWS, 1Password, Supabase, VPS, Docker stack, Nginx + TLS). **Complete** (2026-05-30).
-- **Phase 1** — ClickUp foundation (Agent System Space, custom fields, first personas).
-- **Phase 2** — NPD agent: main workflow, caller scoping, sessions, queue integration.
+- **Phase 0** — infrastructure (git, AWS, 1Password, Supabase, VPS, Docker stack, Nginx + TLS). **COMPLETE** (infra hardened, password auth disabled, both machines keyed).
+- **Phase 1** — ClickUp foundation. **IN PROGRESS** — research complete (NPD process mapped; observations doc), core model + KM-maintenance confirmed. Pending: custom fields (`Czy dla AI` / `Ważność` / `Zawiera dane osobowe` / `Typ procesu` — user-created, Polish, global); GLOBAL agent-rules doc; per-person agent-preferences docs.
+- **Phase 2** — the spine. **NEXT** — build the generic ClickUp→LLM→ClickUp pipeline; first test on the product-description task. Custom fields NOT on the critical path for the first pull-based run.
 - **Phase 3** — email + due-date triggering + queue tuning.
 - **Phase 4** — learning loop (proposers).
 - **Phase 5** — team rollout.
@@ -625,7 +654,7 @@ have `Czy dla AI = Tak` by default, or set `Status agenta = Paused` on specific 
    - **Tak** — for processes where overnight autonomous runs reliably produce useful drafts.
    - **Nie** — for strategic, sensitive, or real-time judgment work. (Team can still explicitly invoke anytime.)
 4. Add `process_type` variant to the Formatter Skill doc.
-5. Add skill entry to orchestrator persona-dispatch map if a new `~command` is needed.
+5. If a new `~command` is needed: author its prompt doc in CU and add a row to the command registry (`command_name` → CU doc).
 
 ---
 
