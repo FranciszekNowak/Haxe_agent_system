@@ -476,6 +476,11 @@ Dedicated Space containing:
 - `Agent Persona` — comprehensive persona with draft+critique+synthesis instructions
 - `Org Proposer Persona`, `Task Proposer Persona`, `Email Persona`
 - `Formatter Skill` — deterministic output formatting rules per `process_type`
+The format of the comment should be:
+(1) Results,
+(2) Decisions made, tradeoffs taken, why the result is done the way it is done,
+(3) Questions to the user,
+(4) [In a section marked separately, perhaps under a block of "---------": ] Suggested changes to the process, comments on the execution, etc.
 
 **Tasks:**
 - `Process Improvements` — landing zone for org-level proposals
