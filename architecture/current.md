@@ -478,10 +478,10 @@ Dedicated Space containing:
 - `Formatter Skill` — deterministic output formatting rules per `process_type`
 The format of the comment should be:
 (1) Results,
-(2) Decisions made, tradeoffs taken, why the result is done the way it is done,
-(3) Questions to the user,
+(2) Questions to the user,
+(3) Decisions made, tradeoffs taken, why the result is done the way it is done,
 (4) [In a section marked separately, perhaps under a block of "---------": ] Suggested changes to the process, comments on the execution, etc.
-NOTE TO FUTURE BUILDER SELF: Perhaps agent reasoning process itself should follow this structure? 
+NOTE TO FUTURE BUILDER SELF: The agent's thinking shouldn't be forced into this structure, but he should know from the start that he will eventually need to pass the output in this format (this will guide the reasoning while allowing it to explore the solutions non-linearly, not strictly following the steps)
 
 **Tasks:**
 - `Process Improvements` — landing zone for org-level proposals
