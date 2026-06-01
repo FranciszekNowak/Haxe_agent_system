@@ -38,6 +38,12 @@ office. Password auth stays ON as the fallback until every machine the
 operator administers from has its key installed, after which password auth
 is disabled as the final hardening step.
 
+> **Update 2026-06-01 (supersedes the deferral above):** the office desktop is
+> now keyed — both workstations have their own ed25519 keypair installed for
+> `franciszek`. With key-based access confirmed on both, password authentication
+> has been disabled (`PasswordAuthentication no`). Access is now key-only; the
+> deferral described in this section no longer applies.
+
 ## Lessons captured (operational)
 - Almost every access failure during setup was a TIME-BASED lockout
   triggered by rapid retries (OpenSSH penalty, panel rate-limit, VNC

@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v9
-Last updated: 2026-05-30
-Supersedes: v8
+Version: v10
+Last updated: 2026-06-01
+Supersedes: v9
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -108,6 +108,28 @@ For **due-date triggered** autonomous runs, caller is determined as:
 1. Task assignee (primary)
 2. Task creator (fallback)
 3. Neither present → skip, log to Agent Errors
+
+---
+
+## Extension seams (reserved now, implementation deferred)
+
+Two future capabilities are designed-for but NOT built. Seams are preserved so
+they slot in additively. See the corresponding ADRs.
+
+- **Sensitivity-gated multi-provider routing.** Model invocation is centralized
+  behind one "invoke model" sub-workflow; model/provider selection is a discrete
+  step taking (importance, sensitivity, task_type). Routing mappings will be
+  stored as data in Supabase. A hybrid PII/PI classification step (deterministic
+  rules for emails/phones/addresses + lightweight model for non-allowlist names)
+  will set sensitivity. Fail-safe: when uncertain/unavailable, default to
+  Bedrock-EU (asymmetric risk — a missed PII routed off-EU is a GDPR breach; an
+  over-flagged clean task is merely suboptimal). Today everything routes to
+  Bedrock-EU. Do not build the classifier or add providers before Phase 2 seams exist.
+
+- **Multimodal I/O.** File references (URLs / ClickUp attachment IDs) are
+  first-class through the pipeline; each skill declares its formats; non-text
+  outputs stored as attachments. Build the generic file-passing pipe when first
+  needed; add specific format adapters per-workflow on demand, never speculatively.
 
 ---
 
@@ -258,7 +280,7 @@ After any significant chunk of design work, before moving on:
 Claude Code prompts are disposable execution instructions; they reference these
 durable docs rather than re-explaining context.
 
-current.md is updated via targeted diffs, not full-file rewrites, to avoid silently dropping accumulated detail.
+current.md is updated via targeted diffs, not full-file rewrites, to avoid silently dropping accumulated detail. New ADRs are added as complete files.
 
 ---
 
@@ -275,19 +297,20 @@ Target: 7–9 weeks to v1.
 
 ---
 
-## Infrastructure status (Phase 0) — Complete
+## Infrastructure status (Phase 0 — COMPLETE)
 
 - **VPS**: Cyberfolks vroot_SPRINT, AlmaLinux 10, 185.25.149.174 (KVM, 4 vCPU / 8 GB / 100 GB, hostname vps57524999).
-- **Access**: key-based SSH (ed25519), passphrase removed to enable non-interactive automation. Non-root sudo user `franciszek` (wheel + docker + NOPASSWD sudoers); root reserved for exceptions. firewalld: ssh/http/https open. Password auth left ON until office machine is keyed. See ADR-010.
-- **Docker stack**: `/opt/haxe-agents/`, four containers on private bridge network `n8n-internal`. See ADR-011.
+- **Access**: key-based SSH (ed25519). Separate keypair per machine — home and office desktops each have their own key installed for `franciszek` (private keys passphrase-free, for non-interactive automation). Non-root sudo user `franciszek` (wheel + docker + NOPASSWD sudoers); root reserved for exceptions. firewalld: ssh/http/https open. See ADR-010.
+- **Password auth: DISABLED.** Both workstations (home + office) have key-based SSH access; with both keyed, password authentication was turned off (`PasswordAuthentication no`) as the final hardening step. Access is now key-only.
+- **Docker stack**: `/opt/haxe-agents/`, four containers on private bridge network `n8n-internal`, queue mode. Image versions pinned. See ADR-011.
   - `n8n-postgres` (postgres:16) — n8n's internal DB; named volume; healthcheck-gated.
   - `n8n-redis` (redis:7-alpine) — queue backing; AOF persistence enabled; named volume.
   - `n8n-main` (n8nio/n8n:2.22.5) — UI, webhooks, scheduler; binds to 127.0.0.1:5678 only.
   - `n8n-worker` (n8nio/n8n:2.22.5) — queue consumer; concurrency 5.
-- **Public endpoint**: `https://agents.haxe.ai` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing). HTTP → HTTPS redirect active. See ADR-012.
-- **AWS**: account 000500193947 (Skalus). Root MFA via passkey. IAM user `haxe-agents-bedrock`. Billing alert 50 USD/mo. Region eu-central-1.
+- **Public endpoint**: `https://agents.haxe.ai` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing, 90-day). HTTP → HTTPS redirect active. See ADR-012.
+- **AWS**: account 000500193947 (tax reg. Skalus). Root MFA via passkey. IAM user `haxe-agents-bedrock`. Billing alert 50 USD/mo. Region eu-central-1.
 - **Supabase**: provisioned eu-central-1; schema migration 001 applied.
-- **Secrets**: all in 1Password; `.env` on VPS only, never committed. `N8N_ENCRYPTION_KEY` rotated after initial deploy.
+- **Secrets**: all in 1Password (Cyberfolks account / Solus / root / franciszek / n8n encryption key / UI creds — separately labeled); `.env` on VPS only, never committed. `N8N_ENCRYPTION_KEY` rotated after initial deploy.
 - **Next**: Phase 1 — ClickUp foundation (Agent System Space, custom fields, first personas).
 
 ### Credential architecture
