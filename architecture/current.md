@@ -481,6 +481,7 @@ The format of the comment should be:
 (2) Decisions made, tradeoffs taken, why the result is done the way it is done,
 (3) Questions to the user,
 (4) [In a section marked separately, perhaps under a block of "---------": ] Suggested changes to the process, comments on the execution, etc.
+NOTE TO FUTURE BUILDER SELF: Perhaps agent reasoning process itself should follow this structure? 
 
 **Tasks:**
 - `Process Improvements` — landing zone for org-level proposals
