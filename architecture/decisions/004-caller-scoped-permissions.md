@@ -40,3 +40,18 @@ Negative:
 ## Date
 
 2026-05-26
+
+> Update 2026-06-02 (supersedes the "guest account" assumption): the agent
+> account `agent@haxe.com` was made a **Member**, not a guest. Reason: ClickUp
+> does not let guests generate a personal API token, which the agent needs to
+> authenticate to the API (the n8n `clickUpApi` credential). The security model
+> is unchanged — broad base access on the agent account, narrowed to the
+> caller's scope at the wiring layer (Layers A/B above); "broad base permissions"
+> is now realised as a Member seat rather than a broad-access guest.
+>
+> Field finding (first live fetch, 2026-06-02): the agent Member can read tasks
+> via the API, but task descriptions that embed ClickUp **Doc** links render as
+> "You do not have access to this Doc". So Member task-read access does **not**
+> imply Doc access. This must be resolved before the `linked_doc_leaves`
+> increment (doc-page resolution) can work — the agent needs explicit access to
+> the relevant Docs, or that content stays invisible to it.

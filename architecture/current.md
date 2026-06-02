@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v12
+Version: v13
 Last updated: 2026-06-02
-Supersedes: v11
+Supersedes: v12
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -622,14 +622,20 @@ Six workflows plus an error handler:
 
 **Error Handler** — n8n Error Trigger + dead letter subscriber. Captures failures with full context (workflow, trigger source, retry history, final error), posts to Agent Errors task, updates `agent_run` status to `error`, rolls back any mid-update session state. Slack alert on critical failures (queue backed up, Redis down).
 
-**Build status (2026-06-02):** none of the six are built yet. The build control
-plane is operational (Claude Code → n8n MCP; see ADR-018), and the first scaffold
-exists — `n8n/workflows/context-gather.json`, a v1 core (Manual Trigger → Set task
-ID → credential-aware ClickUp fetch → Code-node shaping) that assembles a labelled
-context object. It is a precursor to the Main Orchestrator's context-assembly step;
-the ClickUp parent-walk loop is the next increment. All workflows follow the
-node/credential discipline in ADR-019 (authenticated I/O in credential-aware nodes;
-Code nodes only shape data).
+**Build status (2026-06-02):** none of the six are built yet, but the
+context-assembly front end exists and is tested. The build control plane is
+operational (Claude Code → n8n MCP; see ADR-018). `Context Gather (v1)`
+(`n8n/workflows/context-gather.json`, n8n id `qgM37HdQj78Rn090`) reads a ClickUp
+task and assembles the labelled context object (`current_task`, ordered
+`ancestor_chain`, stub `linked_doc_leaves`, `truncated_at_depth`) — a Form Trigger
+(`taskId`) → a bounded unroll of native ClickUp `Task→Get` fetches gated by IF nodes
+→ a pure Code shaping node. Verified live on `Lista testy AI`: a 3-level subtask
+returned an ordered ancestor chain, a root task returned `[]`, markdown descriptions
+flow through (`includeMarkdownDescription`). Read-only; left inactive between tests.
+See ADR-020 for the shape and ADR-019 for the node/credential discipline
+(authenticated I/O in credential-aware nodes; Code nodes only shape data). Next
+increments: the LLM call, then post-back to ClickUp, then `linked_doc_leaves`
+resolution (blocked on agent Doc access — see ADR-004 update).
 
 ---
 

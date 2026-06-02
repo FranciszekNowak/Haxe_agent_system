@@ -1,70 +1,144 @@
 {
-  "name": "Context Gather (v1 core)",
+  "name": "Context Gather (v1)",
+  "active": false,
   "nodes": [
     {
-      "parameters": {},
-      "id": "a1f0e2c4-0001-4a10-9b00-000000000001",
-      "name": "Manual Trigger",
-      "type": "n8n-nodes-base.manualTrigger",
-      "typeVersion": 1,
-      "position": [240, 300]
-    },
-    {
+      "id": "form-trigger",
+      "name": "Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [0, 300],
       "parameters": {
-        "assignments": {
-          "assignments": [
-            {
-              "id": "f1000000-0000-0000-0000-000000000001",
-              "name": "currentTaskId",
-              "value": "PUT_TEST_TASK_ID_HERE",
-              "type": "string"
-            }
+        "formTitle": "Context Gather Test",
+        "formDescription": "Enter a ClickUp task ID to assemble its context.",
+        "formFields": {
+          "values": [
+            { "fieldLabel": "taskId", "requiredField": true }
           ]
         },
-        "options": {}
+        "responseMode": "lastNode"
       },
-      "id": "a1f0e2c4-0002-4a10-9b00-000000000002",
-      "name": "Set Task ID",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
-      "position": [460, 300]
+      "webhookId": "eed112bf-5945-4883-a3cd-cb427f51151e"
     },
     {
-      "parameters": {
-        "url": "=https://api.clickup.com/api/v2/task/{{ $json.currentTaskId }}",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "clickUpApi",
-        "options": {}
-      },
-      "id": "a1f0e2c4-0003-4a10-9b00-000000000003",
-      "name": "Fetch ClickUp Task",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [680, 300]
+      "id": "fetch-l0",
+      "name": "Fetch L0",
+      "type": "n8n-nodes-base.clickUp",
+      "typeVersion": 1,
+      "position": [220, 300],
+      "parameters": { "authentication": "accessToken", "resource": "task", "operation": "get", "id": "={{ $json.taskId }}", "includeMarkdownDescription": true },
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } }
     },
     {
-      "parameters": {
-        "jsCode": "// Pure shaping only. No network calls, no credentials here.\n// Input: the ClickUp task object returned by the 'Fetch ClickUp Task' node.\n// Output: one labeled context object the next iteration / the LLM step will consume.\n//\n// v1 CORE: this only shapes the CURRENT task. ancestor_chain and\n// linked_doc_leaves are intentional stubs that later increments populate\n// (the parent-walk loop fills ancestor_chain; doc-link resolution fills\n// linked_doc_leaves).\n\nconst task = $input.first().json;\n\nreturn [\n  {\n    json: {\n      current_task: {\n        id: task.id,\n        name: task.name,\n        // ClickUp returns both `description` (plain) and `markdown_description`.\n        // Using plain description per spec; swap if you want markdown later.\n        description: task.description || \"\"\n      },\n      ancestor_chain: [],        // stub — filled by the parent-walk loop (next increment)\n      linked_doc_leaves: []      // stub — filled by doc-link resolution (later increment)\n    }\n  }\n];"
-      },
-      "id": "a1f0e2c4-0004-4a10-9b00-000000000004",
+      "id": "if-l0",
+      "name": "IF L0 has parent",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [440, 300],
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 }, "combinator": "and", "conditions": [ { "id": "c-l0", "leftValue": "={{ $json.parent }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } } ] } }
+    },
+    {
+      "id": "fetch-l1",
+      "name": "Fetch L1",
+      "type": "n8n-nodes-base.clickUp",
+      "typeVersion": 1,
+      "position": [660, 300],
+      "parameters": { "authentication": "accessToken", "resource": "task", "operation": "get", "id": "={{ $json.parent }}", "includeMarkdownDescription": true },
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } }
+    },
+    {
+      "id": "if-l1",
+      "name": "IF L1 has parent",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [880, 300],
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 }, "combinator": "and", "conditions": [ { "id": "c-l1", "leftValue": "={{ $json.parent }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } } ] } }
+    },
+    {
+      "id": "fetch-l2",
+      "name": "Fetch L2",
+      "type": "n8n-nodes-base.clickUp",
+      "typeVersion": 1,
+      "position": [1100, 300],
+      "parameters": { "authentication": "accessToken", "resource": "task", "operation": "get", "id": "={{ $json.parent }}", "includeMarkdownDescription": true },
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } }
+    },
+    {
+      "id": "if-l2",
+      "name": "IF L2 has parent",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1320, 300],
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 }, "combinator": "and", "conditions": [ { "id": "c-l2", "leftValue": "={{ $json.parent }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } } ] } }
+    },
+    {
+      "id": "fetch-l3",
+      "name": "Fetch L3",
+      "type": "n8n-nodes-base.clickUp",
+      "typeVersion": 1,
+      "position": [1540, 300],
+      "parameters": { "authentication": "accessToken", "resource": "task", "operation": "get", "id": "={{ $json.parent }}", "includeMarkdownDescription": true },
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } }
+    },
+    {
+      "id": "if-l3",
+      "name": "IF L3 has parent",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1760, 300],
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 }, "combinator": "and", "conditions": [ { "id": "c-l3", "leftValue": "={{ $json.parent }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } } ] } }
+    },
+    {
+      "id": "fetch-l4",
+      "name": "Fetch L4",
+      "type": "n8n-nodes-base.clickUp",
+      "typeVersion": 1,
+      "position": [1980, 300],
+      "parameters": { "authentication": "accessToken", "resource": "task", "operation": "get", "id": "={{ $json.parent }}", "includeMarkdownDescription": true },
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } }
+    },
+    {
+      "id": "if-l4",
+      "name": "IF L4 has parent",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [2200, 300],
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 }, "combinator": "and", "conditions": [ { "id": "c-l4", "leftValue": "={{ $json.parent }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } } ] } }
+    },
+    {
+      "id": "fetch-l5",
+      "name": "Fetch L5",
+      "type": "n8n-nodes-base.clickUp",
+      "typeVersion": 1,
+      "position": [2420, 300],
+      "parameters": { "authentication": "accessToken", "resource": "task", "operation": "get", "id": "={{ $json.parent }}", "includeMarkdownDescription": true },
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } }
+    },
+    {
+      "id": "shape-context",
       "name": "Shape Context",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [900, 300]
+      "position": [2640, 560],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const CAP = 6;\nconst levels = [];\nfor (let i = 0; i < CAP; i++) {\n  let t;\n  try { t = $('Fetch L' + i).first().json; } catch (e) { break; }\n  if (!t || !t.id) break;\n  levels.push({ id: t.id, name: t.name, description: t.markdown_description || t.description || t.text_content || '', parent: t.parent || null, level: i });\n}\nconst deepest = levels.length ? levels[levels.length - 1] : null;\nconst truncated_at_depth = levels.length === CAP && !!(deepest && deepest.parent);\nconst current = levels.length ? levels[0] : null;\nconst ancestor_chain = levels.slice(1).map(l => ({ id: l.id, name: l.name, description: l.description, level: l.level }));\nreturn [{ json: { current_task: current ? { id: current.id, name: current.name, description: current.description } : null, ancestor_chain, linked_doc_leaves: [], truncated_at_depth } }];"
+      }
     }
   ],
   "connections": {
-    "Manual Trigger": {
-      "main": [[{ "node": "Set Task ID", "type": "main", "index": 0 }]]
-    },
-    "Set Task ID": {
-      "main": [[{ "node": "Fetch ClickUp Task", "type": "main", "index": 0 }]]
-    },
-    "Fetch ClickUp Task": {
-      "main": [[{ "node": "Shape Context", "type": "main", "index": 0 }]]
-    }
+    "Form Trigger": { "main": [[{ "node": "Fetch L0", "type": "main", "index": 0 }]] },
+    "Fetch L0": { "main": [[{ "node": "IF L0 has parent", "type": "main", "index": 0 }]] },
+    "IF L0 has parent": { "main": [[{ "node": "Fetch L1", "type": "main", "index": 0 }], [{ "node": "Shape Context", "type": "main", "index": 0 }]] },
+    "Fetch L1": { "main": [[{ "node": "IF L1 has parent", "type": "main", "index": 0 }]] },
+    "IF L1 has parent": { "main": [[{ "node": "Fetch L2", "type": "main", "index": 0 }], [{ "node": "Shape Context", "type": "main", "index": 0 }]] },
+    "Fetch L2": { "main": [[{ "node": "IF L2 has parent", "type": "main", "index": 0 }]] },
+    "IF L2 has parent": { "main": [[{ "node": "Fetch L3", "type": "main", "index": 0 }], [{ "node": "Shape Context", "type": "main", "index": 0 }]] },
+    "Fetch L3": { "main": [[{ "node": "IF L3 has parent", "type": "main", "index": 0 }]] },
+    "IF L3 has parent": { "main": [[{ "node": "Fetch L4", "type": "main", "index": 0 }], [{ "node": "Shape Context", "type": "main", "index": 0 }]] },
+    "Fetch L4": { "main": [[{ "node": "IF L4 has parent", "type": "main", "index": 0 }]] },
+    "IF L4 has parent": { "main": [[{ "node": "Fetch L5", "type": "main", "index": 0 }], [{ "node": "Shape Context", "type": "main", "index": 0 }]] },
+    "Fetch L5": { "main": [[{ "node": "Shape Context", "type": "main", "index": 0 }]] }
   },
-  "active": false,
-  "settings": { "executionOrder": "v1" },
-  "pinData": {}
+  "settings": { "executionOrder": "v1" }
 }
