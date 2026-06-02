@@ -60,6 +60,10 @@ Date
 
 - n8n workflow files are exported JSON. Do not hand-edit them - edit in 
   n8n UI and re-export.
+- When building n8n automations, use normal nodes, not Code nodes, wherever 
+  possible. The logic should be visually inspectable without parsing 
+  (sometimes complex) JavaScript. Only reach for a Code node when no normal 
+  node can express the logic.
 - Supabase migrations are append-only. Never modify existing migrations; 
   add new ones.
 - SQL uses lowercase keywords, snake_case names.

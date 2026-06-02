@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v11
-Last updated: 2026-06-01
-Supersedes: v10
+Version: v12
+Last updated: 2026-06-02
+Supersedes: v11
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -289,7 +289,10 @@ structure, emails use 6-section format, etc.).
 ## 9. Operator workflow (chat vs Claude Code)
 
 - **Chat (Opus):** strategy, design deliberation, web research, decisions.
-- **Claude Code (Opus):** execution, file/repo work, running commands.
+- **Claude Code (Opus):** execution, file/repo work, running commands. Also the
+  **n8n builder** — it creates, validates, and deploys workflows directly via the
+  n8n MCP server (REST API control plane), with the operator inspecting/correcting
+  rather than doing the mechanical wiring. See ADR-018.
 - Both read the repo; only the repo is durable. Decisions made in chat must be
   written back to this document + `decisions/` before they count as real (see §10).
 
@@ -337,6 +340,7 @@ Target: 7–9 weeks to v1.
   - `n8n-main` (n8nio/n8n:2.22.5) — UI, webhooks, scheduler; binds to 127.0.0.1:5678 only.
   - `n8n-worker` (n8nio/n8n:2.22.5) — queue consumer; concurrency 5.
 - **Public endpoint**: `https://agents.haxe.ai` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing, 90-day). HTTP → HTTPS redirect active. See ADR-012.
+- **Build control plane**: Claude Code drives n8n programmatically via the `n8n-mcp` server over the public REST API (`https://agents.haxe.ai/api/v1`). Config in committed `.mcp.json`; the n8n API key is supplied from the machine env var `N8N_API_KEY` (setx; expiry 2026-08-31) and never committed. Windows launch must wrap npx in `cmd /c`. See ADR-018 and ADR-017.
 - **AWS**: account 000500193947 (tax reg. Skalus). Root MFA via passkey. IAM user `haxe-agents-bedrock`. Billing alert 50 USD/mo. Region eu-central-1.
 - **Supabase**: provisioned eu-central-1; schema migration 001 applied.
 - **Secrets**: all in 1Password (Cyberfolks account / Solus / root / franciszek / n8n encryption key / UI creds — separately labeled); `.env` on VPS only, never committed. `N8N_ENCRYPTION_KEY` rotated after initial deploy.
@@ -370,8 +374,15 @@ SSH private key  ──key auth──────►  franciszek account (NOPASS
   - N8N_ENCRYPTION_KEY, Postgres pw, n8n UI owner login (Tier 2)
   - Bedrock / Supabase / ClickUp / Gmail keys (Tier 3, entered in n8n UI)
 
+OPERATOR DESKTOP (Windows, per machine):
+  - n8n API key for Claude Code's build control plane — stored via setx in the
+    user registry, read as ${N8N_API_KEY} by the n8n MCP server. Control-plane
+    scope (full workflow read/write over the public API); expiry 2026-08-31.
+    See ADR-017 / ADR-018.
+
 GIT REPO (no secrets ever):
-  - docker-compose.yml, .env.example, nginx-agents.conf, architecture docs
+  - docker-compose.yml, .env.example, nginx-agents.conf, .mcp.json (key via
+    env-var reference only), architecture docs
 ```
 ### Docker architecture
 ═══════════════════════════════════════════════════════════════════════════════
@@ -610,6 +621,15 @@ Six workflows plus an error handler:
 6. **Session Cleanup** — cron hourly. Expires `conversation_sessions` inactive for > 24h.
 
 **Error Handler** — n8n Error Trigger + dead letter subscriber. Captures failures with full context (workflow, trigger source, retry history, final error), posts to Agent Errors task, updates `agent_run` status to `error`, rolls back any mid-update session state. Slack alert on critical failures (queue backed up, Redis down).
+
+**Build status (2026-06-02):** none of the six are built yet. The build control
+plane is operational (Claude Code → n8n MCP; see ADR-018), and the first scaffold
+exists — `n8n/workflows/context-gather.json`, a v1 core (Manual Trigger → Set task
+ID → credential-aware ClickUp fetch → Code-node shaping) that assembles a labelled
+context object. It is a precursor to the Main Orchestrator's context-assembly step;
+the ClickUp parent-walk loop is the next increment. All workflows follow the
+node/credential discipline in ADR-019 (authenticated I/O in credential-aware nodes;
+Code nodes only shape data).
 
 ---
 

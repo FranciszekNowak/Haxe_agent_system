@@ -1,0 +1,70 @@
+{
+  "name": "Context Gather (v1 core)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1f0e2c4-0001-4a10-9b00-000000000001",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f1000000-0000-0000-0000-000000000001",
+              "name": "currentTaskId",
+              "value": "PUT_TEST_TASK_ID_HERE",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1f0e2c4-0002-4a10-9b00-000000000002",
+      "name": "Set Task ID",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v2/task/{{ $json.currentTaskId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "id": "a1f0e2c4-0003-4a10-9b00-000000000003",
+      "name": "Fetch ClickUp Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pure shaping only. No network calls, no credentials here.\n// Input: the ClickUp task object returned by the 'Fetch ClickUp Task' node.\n// Output: one labeled context object the next iteration / the LLM step will consume.\n//\n// v1 CORE: this only shapes the CURRENT task. ancestor_chain and\n// linked_doc_leaves are intentional stubs that later increments populate\n// (the parent-walk loop fills ancestor_chain; doc-link resolution fills\n// linked_doc_leaves).\n\nconst task = $input.first().json;\n\nreturn [\n  {\n    json: {\n      current_task: {\n        id: task.id,\n        name: task.name,\n        // ClickUp returns both `description` (plain) and `markdown_description`.\n        // Using plain description per spec; swap if you want markdown later.\n        description: task.description || \"\"\n      },\n      ancestor_chain: [],        // stub — filled by the parent-walk loop (next increment)\n      linked_doc_leaves: []      // stub — filled by doc-link resolution (later increment)\n    }\n  }\n];"
+      },
+      "id": "a1f0e2c4-0004-4a10-9b00-000000000004",
+      "name": "Shape Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{ "node": "Set Task ID", "type": "main", "index": 0 }]]
+    },
+    "Set Task ID": {
+      "main": [[{ "node": "Fetch ClickUp Task", "type": "main", "index": 0 }]]
+    },
+    "Fetch ClickUp Task": {
+      "main": [[{ "node": "Shape Context", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}
