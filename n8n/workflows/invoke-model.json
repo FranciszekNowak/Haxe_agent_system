@@ -1,0 +1,95 @@
+{
+  "name": "Invoke Model (v1)",
+  "active": false,
+  "nodes": [
+    {
+      "id": "exec-trigger",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            { "name": "prompt", "type": "string" },
+            { "name": "importance", "type": "string" },
+            { "name": "sensitivity", "type": "string" },
+            { "name": "task_type", "type": "string" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "select-model",
+      "name": "Select Model",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [240, 300],
+      "notes": "ADR-013 seam #2: discrete selection step. Inputs (importance, sensitivity, task_type) -> (provider, model). TODAY: fixed to the one verified EU profile (Sonnet); provider always bedrock-eu (ADR-013 fail-safe). The importance x sensitivity -> tier mapping is the PENDING data-driven decision (ADR-021) - becomes a Supabase lookup later, swapped in this one place.",
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            { "id": "a1", "name": "provider", "value": "bedrock-eu", "type": "string" },
+            { "id": "a2", "name": "model", "value": "eu.anthropic.claude-sonnet-4-6", "type": "string" },
+            { "id": "a3", "name": "prompt", "value": "={{ $json.prompt }}", "type": "string" },
+            { "id": "a4", "name": "importance", "value": "={{ $json.importance }}", "type": "string" },
+            { "id": "a5", "name": "sensitivity", "value": "={{ $json.sensitivity }}", "type": "string" },
+            { "id": "a6", "name": "task_type", "value": "={{ $json.task_type }}", "type": "string" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "llm-chain",
+      "name": "Basic LLM Chain",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [480, 300],
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}"
+      }
+    },
+    {
+      "id": "bedrock-model",
+      "name": "AWS Bedrock Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
+      "typeVersion": 1.1,
+      "position": [480, 520],
+      "parameters": {
+        "modelSource": "inferenceProfile",
+        "model": "={{ $('Select Model').item.json.model }}"
+      },
+      "credentials": { "aws": { "id": "8TDwsQAJFkSWUEJF", "name": "AWS (IAM) account" } }
+    },
+    {
+      "id": "shape-output",
+      "name": "Shape Output",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [720, 300],
+      "notes": "Sub-workflow return contract: completion + which model/provider actually served it (for agent_runs logging downstream).",
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            { "id": "b1", "name": "completion", "value": "={{ $json.text }}", "type": "string" },
+            { "id": "b2", "name": "model", "value": "={{ $('Select Model').item.json.model }}", "type": "string" },
+            { "id": "b3", "name": "provider", "value": "={{ $('Select Model').item.json.provider }}", "type": "string" }
+          ]
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When Called": { "main": [[{ "node": "Select Model", "type": "main", "index": 0 }]] },
+    "Select Model": { "main": [[{ "node": "Basic LLM Chain", "type": "main", "index": 0 }]] },
+    "Basic LLM Chain": { "main": [[{ "node": "Shape Output", "type": "main", "index": 0 }]] },
+    "AWS Bedrock Chat Model": { "ai_languageModel": [[{ "node": "Basic LLM Chain", "type": "ai_languageModel", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

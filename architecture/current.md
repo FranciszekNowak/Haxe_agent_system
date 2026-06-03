@@ -631,9 +631,10 @@ Six workflows plus an error handler:
 **Error Handler** — n8n Error Trigger + dead letter subscriber. Captures failures with full context (workflow, trigger source, retry history, final error), posts to Agent Errors task, updates `agent_run` status to `error`, rolls back any mid-update session state. Slack alert on critical failures (queue backed up, Redis down).
 
 **Build status (2026-06-03):** none of the six production workflows are built yet,
-but the context-assembly front end exists and is tested, agent Doc access is
-proven, and Bedrock inference from n8n is proven. The build control plane is
-operational (Claude Code → n8n MCP; see ADR-018). `Context Gather (v1)`
+but two reusable pipeline pieces exist and are tested — the context-assembly front
+end and the centralized model-invocation seam — agent Doc access is proven, and
+Bedrock inference from n8n is proven. The build control plane is operational
+(Claude Code → n8n MCP; see ADR-018). `Context Gather (v1)`
 (`n8n/workflows/context-gather.json`, n8n id `qgM37HdQj78Rn090`) reads a ClickUp
 task and assembles the labelled context object (`current_task`, ordered
 `ancestor_chain`, stub `linked_doc_leaves`, `truncated_at_depth`) — a Form Trigger
@@ -658,9 +659,23 @@ harnesses (`Doc Access Test`, `Invoke Model smoke test`):
   `eu.anthropic.claude-sonnet-4-6`. The generic AWS credential + HTTP Request path
   cannot sign Bedrock; see ADR-021.
 
-Next increments: build the centralized `invoke model` sub-workflow (ADR-013 seam,
-native Bedrock node) + the discrete selection step; wire the LLM call into the
-context pipeline; post-back to ClickUp; then `linked_doc_leaves` resolution.
+The centralized **`Invoke Model (v1)`** sub-workflow (`n8n/workflows/invoke-model.json`,
+n8n id `XcOIVdZnVCCWNPeb`) is built and tested — the ADR-013 invocation seam:
+Execute Workflow Trigger (typed contract `prompt`/`importance`/`sensitivity`/`task_type`)
+→ a `Select Model` Set node (the discrete selection step; today fixed to provider
+`bedrock-eu` + the verified `eu.anthropic.claude-sonnet-4-6` profile) → `Basic LLM
+Chain` driven by the native AWS Bedrock node whose profile is set by expression from
+the selection step → a `Shape Output` Set node returning `{ completion, model,
+provider }`. Verified live via a throwaway Execute-Sub-workflow harness: a passed
+prompt returned a completion reflecting it, and the routing inputs flow through
+intact. Left inactive between tests. See ADR-022 for the shape. The two-axis
+`(importance × sensitivity) → (model, provider, priority)` mapping remains the
+pending data-driven decision (ADR-021); until it is made and the Haiku/Opus EU
+profile IDs are verified, all traffic uses Sonnet.
+
+Next increments: wire `Context Gather (v1)`'s assembled context into a prompt and
+call this sub-workflow; post the completion back to ClickUp; then `linked_doc_leaves`
+resolution.
 
 ---
 
