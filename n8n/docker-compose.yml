@@ -88,6 +88,32 @@ services:
       n8n-redis:
         condition: service_healthy
 
+  # LiteLLM gateway — single front door for model calls (ADR-024). Internal only:
+  # only n8n reaches it at http://litellm:4000. Signs Bedrock correctly and returns
+  # exact token usage (which the native n8n node swallows). Config in litellm-config.yaml.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable  # pin to a specific version on deploy (ADR-011)
+    container_name: litellm
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "127.0.0.1:4000:4000"   # loopback only (SSH-tunnel for debugging); never public
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION_NAME: ${AWS_REGION_NAME}
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    networks:
+      - n8n-internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
 volumes:
   n8n-postgres-data:
   n8n-redis-data:

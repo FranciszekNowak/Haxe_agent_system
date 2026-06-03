@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v14
+Version: v15
 Last updated: 2026-06-03
-Supersedes: v13
+Supersedes: v14
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -206,13 +206,24 @@ Abandoned: AI write-back to docs; self-sufficiency as a separate probe; compound
 
 ## 5. Database
 
-Supabase (eu-central-1). Seven tables. Authoritative DDL: `supabase/migrations/001_initial_schema.sql`.
+Supabase (eu-central-1). Seven live tables, plus two added by migrations 002/003
+(decided in ADR-024, pending apply). Authoritative DDL: `supabase/migrations/`.
 
 - `agent_runs`, `agent_run_evaluations`
 - `agent_proposals`, `agent_proposal_evaluations`
 - `conversation_sessions` (mutable working state; expired, not deleted, after 24h idle)
 - `email_sends` (Gmail audit)
 - `schema_migrations`
+- `model_routing` (migration 002, ADR-024) — data-driven routing: impact → LiteLLM
+  model alias + temperature + max_tokens + nudge + USD token prices; a `__default__`
+  row is the fail-safe. Replaces the in-n8n routing table of ADR-023.
+- `fx_rates` (migration 003, ADR-024) — daily USD/PLN from the NBP Web API (official
+  Polish rate); `cost_pln = usd_cost × latest fx`. Token counts come exact from the
+  LiteLLM gateway.
+
+> Repo gap (ADR-024): `001_initial_schema.sql` is applied to the live DB but was
+> never committed (only `.gitkeep`). It must be back-filled from the live schema so
+> `supabase/migrations/` reflects reality.
 
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
@@ -339,6 +350,10 @@ Target: 7–9 weeks to v1.
   - `n8n-redis` (redis:7-alpine) — queue backing; AOF persistence enabled; named volume.
   - `n8n-main` (n8nio/n8n:2.22.5) — UI, webhooks, scheduler; binds to 127.0.0.1:5678 only.
   - `n8n-worker` (n8nio/n8n:2.22.5) — queue consumer; concurrency 5.
+  - `litellm` (ghcr.io/berriai/litellm) — **decided, not yet deployed** (ADR-024). Internal-only
+    LLM gateway (127.0.0.1:4000): signs Bedrock, returns exact token usage, enables prompt
+    caching + multi-provider. Production model-call path; native Bedrock node becomes fallback.
+    Config in committed `n8n/litellm-config.yaml`; AWS keys + master key from `.env`.
 - **Public endpoint**: `https://agents.haxe.ai` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing, 90-day). HTTP → HTTPS redirect active. See ADR-012.
 - **Build control plane**: Claude Code drives n8n programmatically via the `n8n-mcp` server over the public REST API (`https://agents.haxe.ai/api/v1`). Config in committed `.mcp.json`; the n8n API key is supplied from the machine env var `N8N_API_KEY` (setx; expiry 2026-08-31) and never committed. Windows launch must wrap npx in `cmd /c`. See ADR-018 and ADR-017.
 - **AWS**: account 000500193947 (tax reg. Skalus). Root MFA via passkey. IAM user `haxe-agents-bedrock`. Billing alert 50 USD/mo. Region eu-central-1.
@@ -693,10 +708,29 @@ inactive between tests. (Observation: ClickUp task descriptions in the test data
 repeat the same guideline block several times, bloating the prompt — a KM
 data-quality signal for the future gap-detection layer, not a pipeline defect.)
 
-Next increments: post the completion back to ClickUp (material in parent, draft as
-comment, @-mention reviewer; never auto-finalize); then `linked_doc_leaves`
-resolution (Docs v3, now that access is proven); replace `Build Prompt` with the
-real assembler (GLOBAL agent-rules doc + person preferences, per the core model).
+**Decided next (ADR-024), artifacts authored but NOT yet deployed** — re-platform the
+model-call layer onto a self-hosted **LiteLLM gateway** + move routing into Supabase:
+- Why: the native Bedrock node swallows token usage (confirmed — no exact cost
+  possible on that path); routing should be data, not an n8n Code node; ADR-013/021
+  already name LiteLLM as the gateway endpoint.
+- Shape: a `litellm` container (internal-only) becomes the production caller; n8n hits
+  it over plain HTTP with the model chosen by a Supabase `model_routing` lookup, and
+  logs exact `usage` + computed `cost_pln` to `agent_runs`. Cost = per-model USD
+  prices (in `model_routing`) × the daily **NBP USD/PLN** rate (auto-imported into
+  `fx_rates` by a small cron). Native node retired to fallback. Renames land here:
+  `importance`→`impact`, `sensitivity`→`personal_data` (boolean, fail-safe `true`).
+- Authored (committed, working tree): `n8n/docker-compose.yml` (litellm service),
+  `n8n/litellm-config.yaml`, `n8n/.env.example`, `supabase/migrations/002_model_routing.sql`,
+  `003_fx_rates.sql`. **Operator-gated before deploy:** generate + enter the LiteLLM
+  master key + Bedrock IAM keys in the VPS `.env`, and create a Supabase Postgres
+  credential in n8n. Then deploy + smoke-test (model-string format, `usage` present),
+  apply migrations, build the FX cron, rewire `Invoke Model (v1)`.
+
+Then (unchanged): post the completion back to ClickUp (material in parent, draft as
+comment, @-mention reviewer; never auto-finalize); `linked_doc_leaves` resolution
+(Docs v3, selectively — only the current step's leaf, not all, to avoid context
+pollution); replace `Build Prompt` with the real assembler (GLOBAL agent-rules doc +
+person preferences, per the core model).
 
 ---
 
