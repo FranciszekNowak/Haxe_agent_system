@@ -92,7 +92,7 @@ services:
   # only n8n reaches it at http://litellm:4000. Signs Bedrock correctly and returns
   # exact token usage (which the native n8n node swallows). Config in litellm-config.yaml.
   litellm:
-    image: ghcr.io/berriai/litellm:main-stable  # pin to a specific version on deploy (ADR-011)
+    image: ghcr.io/berriai/litellm@sha256:75543fa1d73989b7aefba49c910989f7886f63210520e30b39dbbc580a41826f  # LiteLLM v1.87.0, pinned by digest 2026-06-03 (ADR-011)
     container_name: litellm
     restart: unless-stopped
     command: ["--config", "/app/config.yaml", "--port", "4000"]

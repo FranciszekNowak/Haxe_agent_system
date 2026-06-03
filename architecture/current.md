@@ -350,9 +350,9 @@ Target: 7–9 weeks to v1.
   - `n8n-redis` (redis:7-alpine) — queue backing; AOF persistence enabled; named volume.
   - `n8n-main` (n8nio/n8n:2.22.5) — UI, webhooks, scheduler; binds to 127.0.0.1:5678 only.
   - `n8n-worker` (n8nio/n8n:2.22.5) — queue consumer; concurrency 5.
-  - `litellm` (ghcr.io/berriai/litellm) — **decided, not yet deployed** (ADR-024). Internal-only
-    LLM gateway (127.0.0.1:4000): signs Bedrock, returns exact token usage, enables prompt
-    caching + multi-provider. Production model-call path; native Bedrock node becomes fallback.
+  - `litellm` (ghcr.io/berriai/litellm, v1.87.0 pinned by digest) — **deployed + verified 2026-06-03** (ADR-024). Internal-only
+    LLM gateway (127.0.0.1:4000): signs Bedrock, returns exact token usage + USD cost header, enables prompt
+    caching + multi-provider. Becomes the production model-call path (rewire pending, see §15); native Bedrock node = fallback.
     Config in committed `n8n/litellm-config.yaml`; AWS keys + master key from `.env`.
 - **Public endpoint**: `https://agents.haxe.ai` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing, 90-day). HTTP → HTTPS redirect active. See ADR-012.
 - **Build control plane**: Claude Code drives n8n programmatically via the `n8n-mcp` server over the public REST API (`https://agents.haxe.ai/api/v1`). Config in committed `.mcp.json`; the n8n API key is supplied from the machine env var `N8N_API_KEY` (setx; expiry 2026-08-31) and never committed. Windows launch must wrap npx in `cmd /c`. See ADR-018 and ADR-017.
@@ -708,25 +708,28 @@ inactive between tests. (Observation: ClickUp task descriptions in the test data
 repeat the same guideline block several times, bloating the prompt — a KM
 data-quality signal for the future gap-detection layer, not a pipeline defect.)
 
-**Decided next (ADR-024), artifacts authored but NOT yet deployed** — re-platform the
-model-call layer onto a self-hosted **LiteLLM gateway** + move routing into Supabase:
-- Why: the native Bedrock node swallows token usage (confirmed — no exact cost
-  possible on that path); routing should be data, not an n8n Code node; ADR-013/021
-  already name LiteLLM as the gateway endpoint.
-- Shape: a `litellm` container (internal-only) becomes the production caller; n8n hits
-  it over plain HTTP with the model chosen by a Supabase `model_routing` lookup, and
-  logs exact `usage` + computed `cost_pln` to `agent_runs`. Cost = per-model USD
-  prices (in `model_routing`) × the daily **NBP USD/PLN** rate (auto-imported into
-  `fx_rates` by a small cron). Native node retired to fallback. Renames land here:
-  `importance`→`impact`, `sensitivity`→`personal_data` (boolean, fail-safe `true`).
-- Authored (committed, working tree): `n8n/docker-compose.yml` (litellm service),
-  `n8n/litellm-config.yaml`, `n8n/.env.example`, `supabase/migrations/002_model_routing.sql`,
-  `003_fx_rates.sql`. **Operator-gated before deploy:** generate + enter the LiteLLM
-  master key + Bedrock IAM keys in the VPS `.env`, and create a Supabase Postgres
-  credential in n8n. Then deploy + smoke-test (model-string format, `usage` present),
-  apply migrations, build the FX cron, rewire `Invoke Model (v1)`.
+**Infrastructure for the LiteLLM re-platform is LIVE (2026-06-03; ADR-024/025).** The
+model-call layer is being moved onto a self-hosted LiteLLM gateway + Supabase routing
++ exact cost. Done and verified this session:
+- **Supabase Postgres credential** works (n8n cred id `EjK3iACTbSNRDhVz`; SSL=require +
+  Ignore-SSL-Issues). **Migrations 002 (`model_routing`, seeded) + 003 (`fx_rates`) applied.**
+- **LiteLLM gateway deployed** (`litellm` container, `127.0.0.1:4000`, v1.87.0 pinned by
+  digest). Smoke-tested through all three aliases (`haxe-haiku`/`sonnet`/`opus`): each
+  returns a completion with **exact `usage`** and an **`x-litellm-response-cost`** USD
+  header. Cost model = that USD figure × the daily NBP USD/PLN rate (→ `fx_rates`).
+- **Monitoring core LIVE** (ADR-025): `Post Alert (v1)` (id `YSCdHlmdf3p9XEUx`) →
+  ClickUp Alerts task `869dj2z2c`; global `Error Handler (v1)` (id `81eplXMD1v5ONhzs`)
+  set as `errorWorkflow` on Invoke Model / Agent Spine / Context Gather. Proven by a
+  real failure raising a CRITICAL alert.
 
-Then (unchanged): post the completion back to ClickUp (material in parent, draft as
+**RESUME CHECKLIST (Phase C — next session):**
+1. **FX cron** — Schedule → HTTP GET `api.nbp.pl/.../rates/a/usd` → upsert `fx_rates`; seed today. Then **FX freshness monitor** (stale-rate → Post Alert).
+2. **Rewire `Invoke Model (v1)`** (`XcOIVdZnVCCWNPeb`): `Select Model` Code node → Supabase `model_routing` lookup (`impact in ($impact,'__default__')`); replace `Basic LLM Chain`+native node with an HTTP Request to `http://litellm:4000/v1/chat/completions` (Bearer `LITELLM_MASTER_KEY`, include response headers); read `usage` + `x-litellm-response-cost`; `cost_pln = cost × latest fx_rates.rate`; insert `agent_runs` (query its live columns first). Renames `importance→impact`, `sensitivity→personal_data` (bool, fail-safe true) across Invoke Model / Context Gather output / Build Prompt / Agent Spine mappings. In-flow alerts: routing-default-used, cost-missing, agent_runs-insert-failed.
+3. **Test** the spine on the `impact`-tagged tasks (right model + real `cost_pln` logged).
+4. **Export** new/changed workflows to `n8n/workflows/` (incl. Post Alert, Error Handler, FX cron) + reflect `errorWorkflow` settings; **commit & push**.
+5. Backlog: set `N8N_EDITOR_BASE_URL=https://agents.haxe.ai` (clickable alert links); back-fill `001_initial_schema.sql` from live; check `.env` line 5 formatting.
+
+Then (post-rewire): post the completion back to ClickUp (material in parent, draft as
 comment, @-mention reviewer; never auto-finalize); `linked_doc_leaves` resolution
 (Docs v3, selectively — only the current step's leaf, not all, to avoid context
 pollution); replace `Build Prompt` with the real assembler (GLOBAL agent-rules doc +
