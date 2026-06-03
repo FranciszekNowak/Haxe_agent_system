@@ -320,7 +320,7 @@ current.md is updated via targeted diffs, not full-file rewrites, to avoid silen
 
 - **Phase 0** — infrastructure (git, AWS, 1Password, Supabase, VPS, Docker stack, Nginx + TLS). **COMPLETE** (infra hardened, password auth disabled, both machines keyed).
 - **Phase 1** — ClickUp foundation. **IN PROGRESS** — research complete (NPD process mapped; observations doc), core model + KM-maintenance confirmed. Pending: custom fields (`Czy dla AI` / `Ważność` / `Typ procesu` — user-created, Polish, global); GLOBAL agent-rules doc; per-person agent-preferences docs.
-- **Phase 2** — the spine. **NEXT** — build the generic ClickUp→LLM→ClickUp pipeline; first test on the product-description task. Custom fields NOT on the critical path for the first pull-based run.
+- **Phase 2** — the spine. **IN PROGRESS** — the read→route→infer half is built and tested end-to-end (`Agent Spine (v1)` composing `Context Gather (v1)` → `Invoke Model (v1)` with importance→model routing; see §15). Remaining: post-back to ClickUp (comment + reviewer @-mention, never auto-finalize), then first real test on the product-description task.
 - **Phase 3** — email + due-date triggering + queue tuning.
 - **Phase 4** — learning loop (proposers).
 - **Phase 5** — team rollout.
@@ -631,9 +631,10 @@ Six workflows plus an error handler:
 **Error Handler** — n8n Error Trigger + dead letter subscriber. Captures failures with full context (workflow, trigger source, retry history, final error), posts to Agent Errors task, updates `agent_run` status to `error`, rolls back any mid-update session state. Slack alert on critical failures (queue backed up, Redis down).
 
 **Build status (2026-06-03):** none of the six production workflows are built yet,
-but two reusable pipeline pieces exist and are tested — the context-assembly front
-end and the centralized model-invocation seam — agent Doc access is proven, and
-Bedrock inference from n8n is proven. The build control plane is operational
+but the read→route→infer spine exists end-to-end as three tested, composable pieces
+— the context-assembly front end, the centralized model-invocation seam (with
+importance→model routing live), and an `Agent Spine` that wires them — agent Doc
+access is proven, and Bedrock inference from n8n is proven. The build control plane is operational
 (Claude Code → n8n MCP; see ADR-018). `Context Gather (v1)`
 (`n8n/workflows/context-gather.json`, n8n id `qgM37HdQj78Rn090`) reads a ClickUp
 task and assembles the labelled context object (`current_task`, ordered
@@ -662,20 +663,40 @@ harnesses (`Doc Access Test`, `Invoke Model smoke test`):
 The centralized **`Invoke Model (v1)`** sub-workflow (`n8n/workflows/invoke-model.json`,
 n8n id `XcOIVdZnVCCWNPeb`) is built and tested — the ADR-013 invocation seam:
 Execute Workflow Trigger (typed contract `prompt`/`importance`/`sensitivity`/`task_type`)
-→ a `Select Model` Set node (the discrete selection step; today fixed to provider
-`bedrock-eu` + the verified `eu.anthropic.claude-sonnet-4-6` profile) → `Basic LLM
-Chain` driven by the native AWS Bedrock node whose profile is set by expression from
-the selection step → a `Shape Output` Set node returning `{ completion, model,
-provider }`. Verified live via a throwaway Execute-Sub-workflow harness: a passed
-prompt returned a completion reflecting it, and the routing inputs flow through
-intact. Left inactive between tests. See ADR-022 for the shape. The two-axis
-`(importance × sensitivity) → (model, provider, priority)` mapping remains the
-pending data-driven decision (ADR-021); until it is made and the Haiku/Opus EU
-profile IDs are verified, all traffic uses Sonnet.
+→ a `Select Model` Code node (the discrete selection step, now holding the routing
+table) → `Basic LLM Chain` driven by the native AWS Bedrock node whose profile,
+`temperature`, and `maxTokensToSample` are all set by expression from the selection
+step → a `Shape Output` Set node returning `{ completion, model, provider }`. See
+ADR-022 for the shape.
 
-Next increments: wire `Context Gather (v1)`'s assembled context into a prompt and
-call this sub-workflow; post the completion back to ClickUp; then `linked_doc_leaves`
-resolution.
+The **importance → model routing** is implemented (ADR-023), resolving the
+importance axis of the previously-pending mapping: `Niski`→Haiku 4.5,
+`Średni`→Sonnet 4.6, `Wysoki`→Opus 4.5, `Krytycznie ważne`→Opus 4.5 at temp 0.2 /
+16k tokens with a prepended deliberation nudge; `n/d`/empty/unknown→Sonnet
+(ADR-013 fail-safe). All profiles are EU-resident (GDPR) and were verified
+invokable live (2026-06-03). **Caveat:** Opus 4.6/4.7/4.8 exist in eu-central-1 but
+are not granted to the account, so Opus tiers use 4.5 until access is requested on
+the Bedrock Model-access page (then bump one constant). "Max effort" is approximated
+via temperature + max-tokens + the nudge — the native node exposes no
+reasoning-budget parameter. The **sensitivity** axis remains deferred (no classifier
+yet). Verified per-tier via a throwaway harness (`Niski`→Haiku, `Krytycznie
+ważne`→Opus+nudge); harness since deleted.
+
+These two pieces are composed by **`Agent Spine (v1)`** (`n8n/workflows/agent-spine.json`,
+n8n id `a8XKaijkMFNBpRBa`): Form Trigger (`taskId`) → `Context Gather (v1)` (now also
+callable via an Execute Workflow Trigger; it additionally resolves the importance
+custom field to its label) → a `Build Prompt` Code node (stub assembler: context →
+one prompt string) → `Invoke Model (v1)`. Verified live end-to-end on `Lista testy
+AI` task `869dhad2q`: context + 4-level ancestor chain gathered, importance unset →
+Sonnet fail-safe, a high-quality Polish work product returned. All workflows left
+inactive between tests. (Observation: ClickUp task descriptions in the test data
+repeat the same guideline block several times, bloating the prompt — a KM
+data-quality signal for the future gap-detection layer, not a pipeline defect.)
+
+Next increments: post the completion back to ClickUp (material in parent, draft as
+comment, @-mention reviewer; never auto-finalize); then `linked_doc_leaves`
+resolution (Docs v3, now that access is proven); replace `Build Prompt` with the
+real assembler (GLOBAL agent-rules doc + person preferences, per the core model).
 
 ---
 

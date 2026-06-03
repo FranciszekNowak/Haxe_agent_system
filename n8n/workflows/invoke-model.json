@@ -23,23 +23,13 @@
     {
       "id": "select-model",
       "name": "Select Model",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [240, 300],
-      "notes": "ADR-013 seam #2: discrete selection step. Inputs (importance, sensitivity, task_type) -> (provider, model). TODAY: fixed to the one verified EU profile (Sonnet); provider always bedrock-eu (ADR-013 fail-safe). The importance x sensitivity -> tier mapping is the PENDING data-driven decision (ADR-021) - becomes a Supabase lookup later, swapped in this one place.",
+      "notes": "ADR-013 seam #2 + ADR-023 routing table. importance -> {provider, model, temperature, maxTokens, prompt}. EU-resident profiles only (GDPR, ADR-002), all verified invokable 2026-06-03. Opus tiers use 4.5 = best Opus with model access on this account (4.6/4.7/4.8 exist in-region but are NOT granted - enable in Bedrock console, then bump OPUS const). Fail-safe default = Sonnet (ADR-013). Pure shaping, no I/O (ADR-019).",
       "parameters": {
-        "mode": "manual",
-        "includeOtherFields": false,
-        "assignments": {
-          "assignments": [
-            { "id": "a1", "name": "provider", "value": "bedrock-eu", "type": "string" },
-            { "id": "a2", "name": "model", "value": "eu.anthropic.claude-sonnet-4-6", "type": "string" },
-            { "id": "a3", "name": "prompt", "value": "={{ $json.prompt }}", "type": "string" },
-            { "id": "a4", "name": "importance", "value": "={{ $json.importance }}", "type": "string" },
-            { "id": "a5", "name": "sensitivity", "value": "={{ $json.sensitivity }}", "type": "string" },
-            { "id": "a6", "name": "task_type", "value": "={{ $json.task_type }}", "type": "string" }
-          ]
-        }
+        "language": "javaScript",
+        "jsCode": "// ADR-023 routing table. EU inference profiles only (GDPR). Verified 2026-06-03.\nconst input = $input.first().json;\nconst importance = (input.importance || '').trim();\n\nconst SONNET = 'eu.anthropic.claude-sonnet-4-6';\nconst HAIKU  = 'eu.anthropic.claude-haiku-4-5-20251001-v1:0';\nconst OPUS   = 'eu.anthropic.claude-opus-4-5-20251101-v1:0'; // best Opus with account access; bump to 4-8 once granted\n\nconst CRITICAL_NUDGE = [\n  'This task is CRITICALLY important to the company. Apply maximum effort:',\n  'reason step by step, consider edge cases and failure modes, verify your',\n  'reasoning before answering, and prioritise precision and correctness over',\n  'brevity. Do not rush. Respond in the language of the task.',\n  '', '---', ''\n].join('\\n');\n\n// Fail-safe defaults (ADR-013): Sonnet on Bedrock-EU.\nlet model = SONNET, temperature = 0.7, maxTokens = 4000;\nlet prompt = input.prompt || '';\n\nswitch (importance) {\n  case 'Niski':\n    model = HAIKU; temperature = 0.7; maxTokens = 4000; break;\n  case 'Średni':\n    model = SONNET; temperature = 0.7; maxTokens = 4000; break;\n  case 'Wysoki':\n    model = OPUS; temperature = 0.5; maxTokens = 8000; break;\n  case 'Krytycznie ważne':\n    model = OPUS; temperature = 0.2; maxTokens = 16000;\n    prompt = CRITICAL_NUDGE + prompt; break;\n  default:\n    // 'n/d - zadanie nie jest dla AI', empty, or unknown -> fail-safe Sonnet\n    model = SONNET; temperature = 0.7; maxTokens = 4000;\n}\n\nreturn [{ json: {\n  provider: 'bedrock-eu',\n  model, temperature, maxTokens, prompt,\n  importance, sensitivity: input.sensitivity || '', task_type: input.task_type || ''\n} }];"
       }
     },
     {
@@ -61,7 +51,11 @@
       "position": [480, 520],
       "parameters": {
         "modelSource": "inferenceProfile",
-        "model": "={{ $('Select Model').item.json.model }}"
+        "model": "={{ $('Select Model').item.json.model }}",
+        "options": {
+          "temperature": "={{ $('Select Model').item.json.temperature }}",
+          "maxTokensToSample": "={{ $('Select Model').item.json.maxTokens }}"
+        }
       },
       "credentials": { "aws": { "id": "8TDwsQAJFkSWUEJF", "name": "AWS (IAM) account" } }
     },

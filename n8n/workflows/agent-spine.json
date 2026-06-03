@@ -1,0 +1,92 @@
+{
+  "name": "Agent Spine (v1)",
+  "active": false,
+  "nodes": [
+    {
+      "id": "form-trigger",
+      "name": "Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [0, 300],
+      "parameters": {
+        "formTitle": "Agent Spine",
+        "formDescription": "Enter a ClickUp task ID. Gathers context, routes by importance, returns a model completion.",
+        "formFields": {
+          "values": [
+            { "fieldLabel": "taskId", "requiredField": true }
+          ]
+        },
+        "responseMode": "lastNode"
+      },
+      "webhookId": "agent-spine-v1-webhook-001"
+    },
+    {
+      "id": "call-context",
+      "name": "Call Context Gather",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [240, 300],
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "qgM37HdQj78Rn090", "mode": "list", "cachedResultName": "Context Gather (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": { "taskId": "={{ $json.taskId }}" },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "taskId", "displayName": "taskId", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "build-prompt",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300],
+      "notes": "Stub prompt assembler (v1): turns the context object into one prompt string + carries importance for routing. Later this incorporates the GLOBAL agent-rules doc + person preferences (core model). Pure shaping (ADR-019).",
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const ctx = $input.first().json;\nconst ct = ctx.current_task || {};\nconst chain = ctx.ancestor_chain || [];\nconst leaves = ctx.linked_doc_leaves || [];\n\nconst lines = [];\nlines.push('Jesteś asystentem AI wspierającym zespół Haxe. Wykonaj poniższe zadanie rzetelnie.');\nlines.push('');\nlines.push('# Zadanie');\nlines.push(ct.name || '(bez nazwy)');\nif (ct.description) { lines.push(''); lines.push(ct.description); }\n\nif (chain.length) {\n  lines.push('');\n  lines.push('# Kontekst nadrzędny (od najogólniejszego do najbliższego)');\n  for (const a of chain.slice().reverse()) {\n    lines.push('');\n    lines.push('## ' + (a.name || ''));\n    if (a.description) lines.push(a.description);\n  }\n}\n\nif (leaves.length) {\n  lines.push('');\n  lines.push('# Szczegółowe wytyczne');\n  for (const l of leaves) { lines.push('- ' + (l.name || '')); if (l.content) lines.push(l.content); }\n}\n\nlines.push('');\nlines.push('Przygotuj wynik dla powyższego zadania.');\n\nconst prompt = lines.join('\\n');\nreturn [{ json: { prompt, importance: ctx.importance || '', sensitivity: 'unknown', task_type: '' } }];"
+      }
+    },
+    {
+      "id": "call-model",
+      "name": "Call Invoke Model",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [720, 300],
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "XcOIVdZnVCCWNPeb", "mode": "list", "cachedResultName": "Invoke Model (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "prompt": "={{ $json.prompt }}",
+            "importance": "={{ $json.importance }}",
+            "sensitivity": "={{ $json.sensitivity }}",
+            "task_type": "={{ $json.task_type }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "prompt", "displayName": "prompt", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "importance", "displayName": "importance", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "sensitivity", "displayName": "sensitivity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "task_type", "displayName": "task_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Form Trigger": { "main": [[{ "node": "Call Context Gather", "type": "main", "index": 0 }]] },
+    "Call Context Gather": { "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]] },
+    "Build Prompt": { "main": [[{ "node": "Call Invoke Model", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

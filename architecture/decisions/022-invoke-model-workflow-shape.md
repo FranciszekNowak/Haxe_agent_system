@@ -80,3 +80,13 @@ Related: ADR-013 (centralized invocation + selection step), ADR-021 (native Bedr
 node + EU profiles), ADR-019 (credential-aware nodes; Set/Code only shape),
 ADR-020 (Context Gather shape + the harness/testing precedent), ADR-018 (built via
 the n8n MCP control plane).
+
+> Update 2026-06-03 (supersedes the "Set node TODAY" decision): once the operator
+> fixed the actual `importance → model` mapping (ADR-023), the `Select Model` step
+> became a **Code node** holding the routing table — the fixed Set node could no
+> longer express the 5-way mapping plus per-tier `temperature`/`maxTokens` and the
+> conditional `Krytycznie ważne` prompt nudge. It remains pure shaping (no I/O, no
+> secrets — ADR-019-compliant) and the seam is still one node, so the eventual move
+> to a Supabase lookup (ADR-013) stays single-place. The Bedrock node now also reads
+> `temperature` and `maxTokensToSample` by expression from `Select Model`. The
+> throwaway test harness was deleted after routing was verified. See ADR-023.
