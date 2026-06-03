@@ -74,3 +74,13 @@ providers; only preserve the chokepoint and the discrete selection step.
   but unoptimized," never to "non-compliant."
 - Watch for scope creep at Phase 2: writing classification logic "while in there"
   is the trap — stop at the seam.
+
+> Update 2026-06-03: the concrete Bedrock invocation path is now chosen and
+> verified — native n8n AWS Bedrock node + EU inference profiles; the generic
+> AWS-credential HTTP/SigV4 path does not work for Bedrock. See ADR-021. This does
+> not change the seam: the selection step still takes (importance, sensitivity,
+> task_type). Reaffirmed — model choice depends on importance **and** sensitivity
+> (PII / personal-data presence), the latter set by an earlier classification node;
+> with the live importance field now five levels (current.md §13.2), the mapping is
+> (5 importance levels × sensitivity) → (provider, model, priority), still deferred
+> and data-driven.

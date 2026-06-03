@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v13
-Last updated: 2026-06-02
-Supersedes: v12
+Version: v14
+Last updated: 2026-06-03
+Supersedes: v13
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -501,17 +501,25 @@ NOTE TO FUTURE BUILDER SELF: The agent's thinking shouldn't be forced into this 
 
 ### 13.2 Workspace custom fields
 
-| Field | Type | Values | Purpose |
+| Field (live name) | Type | Values | Purpose |
 |---|---|---|---|
-| `Czy dla AI` | Dropdown | Tak / Nie | Gates autonomous agent behavior |
-| `Ważność` | Dropdown | Low / Medium / High | Routes model tier + queue priority |
-| `Finalny efekt` | Long text | (treść) | Quality signal — populated only on approval |
-| `Status agenta` | Dropdown | Active / Reset / Paused | Reset triggers session expiry + restart |
-| `Typ procesu` | Dropdown | NPD / Onboarding / Email / Marketing / … | Process identifier for persona dispatch |
-| `Koszt akcji` | Number | (PLN) | Aggregated cost per task |
+| `[AI] Czy zadanie dla AI` | Dropdown | Nie / Tak | Gates autonomous agent behavior |
+| `[AI] Wpływ zadania na wynik firmy` | Dropdown | n/d - zadanie nie jest dla AI / Niski / Średni / Wysoki / Krytycznie ważne | Importance → routes model tier + queue priority (was `Ważność`) |
+| `[AI] Finalny, zaakceptowany efekt` | Attachment | (plik) | Quality signal — populated only on approval |
+| `[AI] Status agenta` | Dropdown | Zresetuj agenta / W trakcie / Zakończono / Nie rozpoczęto | `Zresetuj agenta` triggers session expiry + restart |
+| `[AI] Typ procesu` | Dropdown | Nowy produkt / Nowy pracownik / Nowy kontraktor zewnętrzny | Process identifier |
+| `[AI] Koszt akcji [PLN]` | Number | (PLN) | Aggregated cost per task |
 
-`Czy dla AI` gates autonomous behavior only. Explicit invocations (@-mention,
-`~command`) always work regardless of this field.
+> Live field set as built (verified 2026-06-03). The doc historically calls the
+> importance field `Ważność`; it now has **five** levels (+ an `n/d` opt-out),
+> not the old Low/Medium/High three. Consequently the model-tier and queue-priority
+> mappings (§3, §14.3) and the routing selection step (ADR-013) must map five
+> importance levels — and, per ADR-013/ADR-021, a **second axis: sensitivity
+> (PII / personal data)** set by an earlier classifier node — to (provider, model,
+> priority). That mapping is a pending design decision, not a default.
+
+`[AI] Czy zadanie dla AI` gates autonomous behavior only. Explicit invocations
+(@-mention, `~command`) always work regardless of this field.
 
 ### 13.3 Agent CU account
 
@@ -622,8 +630,9 @@ Six workflows plus an error handler:
 
 **Error Handler** — n8n Error Trigger + dead letter subscriber. Captures failures with full context (workflow, trigger source, retry history, final error), posts to Agent Errors task, updates `agent_run` status to `error`, rolls back any mid-update session state. Slack alert on critical failures (queue backed up, Redis down).
 
-**Build status (2026-06-02):** none of the six are built yet, but the
-context-assembly front end exists and is tested. The build control plane is
+**Build status (2026-06-03):** none of the six production workflows are built yet,
+but the context-assembly front end exists and is tested, agent Doc access is
+proven, and Bedrock inference from n8n is proven. The build control plane is
 operational (Claude Code → n8n MCP; see ADR-018). `Context Gather (v1)`
 (`n8n/workflows/context-gather.json`, n8n id `qgM37HdQj78Rn090`) reads a ClickUp
 task and assembles the labelled context object (`current_task`, ordered
@@ -633,9 +642,25 @@ task and assembles the labelled context object (`current_task`, ordered
 returned an ordered ancestor chain, a root task returned `[]`, markdown descriptions
 flow through (`includeMarkdownDescription`). Read-only; left inactive between tests.
 See ADR-020 for the shape and ADR-019 for the node/credential discipline
-(authenticated I/O in credential-aware nodes; Code nodes only shape data). Next
-increments: the LLM call, then post-back to ClickUp, then `linked_doc_leaves`
-resolution (blocked on agent Doc access — see ADR-004 update).
+(authenticated I/O in credential-aware nodes; Code nodes only shape data).
+
+Two front-end dependencies were verified live (2026-06-03) with throwaway n8n
+harnesses (`Doc Access Test`, `Invoke Model smoke test`):
+- **Agent Doc access — resolved.** The agent `clickUpApi` token reads ClickUp Docs
+  via the **Docs v3 API** (`GET /api/v3/workspaces/{ws}/docs/{doc_id}/pages`, 200,
+  full content) — config docs and leaf docs alike. Embedded doc links in a task's
+  `markdown_description` arrive as parseable `[Label](…/docs/{doc_id}/{page_id})`
+  URLs, so `linked_doc_leaves` resolves by: regex-extract IDs from
+  `markdown_description` → Docs v3 GET → flatten. The earlier "no access" was a
+  task-node link-rendering / pre-grant artifact. See ADR-004 (2026-06-03 update).
+- **Bedrock inference — resolved.** A Claude completion was returned from n8n via
+  the native AWS Bedrock node and the EU inference profile
+  `eu.anthropic.claude-sonnet-4-6`. The generic AWS credential + HTTP Request path
+  cannot sign Bedrock; see ADR-021.
+
+Next increments: build the centralized `invoke model` sub-workflow (ADR-013 seam,
+native Bedrock node) + the discrete selection step; wire the LLM call into the
+context pipeline; post-back to ClickUp; then `linked_doc_leaves` resolution.
 
 ---
 

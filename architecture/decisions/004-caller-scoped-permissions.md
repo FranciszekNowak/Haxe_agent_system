@@ -55,3 +55,18 @@ Negative:
 > imply Doc access. This must be resolved before the `linked_doc_leaves`
 > increment (doc-page resolution) can work — the agent needs explicit access to
 > the relevant Docs, or that content stays invisible to it.
+>
+> Update 2026-06-03 (resolves the field finding above): agent Doc access is
+> confirmed working — via the ClickUp **Docs v3 API**, not the task node. With the
+> agent account granted Doc access, two things hold (verified live): (1) embedded
+> doc links inside a task's `markdown_description` render as parseable
+> `[Label](https://app.clickup.com/{ws}/docs/{doc_id}/{page_id})` URLs (no longer
+> the "no access" placeholder); (2) `GET /api/v3/workspaces/{ws}/docs/{doc_id}/pages`
+> with the agent `clickUpApi` credential returns the full page tree with content
+> (HTTP 200) for both config docs (`q7wz-16892`) and leaf docs (`q7wz-1219`). The
+> "no access" string was a task-node link-rendering artifact (and pre-grant state),
+> not a hard API limitation. `linked_doc_leaves` is therefore unblocked; the
+> resolution mechanism is: extract `doc_id`/`page_id` from `markdown_description` →
+> Docs v3 GET → flatten. Doc-content reads use the Docs v3 HTTP path (the native
+> ClickUp node has no Doc resource); per ADR-019 this lives in a credential-aware
+> HTTP Request node.
