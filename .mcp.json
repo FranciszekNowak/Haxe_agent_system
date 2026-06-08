@@ -10,6 +10,13 @@
         "N8N_API_URL": "https://agents.haxe.ai",
         "N8N_API_KEY": "${N8N_API_KEY}"
       }
+    },
+    "supabase": {
+      "command": "cmd",
+      "args": ["/c", "npx", "@supabase/mcp-server-supabase@latest"],
+      "env": {
+        "SUPABASE_ACCESS_TOKEN": "${SUPABASE_ACCESS_TOKEN}"
+      }
     }
   }
 }

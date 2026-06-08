@@ -28,7 +28,7 @@
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
       "position": [0, 480],
-      "notes": "Production entry: called by CU Webhook Producer. Inputs: taskId + caller (reviewer_user_id, caller_username) + attribution (triggered_by, invocation_type) + triggering comment (triggering_comment_id, triggering_comment_text). The Form Trigger above stays as a manual test harness.",
+      "notes": "Production entry: called by CU Webhook Producer. Inputs: taskId + caller (reviewer_user_id, caller_username) + attribution (triggered_by, invocation_type) + triggering comment (triggering_comment_id, triggering_comment_text — what the user wrote). The Form Trigger above stays as a manual test harness.",
       "parameters": {
         "inputSource": "workflowInputs",
         "workflowInputs": {
@@ -51,13 +51,29 @@
       "typeVersion": 1.3,
       "position": [240, 304],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "qgM37HdQj78Rn090", "mode": "list", "cachedResultUrl": "/workflow/qgM37HdQj78Rn090", "cachedResultName": "Context Gather (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "qgM37HdQj78Rn090",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/qgM37HdQj78Rn090",
+          "cachedResultName": "Context Gather (v1)"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
-          "value": { "taskId": "={{ $json.taskId }}" },
+          "value": {
+            "taskId": "={{ $json.taskId }}"
+          },
           "matchingColumns": [],
           "schema": [
-            { "id": "taskId", "displayName": "taskId", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+            {
+              "id": "taskId",
+              "displayName": "taskId",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
           ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
@@ -71,20 +87,41 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [440, 160],
-      "notes": "Inc 4: personal-data classification seam (ADR-031). Stub always returns personal_data=false until Phase 3 classifier is built. Output flows to Call Search (routing) and Build Prompt (Invoke Model routing).",
+      "notes": "Inc 4: personal-data seam, always returns false (stub). Output used by Call Search (personal_data routing) and Build Prompt (Invoke Model routing).",
       "parameters": {
         "source": "database",
-        "workflowId": { "__rl": true, "value": "hzwmak7UBpuHaiTO", "mode": "list", "cachedResultName": "PD Verifier (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "hzwmak7UBpuHaiTO",
+          "mode": "list",
+          "cachedResultName": "PD Verifier (v1)"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
             "current_task": "={{ $('Call Context Gather').first().json.current_task }}",
-            "triggering_comment_text": "={{ $('When Called').first().json.triggering_comment_text || '' }}"
+            "triggering_comment_text": "={{ $if($('When Called').isExecuted, $('When Called').first().json.triggering_comment_text || '', '') }}"
           },
           "matchingColumns": [],
           "schema": [
-            { "id": "current_task", "displayName": "current_task", "type": "object", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggering_comment_text", "displayName": "triggering_comment_text", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+            {
+              "id": "current_task",
+              "displayName": "current_task",
+              "type": "object",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "triggering_comment_text",
+              "displayName": "triggering_comment_text",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
           ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": false
@@ -97,26 +134,71 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [660, 160],
-      "notes": "Inc 4: task comments + semantic search + Layer B caller-scoped access filter. Returns {task_comments, additional_context, sources_used, sources_filtered_out}.",
+      "notes": "Inc 4: task comments + semantic search + Layer B access filter. Returns {task_comments, additional_context, sources_used, sources_filtered_out}.",
       "parameters": {
         "source": "database",
-        "workflowId": { "__rl": true, "value": "eL3fJuRMpzVRuVUT", "mode": "list", "cachedResultName": "Search (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "eL3fJuRMpzVRuVUT",
+          "mode": "list",
+          "cachedResultName": "Search (v1)"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
             "current_task": "={{ $('Call Context Gather').first().json.current_task }}",
-            "triggering_comment_text": "={{ $('When Called').first().json.triggering_comment_text || '' }}",
-            "caller_user_id": "={{ ($('When Called').first().json.reviewer_user_id || '2521617').toString() }}",
+            "triggering_comment_text": "={{ $if($('When Called').isExecuted, $('When Called').first().json.triggering_comment_text || '', '') }}",
+            "caller_user_id": "={{ $if($('When Called').isExecuted, ($('When Called').first().json.reviewer_user_id || '2521617').toString(), ($('Form Trigger').first().json.reviewer_user_id || '2521617').toString()) }}",
             "personal_data": "={{ $('Call PD Verifier').first().json.personal_data === true }}",
             "clickup_task_id": "={{ ($('Call Context Gather').first().json.current_task || {}).id || '' }}"
           },
           "matchingColumns": [],
           "schema": [
-            { "id": "current_task", "displayName": "current_task", "type": "object", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggering_comment_text", "displayName": "triggering_comment_text", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "caller_user_id", "displayName": "caller_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "personal_data", "displayName": "personal_data", "type": "boolean", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "clickup_task_id", "displayName": "clickup_task_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+            {
+              "id": "current_task",
+              "displayName": "current_task",
+              "type": "object",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "triggering_comment_text",
+              "displayName": "triggering_comment_text",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "caller_user_id",
+              "displayName": "caller_user_id",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "personal_data",
+              "displayName": "personal_data",
+              "type": "boolean",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "clickup_task_id",
+              "displayName": "clickup_task_id",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
           ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": false
@@ -139,10 +221,20 @@
         "url": "https://api.clickup.com/api/v3/workspaces/761759/docs/q7wz-16892/pages?content_format=text%2Fmd",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "clickUpApi",
-        "options": { "response": { "response": { "fullResponse": true, "responseFormat": "json" } } }
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
       },
       "credentials": {
-        "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" }
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
       }
     },
     {
@@ -151,10 +243,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [480, 304],
-      "notes": "Core-model step 3 assembler: global rules + caller prefs + triggering comment + search results (task_comments, additional_context from Search v1) + task + ancestor context. personal_data from PD Verifier. Flags global_rules_missing / person_rules_missing for WARN branch. Pure shaping (ADR-019).",
+      "notes": "Core-model step 3 assembler: GLOBAL agent-rules (q7wz-44812) + caller's personal prefs + triggering_comment_text (what was asked) + task + ancestor context. personal_data defaults false until PD Verifier seam (Inc 4). Flags global_rules_missing / person_rules_missing for the WARN branch. Pure shaping (ADR-019).",
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const ctx = $('Call Context Gather').first().json;\nconst ct = ctx.current_task || {};\nconst chain = ctx.ancestor_chain || [];\nconst leaves = ctx.linked_doc_leaves || [];\n\n// ---- Agent rules (global + per-person) from the AI doc (Docs v3) ----\nlet pages = [];\ntry { pages = $('Load Agent Rules').first().json.body || []; } catch (e) {}\nconst allPages = [];\n(function flat(arr){ for (const p of (arr||[])) { allPages.push(p); if (p.pages) flat(p.pages); } })(pages);\nconst globalPage = allPages.find(p => p.id === 'q7wz-44812');\nconst global_rules = (globalPage && globalPage.content) ? globalPage.content : '';\nconst global_rules_missing = !global_rules;\n\n// ---- Trigger inputs: When Called (producer/webhook) else Form Trigger (manual) ----\nconst OPERATOR_ID = '2521617';\nconst OPERATOR_NAME = 'Franciszek Nowak';\nlet wc = {}; try { wc = $('When Called').first().json || {}; } catch (e) {}\nlet fm = {}; try { fm = $('Form Trigger').first().json || {}; } catch (e) {}\nconst reviewer_user_id = (wc.reviewer_user_id || fm.reviewer_user_id || OPERATOR_ID).toString().trim();\nconst caller_username = (wc.caller_username || OPERATOR_NAME);\nconst triggered_by = wc.triggered_by || 'explicit_command';\nconst invocation_type = wc.invocation_type || 'explicit';\nconst triggering_comment_text = (wc.triggering_comment_text || '').toString().trim();\n\nconst personalPage = allPages.find(p => p.name === ('Instrukcje dla agenta - ' + caller_username));\nconst person_rules = (personalPage && personalPage.content) ? personalPage.content : '';\nconst person_rules_missing = !person_rules;\n\n// ---- Search results from Search (v1) ----\nlet task_comments = [], additional_context = '', sources_used = [], sources_filtered_out = 0;\ntry { const sr = $('Call Search').first().json; task_comments = sr.task_comments || []; additional_context = sr.additional_context || ''; sources_used = sr.sources_used || []; sources_filtered_out = sr.sources_filtered_out || 0; } catch(e) {}\n\n// ---- Personal data from PD Verifier ----\nlet personal_data = false;\ntry { personal_data = $('Call PD Verifier').first().json.personal_data === true; } catch(e) {}\n\n// ---- Assemble prompt ----\nconst lines = [];\nif (global_rules) { lines.push('# Zasady og\\u00f3lne agenta (obowi\\u0105zuj\\u0105 zawsze)'); lines.push(global_rules); lines.push(''); lines.push('---'); lines.push(''); }\nif (person_rules) { lines.push('# Preferencje osoby zlecaj\\u0105cej (' + caller_username + ')'); lines.push(person_rules); lines.push(''); lines.push('---'); lines.push(''); }\n\n// Triggering message: what the user wrote to invoke this run\nlines.push('# Wiadomo\\u015b\\u0107 wywo\\u0142uj\\u0105ca t\\u0119 akcj\\u0119');\nlines.push('U\\u017cytkownik ' + caller_username + ' napisa\\u0142:');\nlines.push('---');\nlines.push(triggering_comment_text || '[tre\\u015b\\u0107 wiadomo\\u015bci niedost\\u0119pna]');\nlines.push('---');\nlines.push('');\n\nif (task_comments.length) { lines.push('# Ostatnie komentarze w zadaniu'); for (const c of task_comments) { lines.push((c.author || 'nieznany') + ': ' + (c.text || '')); } lines.push(''); }\nif (additional_context) { lines.push('# Dodatkowy kontekst (wyszukiwanie semantyczne)'); lines.push(additional_context); if (sources_used.length) lines.push('\\u017ar\\u00f3d\\u0142a: ' + sources_used.join(', ')); lines.push(''); }\n\nlines.push('# Zadanie');\nlines.push(ct.name || '(bez nazwy)');\nif (ct.description) { lines.push(''); lines.push(ct.description); }\nif (chain.length) {\n  lines.push(''); lines.push('# Kontekst nadrz\\u0119dny (od najog\\u00f3lniejszego do najbli\\u017cszego)');\n  for (const a of chain.slice().reverse()) { lines.push(''); lines.push('## ' + (a.name || '')); if (a.description) lines.push(a.description); }\n}\nif (leaves.length) {\n  lines.push(''); lines.push('# Szczeg\\u00f3\\u0142owe wytyczne');\n  for (const l of leaves) { lines.push('- ' + (l.name || '')); if (l.content) lines.push(l.content); }\n}\nlines.push('');\nlines.push('Przygotuj wynik dla powy\\u017cszego zadania. Mo\\u017cesz rozumowa\\u0107 swobodnie, ale ostateczn\\u0105 odpowied\\u017a zwr\\u00f3\\u0107 w poni\\u017cszej strukturze (pomin sekcj\\u0119, je\\u015bli pusta):');\nlines.push('');\nlines.push('## Wyniki');\nlines.push('## Pytania do zlecaj\\u0105cego');\nlines.push('## Decyzje i kompromisy');\nlines.push('');\nlines.push('---');\nlines.push('## Sugestie do procesu');\n\nconst prompt = lines.join('\\n');\n\nreturn [{ json: {\n  prompt,\n  impact: ctx.impact || '',\n  personal_data,\n  task_type: '',\n  clickup_task_id: (ct.id || ''),\n  triggered_by,\n  invocation_type,\n  reviewer_user_id,\n  caller_user_id: reviewer_user_id,\n  caller_username,\n  process_type: ctx.process_type || '',\n  assignee_user_id: ctx.assignee_user_id || '',\n  creator_user_id: ctx.creator_user_id || '',\n  global_rules_missing,\n  person_rules_missing\n} }];"
+        "jsCode": "const ctx = $('Call Context Gather').first().json;\nconst ct = ctx.current_task || {};\nconst chain = ctx.ancestor_chain || [];\nconst leaves = ctx.linked_doc_leaves || [];\n\n// ---- Agent rules (global + per-person) from the AI doc (Docs v3) ----\nlet pages = [];\ntry { pages = $('Load Agent Rules').first().json.body || []; } catch (e) {}\nconst allPages = [];\n(function flat(arr){ for (const p of (arr||[])) { allPages.push(p); if (p.pages) flat(p.pages); } })(pages);\nconst globalPage = allPages.find(p => p.id === 'q7wz-44812');\nconst global_rules = (globalPage && globalPage.content) ? globalPage.content : '';\nconst global_rules_missing = !global_rules;\n\n// ---- Trigger inputs: When Called (producer/webhook) else Form Trigger (manual) ----\nconst OPERATOR_ID = '2521617';\nconst OPERATOR_NAME = 'Franciszek Nowak';\nlet wc = {}; try { wc = $('When Called').first().json || {}; } catch (e) {}\nlet fm = {}; try { fm = $('Form Trigger').first().json || {}; } catch (e) {}\nconst reviewer_user_id = (wc.reviewer_user_id || fm.reviewer_user_id || OPERATOR_ID).toString().trim();\nconst caller_username = (wc.caller_username || OPERATOR_NAME);\nconst triggered_by = wc.triggered_by || 'explicit_command';\nconst invocation_type = wc.invocation_type || 'explicit';\nconst triggering_comment_text = (wc.triggering_comment_text || '').toString().trim();\n\nconst personalPage = allPages.find(p => p.name === ('Instrukcje dla agenta - ' + caller_username));\nconst person_rules = (personalPage && personalPage.content) ? personalPage.content : '';\nconst person_rules_missing = !person_rules;\n\n// ---- Search results from Search (v1) ----\nlet task_comments = [], additional_context = '', sources_used = [], sources_filtered_out = 0;\ntry { const sr = $('Call Search').first().json; task_comments = sr.task_comments || []; additional_context = sr.additional_context || ''; sources_used = sr.sources_used || []; sources_filtered_out = sr.sources_filtered_out || 0; } catch(e) {}\n\n// ---- Personal data from PD Verifier ----\nlet personal_data = false;\ntry { personal_data = $('Call PD Verifier').first().json.personal_data === true; } catch(e) {}\n\n// ---- Assemble prompt ----\nconst lines = [];\nif (global_rules) { lines.push('# Zasady ogólne agenta (obowiązują zawsze)'); lines.push(global_rules); lines.push(''); lines.push('---'); lines.push(''); }\nif (person_rules) { lines.push('# Preferencje osoby zlecającej (' + caller_username + ')'); lines.push(person_rules); lines.push(''); lines.push('---'); lines.push(''); }\n\n// Triggering message: what the user wrote to invoke this run\nlines.push('# Wiadomość wywołująca tę akcję');\nlines.push('Użytkownik ' + caller_username + ' napisał:');\nlines.push('---');\nlines.push(triggering_comment_text || '[treść wiadomości niedostępna]');\nlines.push('---');\nlines.push('');\n\nif (task_comments.length) { lines.push('# Ostatnie komentarze w zadaniu'); for (const c of task_comments) { lines.push((c.author || 'nieznany') + ': ' + (c.text || '')); } lines.push(''); }\nif (additional_context) { lines.push('# Dodatkowy kontekst (wyszukiwanie semantyczne)'); lines.push(additional_context); if (sources_used.length) lines.push('Źródła: ' + sources_used.join(', ')); lines.push(''); }\n\nlines.push('# Zadanie');\nlines.push(ct.name || '(bez nazwy)');\nif (ct.description) { lines.push(''); lines.push(ct.description); }\nif (chain.length) {\n  lines.push(''); lines.push('# Kontekst nadrzędny (od najogólniejszego do najbliższego)');\n  for (const a of chain.slice().reverse()) { lines.push(''); lines.push('## ' + (a.name || '')); if (a.description) lines.push(a.description); }\n}\nif (leaves.length) {\n  lines.push(''); lines.push('# Szczegółowe wytyczne');\n  for (const l of leaves) { lines.push('- ' + (l.name || '')); if (l.content) lines.push(l.content); }\n}\nlines.push('');\nlines.push('Przygotuj wynik dla powyższego zadania. Możesz rozumować swobodnie, ale ostateczną odpowiedź zwróć w poniższej strukturze (pomin sekcję, jeśli pusta):');\nlines.push('');\nlines.push('## Wyniki');\nlines.push('## Pytania do zlecającego');\nlines.push('## Decyzje i kompromisy');\nlines.push('');\nlines.push('---');\nlines.push('## Sugestie do procesu');\n\nconst prompt = lines.join('\\n');\n\nreturn [{ json: {\n  prompt,\n  impact: ctx.impact || '',\n  personal_data,\n  task_type: '',\n  clickup_task_id: (ct.id || ''),\n  triggered_by,\n  invocation_type,\n  reviewer_user_id,\n  caller_user_id: reviewer_user_id,\n  caller_username,\n  process_type: ctx.process_type || '',\n  assignee_user_id: ctx.assignee_user_id || '',\n  creator_user_id: ctx.creator_user_id || '',\n  global_rules_missing,\n  person_rules_missing\n} }];"
       }
     },
     {
@@ -165,7 +257,12 @@
       "position": [720, 304],
       "parameters": {
         "source": "database",
-        "workflowId": { "__rl": true, "value": "XcOIVdZnVCCWNPeb", "mode": "list", "cachedResultName": "Invoke Model (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "XcOIVdZnVCCWNPeb",
+          "mode": "list",
+          "cachedResultName": "Invoke Model (v1)"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -218,7 +315,10 @@
         "options": {}
       },
       "credentials": {
-        "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" }
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
       }
     },
     {
@@ -247,7 +347,12 @@
       "position": [960, 460],
       "parameters": {
         "source": "database",
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -286,7 +391,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [1040, 60],
-      "notes": "Inc 3 (threading): look up the active conversation session for this (task, caller) pair. Returns comment_root_id='' if no session. coalesce guarantees exactly one row so first() never throws. onError=continueRegularOutput: DB failure -> Has Session takes false branch -> new top-level comment.",
+      "notes": "Inc 3 (threading): look up the active conversation session for this (task, caller) pair. Returns comment_root_id='' if no session. coalesce guarantees exactly one row so first() never throws. onError=continueRegularOutput: DB failure passes through as empty json -> Has Session takes false branch -> new top-level comment (correct fallback).",
       "onError": "continueRegularOutput",
       "parameters": {
         "operation": "executeQuery",
@@ -296,7 +401,10 @@
         }
       },
       "credentials": {
-        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
       }
     },
     {
@@ -305,18 +413,13 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [1240, 60],
-      "notes": "Inc 3: true -> Post Reply (thread); false -> Post Draft Comment (new thread).",
+      "notes": "Inc 3: true branch -> Post Reply (thread in existing session); false branch -> Post Draft Comment (new top-level comment, starts a new thread).",
       "parameters": {
         "conditions": {
           "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" },
           "combinator": "and",
           "conditions": [
-            {
-              "id": "s1",
-              "leftValue": "={{ $json.comment_root_id }}",
-              "rightValue": "",
-              "operator": { "type": "string", "operation": "notEmpty", "singleValue": true }
-            }
+            { "id": "s1", "leftValue": "={{ $json.comment_root_id }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } }
           ]
         }
       }
@@ -327,7 +430,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1440, -60],
-      "notes": "Inc 3: post as reply within existing thread. Body ops from Build Comment. onError=continueErrorOutput -> Alert Reply Failed + fallback to Post Draft Comment.",
+      "notes": "Inc 3: post agent response as a reply within the existing thread (comment_root_id from Check Session). Body ops from Build Comment (not $json — $json here is the Check Session result). onError=continueErrorOutput -> Alert Reply Failed + fallback to Post Draft Comment (new thread).",
       "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
@@ -343,7 +446,10 @@
         "options": {}
       },
       "credentials": {
-        "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" }
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
       }
     },
     {
@@ -352,10 +458,15 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [1640, -120],
-      "notes": "Inc 3: WARN when thread reply fails. Run continues via Post Draft Comment fallback.",
+      "notes": "Inc 3: WARN when replying to an existing thread fails. Run continues — Post Draft Comment is the fallback (also connected from Post Reply error output).",
       "parameters": {
         "source": "database",
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -382,7 +493,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [1640, 0],
-      "notes": "Inc 3: update existing session after thread reply. comment_root_id unchanged.",
+      "notes": "Inc 3: update existing session's last_turn_at + turn_count after a successful thread reply. comment_root_id stays the same (thread anchor never moves). onError=continueErrorOutput -> WARN; session tracking broken but main run succeeds.",
       "onError": "continueErrorOutput",
       "parameters": {
         "operation": "executeQuery",
@@ -392,7 +503,10 @@
         }
       },
       "credentials": {
-        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
       }
     },
     {
@@ -401,7 +515,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1440, 160],
-      "notes": "Core-model step 5 (ADR-027): new top-level comment. Used when no session or Post Reply failed. Body from Build Comment node reference.",
+      "notes": "Core-model step 5 (ADR-027): posts agent output as a new top-level ClickUp comment. Used when: (a) no active session exists, or (b) Post Reply failed (fallback). Body ops from Build Comment (not $json — $json is the incoming routing item). onError=continueErrorOutput -> WARN; run still returns.",
       "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
@@ -417,7 +531,10 @@
         "options": {}
       },
       "credentials": {
-        "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" }
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
       }
     },
     {
@@ -428,7 +545,12 @@
       "position": [1640, 220],
       "parameters": {
         "source": "database",
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -455,7 +577,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [1640, 340],
-      "notes": "Inc 3: record new thread root after posting new top-level comment. $json.id = new comment ID.",
+      "notes": "Inc 3: record a new thread root after posting a new top-level comment. $json.id = the new ClickUp comment ID, which becomes comment_root_id (the thread anchor). onError=continueErrorOutput -> WARN; session tracking broken but main run succeeds.",
       "onError": "continueErrorOutput",
       "parameters": {
         "operation": "executeQuery",
@@ -465,7 +587,10 @@
         }
       },
       "credentials": {
-        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
       }
     },
     {
@@ -474,10 +599,15 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [1840, 340],
-      "notes": "Inc 3: WARN when session upsert fails. Threading broken for future turns.",
+      "notes": "Inc 3: WARN when session upsert fails (shared by both Upsert Session Reply and Upsert Session New error paths). Threading broken for future turns on this task.",
       "parameters": {
         "source": "database",
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -504,7 +634,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1840, 60],
-      "notes": "Item 4 (ADR-026): sets [AI] Status agenta -> 'Zakończono'. Fires from Post Reply and Post Draft Comment success paths.",
+      "notes": "Item 4 (ADR-026): sets [AI] Status agenta -> 'Zakończono' after the draft comment is posted. Fires from both Post Reply and Post Draft Comment success paths. onError=continueErrorOutput -> WARN; non-blocking.",
       "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
@@ -520,7 +650,10 @@
         "options": {}
       },
       "credentials": {
-        "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" }
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
       }
     },
     {
@@ -531,7 +664,12 @@
       "position": [2060, 60],
       "parameters": {
         "source": "database",
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -558,7 +696,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [960, 304],
-      "notes": "Authoritative task cost = SUM(agent_runs.cost_pln) for this task (ADR-024). Idempotent sum — no read-modify-write drift.",
+      "notes": "Authoritative task cost = SUM(agent_runs.cost_pln) for this task (ADR-024). Idempotent: the CU field mirrors this sum, no read-modify-write drift. onError=continueErrorOutput -> failure alerts, run not killed.",
       "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
@@ -566,10 +704,15 @@
       "parameters": {
         "operation": "executeQuery",
         "query": "select coalesce(sum(cost_pln), 0) as total\nfrom agent_runs\nwhere clickup_task_id = $1;",
-        "options": { "queryReplacement": "={{ [ $('Build Prompt').first().json.clickup_task_id ] }}" }
+        "options": {
+          "queryReplacement": "={{ [ $('Build Prompt').first().json.clickup_task_id ] }}"
+        }
       },
       "credentials": {
-        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
       }
     },
     {
@@ -578,7 +721,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1184, 304],
-      "notes": "Writes running cost total to ClickUp '[AI] Koszt akcji [PLN]'. onError=continueErrorOutput.",
+      "notes": "Writes the running total to ClickUp '[AI] Koszt akcji [PLN]' (field ca7a3874...). ClickUp API set-custom-field. onError=continueErrorOutput -> WARN on failure (silent-failure guard, CLAUDE.md), run not killed.",
       "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
@@ -594,7 +737,10 @@
         "options": {}
       },
       "credentials": {
-        "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" }
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
       }
     },
     {
@@ -604,7 +750,13 @@
       "typeVersion": 1.3,
       "position": [1184, 528],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultUrl": "/workflow/YSCdHlmdf3p9XEUx", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/YSCdHlmdf3p9XEUx",
+          "cachedResultName": "Post Alert (v1)"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -628,32 +780,46 @@
     }
   ],
   "connections": {
-    "Form Trigger": { "main": [[{ "node": "Call Context Gather", "type": "main", "index": 0 }]] },
-    "When Called": { "main": [[{ "node": "Call Context Gather", "type": "main", "index": 0 }]] },
-    "Call Context Gather": { "main": [[{ "node": "Call PD Verifier", "type": "main", "index": 0 }]] },
-    "Call PD Verifier": { "main": [[{ "node": "Call Search", "type": "main", "index": 0 }]] },
-    "Call Search": { "main": [[{ "node": "Load Agent Rules", "type": "main", "index": 0 }]] },
-    "Load Agent Rules": { "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]] },
+    "Form Trigger": {
+      "main": [[{ "node": "Call Context Gather", "type": "main", "index": 0 }]]
+    },
+    "When Called": {
+      "main": [[{ "node": "Call Context Gather", "type": "main", "index": 0 }]]
+    },
+    "Call Context Gather": {
+      "main": [[{ "node": "Call PD Verifier", "type": "main", "index": 0 }]]
+    },
+    "Call PD Verifier": {
+      "main": [[{ "node": "Call Search", "type": "main", "index": 0 }]]
+    },
+    "Call Search": {
+      "main": [[{ "node": "Load Agent Rules", "type": "main", "index": 0 }]]
+    },
+    "Load Agent Rules": {
+      "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]]
+    },
     "Build Prompt": {
-      "main": [
-        [
-          { "node": "Call Invoke Model", "type": "main", "index": 0 },
-          { "node": "Check Rules Loaded", "type": "main", "index": 0 },
-          { "node": "Set Status W trakcie", "type": "main", "index": 0 }
-        ]
-      ]
+      "main": [[
+        { "node": "Call Invoke Model", "type": "main", "index": 0 },
+        { "node": "Check Rules Loaded", "type": "main", "index": 0 },
+        { "node": "Set Status W trakcie", "type": "main", "index": 0 }
+      ]]
     },
     "Call Invoke Model": {
-      "main": [
-        [
-          { "node": "Sum Task Cost", "type": "main", "index": 0 },
-          { "node": "Build Comment", "type": "main", "index": 0 }
-        ]
-      ]
+      "main": [[
+        { "node": "Sum Task Cost", "type": "main", "index": 0 },
+        { "node": "Build Comment", "type": "main", "index": 0 }
+      ]]
     },
-    "Check Rules Loaded": { "main": [[{ "node": "Alert Rules Missing", "type": "main", "index": 0 }]] },
-    "Build Comment": { "main": [[{ "node": "Check Session", "type": "main", "index": 0 }]] },
-    "Check Session": { "main": [[{ "node": "Has Session", "type": "main", "index": 0 }]] },
+    "Check Rules Loaded": {
+      "main": [[{ "node": "Alert Rules Missing", "type": "main", "index": 0 }]]
+    },
+    "Build Comment": {
+      "main": [[{ "node": "Check Session", "type": "main", "index": 0 }]]
+    },
+    "Check Session": {
+      "main": [[{ "node": "Has Session", "type": "main", "index": 0 }]]
+    },
     "Has Session": {
       "main": [
         [{ "node": "Post Reply", "type": "main", "index": 0 }],
@@ -718,5 +884,14 @@
       ]
     }
   },
-  "settings": { "executionOrder": "v1", "binaryMode": "separate", "errorWorkflow": "81eplXMD1v5ONhzs" }
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "48f895ec-3be8-4afb-88cb-1d219011fcd8",
+  "tags": []
 }
