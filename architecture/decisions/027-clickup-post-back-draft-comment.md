@@ -49,3 +49,23 @@ Related: ADR-015 (one generic pipeline / core model), ADR-026 (capability contai
 deterministic writes, never LLM-exposed), ADR-020 (Context Gather shape), ADR-024 (cost),
 ADR-013 (centralized invocation). Next: Increment 2 (CU webhook trigger → automatic runs,
 where the assignee→creator reviewer rule applies).
+
+> Update 2026-06-08 — rich rendering + real @-mention + rules-loading + status field.
+> - **Comment now renders fully AND @-mentions.** ClickUp comments are Quill-Delta; the
+>   reference docs understate it — headings (`header`), bold/italic/code, bullet/numbered/
+>   checklist lists, links, code blocks, blockquotes, and **tables** (cell lines tagged
+>   `table:"row-N"`) all render (probed live). A deterministic **`Build Comment`** Code node
+>   converts the model's markdown → the Quill-Delta `comment` ops, prepended with a real
+>   `{type:"tag",user:{id}}` mention; `Post Draft Comment` (HTTP, v2 `/comment`) posts it.
+>   This supersedes the earlier "assignment ≈ notification" note and the
+>   "markdown won't render" caveat.
+> - **Rules loaded into the prompt (core-model step 3).** `Load Agent Rules` (Docs v3,
+>   `doc q7wz-16892`) + `Build Prompt` inject the GLOBAL rules page (`q7wz-44812`) and the
+>   caller's personal prefs page (matched by name, e.g. `Instrukcje dla agenta - <name>`).
+>   Missing global rules → WARN (degradation).
+> - **`[AI] Status agenta` driven:** → `W trakcie` at run start, → `Zakończono` after the
+>   comment posts (deterministic field writes, ADR-026; non-blocking WARN on failure).
+> - **agent_runs:** `importance` renamed → `impact` (migration 005); `caller_user_id` +
+>   `process_type` now populated.
+> - **Reviewer rule (operator decision):** manual run → the triggerer (operator default);
+>   automatic run → assignee → creator.

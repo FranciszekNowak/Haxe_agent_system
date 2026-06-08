@@ -231,6 +231,12 @@ Supabase (eu-central-1). Seven live tables, plus two added by migrations 002/003
 > insert (run still returned + WARN, but cost wasn't logged) — found via fault injection;
 > now fixed.
 
+> Migrations `005` (rename `agent_runs.importance` → `impact`, **applied**) and `007`
+> (enable RLS on all 9 tables, no policies, **applied** — ADR-028) landed 2026-06-08.
+> RLS closes the PostgREST "Unrestricted" exposure; the pipeline's `postgres` role bypasses
+> RLS so it's unaffected (verified). `agent_runs` now also populates `caller_user_id` and
+> `process_type`.
+
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
 is needed; append-only threaded feedback with "current stance" derived via
@@ -788,6 +794,15 @@ assignee→creator rule is data-ready (`Context Gather` now returns assignee/cre
 applies in Increment 2. `Build Prompt` emits a soft output structure (Wyniki / Pytania /
 Decyzje / Sugestie, §13.1). Verified live on `869dhad2q` (structured Polish draft posted +
 assigned, nothing finalized). Non-blocking: post-back failure → WARN, run still returns.
+
+**Comment rendering + rules + status (2026-06-08; ADR-027 update, ADR-028).** The draft
+comment now **@-mentions** the reviewer (real ClickUp tag) and **renders full formatting** —
+headings, bold/italic/code, bullet/numbered lists, links, code blocks, blockquotes, and
+**tables** — via a deterministic markdown→ClickUp-Quill-Delta converter (`Build Comment`).
+The prompt now loads the **GLOBAL agent-rules doc + the caller's personal prefs doc** (Docs
+v3, `q7wz-16892`; core-model step 3), so output follows firm rules + person style. `[AI]
+Status agenta` flips **W trakcie → Zakończono** around the run. RLS is on (ADR-028). All
+verified live on `869dhad2q`.
 
 Then (next increments): **CU webhook trigger** (`@`-mention → run spine automatically, now
 unblocked by the WEBHOOK_URL fix; assignee→creator reviewer); `linked_doc_leaves` resolution
