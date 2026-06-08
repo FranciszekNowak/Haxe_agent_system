@@ -98,5 +98,5 @@ Related: ADR-013 (centralized invocation, routing-as-data, gateway), ADR-021
 > from the §5 sketch: `model_used` (not `model`), `importance` (un-renamed log column;
 > the pipeline field is `impact`), no `provider` column, `triggered_by` NOT NULL.
 > The per-task `[AI] Koszt akcji [PLN]` write (= `SUM(agent_runs.cost_pln)`) runs in
-> Agent Spine but needs an edit-capable token — see **ADR-026** for the least-privilege
-> remediation (move it to a telemetry identity, or drop it).
+> Agent Spine using an edit-capable token — permitted because it is a deterministic node,
+> never a capability exposed to the LLM (see **ADR-026**).

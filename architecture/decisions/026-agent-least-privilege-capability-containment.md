@@ -42,11 +42,11 @@ scoping second**:
 2. **If a ClickUp tool surface is ever exposed to the model** (future Layer B / MCP
    gateway), it must be an **allow-list of read + comment** operations — edit/delete
    absent *by construction*, not by runtime policy.
-3. **Split identities (defense-in-depth).** Use the `agent@haxe.com` Member token for
-   the agent path's **reads + comments only**, and add it only to Spaces it must see.
-   For the few legitimate *system* writes, use a **separate, Space-scoped telemetry
-   identity** — never the agent's token. Both are technically Members, but blast
-   radius is bounded to one node + one Space.
+3. **Single identity, scoped by membership.** All ClickUp I/O uses the one
+   `agent@haxe.com` Member token; add it only to Spaces it must see. A separate
+   telemetry identity was considered and **decided against (2026-06-08)** — the
+   tool-less-model guarantee already bounds what can happen, and a second account adds
+   operational overhead for little marginal safety at this scale.
 4. **Drafts, never finalize.** The agent proposes via comments a human approves; it
    never edits work-product fields or status.
 
@@ -56,21 +56,19 @@ including `[AI] Koszt akcji [PLN]` — provided the write is performed by a **de
 n8n node or Code block**, never by a capability handed to the LLM. The Agent-Spine cost
 node satisfies this: it is a fixed, version-controlled `SUM(agent_runs.cost_pln)` →
 ClickUp set-field call; the model has no part in it. It stays as built, on the existing
-ClickUp token. No identity split is required.
-
-Optional future hardening (not required): a dedicated, Space-scoped telemetry token for
-system writes to bound blast radius if the agent token's breadth ever becomes a concern.
+ClickUp token. No identity split is required (a dedicated telemetry token was considered
+and decided against, 2026-06-08).
 
 ## Consequences
 - The strong, durable guarantee is architectural: a tool-less model + a fixed,
   reviewed node set means the agent cannot perform an operation we did not write. This
   holds regardless of ClickUp's coarse token permissions.
-- **Residual risk (accepted, tracked):** the `agent@haxe.com` Member token can edit/
-  delete anything in its Spaces; it is used for reads, comments, and (currently) the
-  cost write. Mitigations: keep it out of Spaces it needn't see; on plans that support
-  custom roles, restrict delete; execute the identity split above.
+- **Residual risk (accepted):** the `agent@haxe.com` Member token can edit/delete
+  anything in its Spaces; it is used for reads, comments, and the cost write. Mitigations:
+  keep it out of Spaces it needn't see; on plans that support custom roles, restrict
+  delete. Accepted because the tool-less-model guarantee is the real control.
 - The cost-field write stays live as a deterministic node (resolved above); no blocking
-  operator step remains. The telemetry-token split is optional future hardening.
+  operator step remains.
 - Reinforces the project-wide rule (CLAUDE.md "Reliability & observability"): writes
   are an explicit, allow-listed capability — not an emergent one.
 

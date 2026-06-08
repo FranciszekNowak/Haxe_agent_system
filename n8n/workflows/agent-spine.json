@@ -106,7 +106,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1180, 300],
-      "notes": "Writes the running total to ClickUp '[AI] Koszt akcji [PLN]' (field ca7a3874...). onError=continueErrorOutput -> WARN on failure (silent-failure guard). Deterministic field write is permitted (ADR-026): capability is never exposed to the LLM. Uses the system ClickUp token; a dedicated telemetry token is optional future hardening.",
+      "notes": "Writes the running total to ClickUp '[AI] Koszt akcji [PLN]' (field ca7a3874...). onError=continueErrorOutput -> WARN on failure (silent-failure guard). Deterministic field write is permitted (ADR-026): capability is never exposed to the LLM. Uses the single agent ClickUp token (no separate telemetry identity — decided against).",
       "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,

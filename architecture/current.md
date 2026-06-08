@@ -557,8 +557,9 @@ built yet**.
 > (defense-in-depth gap): it is the one identity used for all ClickUp I/O. **Custom-field
 > writes are permitted** (resolved 2026-06-08) but **only via deterministic nodes/code,
 > never a capability exposed to the LLM** — the Agent-Spine `[AI] Koszt akcji [PLN]` write
-> (a fixed `SUM(agent_runs.cost_pln)` set-field call) satisfies this. A dedicated
-> Space-scoped telemetry token is optional future hardening (ADR-026).
+> (a fixed `SUM(agent_runs.cost_pln)` set-field call) satisfies this. A separate
+> telemetry identity was considered and decided against (ADR-026); the single agent
+> token is used, scoped by Space membership.
 
 ### 13.4 Process knowledge hierarchy
 
@@ -773,9 +774,7 @@ cost-missing → fallback cost + WARN; agent_runs-insert-failed → WARN + compl
 returned. All non-blocking.
 
 Remaining backlog: set `N8N_EDITOR_BASE_URL=https://agents.haxe.ai` (clickable
-alert links); back-fill `001_initial_schema.sql` from live; tidy test-noise alerts/rows
-(`869dj2z2c` comments + `FAULT-TEST` agent_runs rows); optional ADR-026 telemetry-token
-split (defense-in-depth hardening).
+alert links); tidy test-noise alert comments on `869dj2z2c` (no delete-comment API available).
 
 Then (next phase): post the completion back to ClickUp (material in parent, draft as
 comment, @-mention reviewer; never auto-finalize — ADR-026); `linked_doc_leaves` resolution
