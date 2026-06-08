@@ -135,10 +135,12 @@ for operational knowledge. Don't mix these.
 
 ## Current phase
 
-Phase 0 - Infrastructure setup. We're provisioning the foundations: VPS, 
-n8n, Redis, Supabase, Bedrock access, git repo, dev/prod isolation.
-
-No agent code yet. Just infrastructure preparation.
+Phase 2 - the agent spine. The generic ClickUp→LLM→ClickUp pipeline is live and
+verified: Context Gather → Invoke Model (LiteLLM/Bedrock routing + PLN cost) →
+draft comment posted back (@-mention + rendered markdown), rules-doc loading,
+status field. Automatic triggering via a signature-verified ClickUp @-mention
+webhook (ADR-029). Remaining: selective `linked_doc_leaves`, autonomous
+status/due-date triggers (Phase 3).
 
 ## Self-improving documentation
 
@@ -216,3 +218,24 @@ document. Mechanics learned applying one this session:
 
 Candidate for promotion to a permanent "Working with architecture docs"
 subsection once stable.
+
+### 2026-06-08 — n8n Code-node sandbox + webhook hardening gotchas
+
+- This n8n instance **blocks** `require('crypto')`, the global `crypto`, **and**
+  `$env` inside Code nodes (`N8N_BLOCK_ENV_ACCESS_IN_NODE`). Consequences: do
+  HMAC/hashing with the **native Crypto node** (not a Code node), and store
+  secrets a Code node can't reach as **n8n credentials** — the Crypto node's HMAC
+  action reads its key from a `crypto` credential (`hmacSecret`). Note `$vars`
+  works in expressions but `$env` does not.
+- ClickUp webhook authentication = **HMAC-SHA256(secret, rawBody) hex** in the
+  `X-Signature` header. You must hash the **raw** request body, not a
+  re-stringified JSON (bytes differ → signature mismatch): set the Webhook node's
+  `rawBody: true`, which keeps the exact bytes in binary `data` while still
+  leaving `$json.body` parsed for downstream use.
+- **Alert-channel-inside-watched-scope = loop risk.** If a producer posts an
+  alert/WARN comment to a task that its own webhook watches, that comment re-fires
+  the webhook → another alert → infinite loop. Guard producers to drop their own
+  telemetry task (e.g. the Alerts task) *before* any side-effecting/alerting step.
+
+Candidate for promotion: the sandbox constraints belong in a permanent "n8n
+environment" note; the webhook-loop lesson in a "reliability" note.
