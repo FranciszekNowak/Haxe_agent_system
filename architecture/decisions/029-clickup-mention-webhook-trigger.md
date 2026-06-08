@@ -119,3 +119,25 @@ pipeline), ADR-024 (`agent_runs` / cost), ADR-004 (Docs v3 rules loading).
 > deactivation window during the build; self-heals as 2xx deliveries resume — a proactive
 > webhook-health WARN is a recommended future hardening, since auto-deletion after ~100 consecutive
 > failures would otherwise stop mentions silently.)
+
+> Update 2026-06-08 (later) — workspace-wide scope + payload-based mention detection.
+> Requirement: employees must be able to @-mention the agent from **any** task, not one list.
+> - **Scope.** ClickUp scopes a webhook by `list_id`/`folder_id`/`space_id` at creation and can't
+>   re-scope on update, so the list-scoped webhook (`d6a9daaf…`, list `901218475160`) was deleted and
+>   a **team-level** one created (`66208c81…`, all scope-ids null = whole workspace). New secret
+>   rotated into the same `crypto` credential; verified only the team-level webhook remains and a
+>   real signed delivery passes the gate.
+> - **Overflow.** A workspace-wide webhook fires on *every* comment. ClickUp can't filter by
+>   content, so we filter cheaply in n8n: `Detect Mention` now reads the tag straight from the
+>   webhook **payload** (`body.history_items[].comment.comment[]` carries `{type:'tag',user}` + the
+>   author — confirmed on a live delivery), and the `Get Comments` API call was **removed**. A
+>   non-mention comment is dropped in-memory with zero ClickUp API calls (~12 ms producer run).
+> - **Does not limit autonomous `Czy dla AI = Tak`.** That path is a *separate* trigger (daily
+>   due-date cron + Phase-3 status/field-change webhooks gated by `Czy dla AI`), never mention-gated.
+>   The mention filter lives only on the comment route. **Guardrail:** if the producer ever
+>   subscribes to more events, route by event/field first and apply the right gate per route — never
+>   a single global "must be a mention" filter.
+> - **Identity note.** The agent ClickUp account is a **member** (role 3), not the guest of ADR-004 /
+>   the CLAUDE.md design goal. Member = reads all public spaces (suits workspace-wide), broader than
+>   designed; private spaces the agent isn't in won't deliver/read (mention triggers but Context
+>   Gather 403s → WARN). Flagged for a least-privilege decision; not changed here.

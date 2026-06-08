@@ -806,9 +806,11 @@ verified live on `869dhad2q`.
 
 **CU @-mention webhook trigger DONE (2026-06-08; ADR-029).** Automatic runs are live: a new
 `CU Webhook Producer (v1)` workflow (id `eS66Sk6fweQ0EOPa`) receives ClickUp
-`taskCommentPosted` (scoped to `Lista testy AI`, `responseMode: onReceived` → instant 200),
-re-fetches the task's comments, and `Detect Mention` matches the newest comment that tags
-Agent Haxe (`99811284`); caller/reviewer = the **mentioner**. It calls the spine via a new
+`taskCommentPosted` **workspace-wide** (team-level webhook, no list/space/folder filter —
+employees can mention the agent from any task), `responseMode: onReceived` → instant 200.
+`Detect Mention` reads the just-posted comment **from the webhook payload**
+(`body.history_items[].comment`) and matches a tag of Agent Haxe (`99811284`) — no `Get Comments`
+API call; caller/reviewer = the **mentioner**. It calls the spine via a new
 `When Called` trigger with `triggered_by=explicit_mention`. Verified live on `869dhad2q`
 (mention → spine run 104 → rules loaded → rendered draft @-mentioning the mentioner).
 **Agent→agent chaining** is enabled (the `author != agent` skip was removed) and bounded by a
@@ -831,6 +833,21 @@ forged/unsigned POST was rejected with a WARN. Rotation: if ClickUp's webhook se
 regenerated, update the same `crypto` credential's `hmacSecret` (no redeploy). Webhook health read
 `failing/6` transiently (residual from the deactivation window during the build); it self-heals as
 2xx deliveries resume and is far below ClickUp's ~100-consecutive-failure auto-delete threshold.
+
+**Workspace-wide + overflow control (2026-06-08; ADR-029 update).** The webhook was recreated at
+**team level** (no list filter) so mentions work from any task; the secret was rotated in the same
+`crypto` credential and the old list-scoped webhook deleted (verified: only the team-level webhook
+remains; a real signed delivery passes the gate). Because a workspace-wide webhook fires on *every*
+comment, mention detection now reads the tag directly from the webhook payload — a non-mention
+comment is dropped in-memory with **zero ClickUp API calls** (`Get Comments` removed; a plain
+comment runs the producer in ~12 ms). This does **not** limit the autonomous `Czy dla AI = Tak`
+path: that is a separate trigger (daily due-date cron + Phase-3 status/field-change webhooks gated
+by `Czy dla AI`), never mention-gated. Guardrail for future events: route by event/field first,
+then apply the right gate per route — never a single global "must be a mention" filter.
+*Note:* the agent's ClickUp account is currently a **member** (role 3), not the guest of §
+"Agents as ClickUp guest users" — a member reads all public spaces (suits workspace-wide mentions)
+but is broader privilege than designed; flagged for a least-privilege decision (private spaces the
+agent isn't in won't deliver/read, so a mention there triggers but Context Gather 403s → WARN).
 
 Then (next increments): `linked_doc_leaves`
 resolution (Docs v3, selectively — only the current step's leaf, to avoid context pollution);
