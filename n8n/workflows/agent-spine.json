@@ -11,8 +11,8 @@
       "webhookId": "agent-spine-v1-webhook-001",
       "parameters": {
         "formTitle": "Agent Spine",
-        "formDescription": "Enter a ClickUp task ID. Gathers context, routes by importance, returns a model completion.",
-        "formFields": { "values": [{ "fieldLabel": "taskId", "requiredField": true }] },
+        "formDescription": "Enter a ClickUp task ID. Optionally a reviewer ClickUp user ID to @-direct the draft (blank = operator).",
+        "formFields": { "values": [{ "fieldLabel": "taskId", "requiredField": true }, { "fieldLabel": "reviewer_user_id", "requiredField": false }] },
         "responseMode": "lastNode",
         "options": {}
       }
@@ -42,9 +42,9 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [480, 304],
-      "notes": "Stub prompt assembler (v1): turns the context object into one prompt string + carries impact for routing + clickup_task_id/triggered_by/invocation_type for logging. Later this incorporates the GLOBAL agent-rules doc + person preferences (core model). Pure shaping (ADR-019).",
+      "notes": "Stub prompt assembler (v1): context -> one prompt string with the soft output structure (Wyniki/Pytania/Decyzje/Sugestie, §13.1); resolves reviewer_user_id (manual: form field else operator 2521617; auto path will use assignee/creator) and carries impact/clickup_task_id/triggered_by/invocation_type. Later: GLOBAL agent-rules doc + person prefs (core model). Pure shaping (ADR-019).",
       "parameters": {
-        "jsCode": "const ctx = $input.first().json;\nconst ct = ctx.current_task || {};\nconst chain = ctx.ancestor_chain || [];\nconst leaves = ctx.linked_doc_leaves || [];\n\nconst lines = [];\nlines.push('# Zadanie');\nlines.push(ct.name || '(bez nazwy)');\nif (ct.description) { lines.push(''); lines.push(ct.description); }\n\nif (chain.length) {\n  lines.push('');\n  lines.push('# Kontekst nadrzędny (od najogólniejszego do najbliższego)');\n  for (const a of chain.slice().reverse()) {\n    lines.push('');\n    lines.push('## ' + (a.name || ''));\n    if (a.description) lines.push(a.description);\n  }\n}\n\nif (leaves.length) {\n  lines.push('');\n  lines.push('# Szczegółowe wytyczne');\n  for (const l of leaves) { lines.push('- ' + (l.name || '')); if (l.content) lines.push(l.content); }\n}\n\nlines.push('');\nlines.push('Przygotuj odpowiedź dla powyższego zadania.');\n\nconst prompt = lines.join('\\n');\nreturn [{ json: { prompt, impact: ctx.impact || '', personal_data: true, task_type: '', clickup_task_id: (ct.id || ''), triggered_by: 'explicit_command', invocation_type: 'explicit' } }];"
+        "jsCode": "const ctx = $input.first().json;\nconst ct = ctx.current_task || {};\nconst chain = ctx.ancestor_chain || [];\nconst leaves = ctx.linked_doc_leaves || [];\n\nconst lines = [];\nlines.push('# Zadanie');\nlines.push(ct.name || '(bez nazwy)');\nif (ct.description) { lines.push(''); lines.push(ct.description); }\n\nif (chain.length) {\n  lines.push('');\n  lines.push('# Kontekst nadrzędny (od najogólniejszego do najbliższego)');\n  for (const a of chain.slice().reverse()) {\n    lines.push('');\n    lines.push('## ' + (a.name || ''));\n    if (a.description) lines.push(a.description);\n  }\n}\n\nif (leaves.length) {\n  lines.push('');\n  lines.push('# Szczegółowe wytyczne');\n  for (const l of leaves) { lines.push('- ' + (l.name || '')); if (l.content) lines.push(l.content); }\n}\n\nlines.push('');\nlines.push('Przygotuj wynik dla powyższego zadania. Możesz rozumować swobodnie, ale ostateczną odpowiedź zwróć w poniższej strukturze (pomiń sekcję, jeśli pusta):');\nlines.push('');\nlines.push('## Wyniki');\nlines.push('## Pytania do zlecającego');\nlines.push('## Decyzje i kompromisy');\nlines.push('');\nlines.push('---');\nlines.push('## Sugestie do procesu');\n\nconst prompt = lines.join('\\n');\n\nconst OPERATOR_ID = '2521617';\nlet formReviewer = '';\ntry { formReviewer = ($('Form Trigger').first().json.reviewer_user_id || '').toString().trim(); } catch (e) {}\nconst reviewer_user_id = formReviewer || OPERATOR_ID; // manual run -> triggerer (operator default); auto path uses assignee/creator (Increment 2)\n\nreturn [{ json: {\n  prompt,\n  impact: ctx.impact || '',\n  personal_data: true,\n  task_type: '',\n  clickup_task_id: (ct.id || ''),\n  triggered_by: 'explicit_command',\n  invocation_type: 'explicit',\n  reviewer_user_id,\n  assignee_user_id: ctx.assignee_user_id || '',\n  creator_user_id: ctx.creator_user_id || ''\n} }];"
       }
     },
     {
@@ -54,7 +54,6 @@
       "typeVersion": 1.3,
       "position": [720, 304],
       "parameters": {
-        "source": "database",
         "workflowId": { "__rl": true, "value": "XcOIVdZnVCCWNPeb", "mode": "list", "cachedResultName": "Invoke Model (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
@@ -79,6 +78,58 @@
           ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "post-comment",
+      "name": "Post Draft Comment",
+      "type": "n8n-nodes-base.clickUp",
+      "typeVersion": 1,
+      "position": [960, 120],
+      "notes": "Core-model step 5 (ADR-027/ADR-026): posts the agent output as a ClickUp comment (DRAFT), assigned to the reviewer to notify them. Never finalizes (no status / [AI] Finalny field). Deterministic node, capability not LLM-exposed. onError=continueErrorOutput -> WARN; run still returns.",
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "authentication": "accessToken",
+        "resource": "comment",
+        "operation": "create",
+        "commentOn": "task",
+        "id": "={{ $('Build Prompt').first().json.clickup_task_id }}",
+        "commentText": "=## 🤖 Wersja robocza (AI)\n\n{{ $('Call Invoke Model').first().json.completion }}\n\n—\n_Przygotowane przez agenta AI (model: {{ $('Call Invoke Model').first().json.model }}, koszt: {{ $('Call Invoke Model').first().json.cost_pln }} PLN). Do weryfikacji — nie finalizuje zadania._",
+        "additionalFields": { "assignee": "={{ $('Build Prompt').first().json.reviewer_user_id }}", "notifyAll": false }
+      },
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } }
+    },
+    {
+      "id": "alert-postback-fail",
+      "name": "Alert Post-back Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1180, 120],
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-spine/post-back",
+            "message": "Nie udało się opublikować wersji roboczej (komentarza) na zadaniu CU.",
+            "details": "=task={{ $('Build Prompt').first().json.clickup_task_id }}; reviewer={{ $('Build Prompt').first().json.reviewer_user_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
         }
       }
     },
@@ -87,7 +138,7 @@
       "name": "Sum Task Cost",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
-      "position": [960, 300],
+      "position": [960, 304],
       "notes": "Authoritative task cost = SUM(agent_runs.cost_pln) for this task (ADR-024). Idempotent: the CU field mirrors this sum, no read-modify-write drift. onError=continueErrorOutput -> failure alerts, run not killed.",
       "onError": "continueErrorOutput",
       "retryOnFail": true,
@@ -105,8 +156,8 @@
       "name": "Update CU Cost Field",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1180, 300],
-      "notes": "Writes the running total to ClickUp '[AI] Koszt akcji [PLN]' (field ca7a3874...). onError=continueErrorOutput -> WARN on failure (silent-failure guard). Deterministic field write is permitted (ADR-026): capability is never exposed to the LLM. Uses the single agent ClickUp token (no separate telemetry identity — decided against).",
+      "position": [1184, 304],
+      "notes": "Writes the running total to ClickUp '[AI] Koszt akcji [PLN]' (field ca7a3874...). Deterministic field write permitted (ADR-026), capability never exposed to the LLM. onError=continueErrorOutput -> WARN on failure, run not killed.",
       "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
@@ -128,7 +179,7 @@
       "name": "Alert Cost Sync Failed",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1180, 520],
+      "position": [1184, 528],
       "parameters": {
         "source": "database",
         "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
@@ -157,7 +208,8 @@
     "Form Trigger": { "main": [[{ "node": "Call Context Gather", "type": "main", "index": 0 }]] },
     "Call Context Gather": { "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]] },
     "Build Prompt": { "main": [[{ "node": "Call Invoke Model", "type": "main", "index": 0 }]] },
-    "Call Invoke Model": { "main": [[{ "node": "Sum Task Cost", "type": "main", "index": 0 }]] },
+    "Call Invoke Model": { "main": [[{ "node": "Sum Task Cost", "type": "main", "index": 0 }, { "node": "Post Draft Comment", "type": "main", "index": 0 }]] },
+    "Post Draft Comment": { "main": [[], [{ "node": "Alert Post-back Failed", "type": "main", "index": 0 }]] },
     "Sum Task Cost": { "main": [[{ "node": "Update CU Cost Field", "type": "main", "index": 0 }], [{ "node": "Alert Cost Sync Failed", "type": "main", "index": 0 }]] },
     "Update CU Cost Field": { "main": [[], [{ "node": "Alert Cost Sync Failed", "type": "main", "index": 0 }]] }
   },

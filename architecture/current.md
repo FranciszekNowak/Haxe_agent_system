@@ -779,11 +779,21 @@ the VPS `n8n-main`/`n8n-worker` containers (compose passthrough added + recreate
 URLs. Remaining backlog: tidy test-noise alert comments on `869dj2z2c` (no delete-comment
 API available).
 
-Then (next phase): post the completion back to ClickUp (material in parent, draft as
-comment, @-mention reviewer; never auto-finalize — ADR-026); `linked_doc_leaves` resolution
-(Docs v3, selectively — only the current step's leaf, not all, to avoid context
-pollution); replace `Build Prompt` with the real assembler (GLOBAL agent-rules doc +
-person preferences, per the core model).
+**Post-back DONE (2026-06-08; ADR-027).** Core-model step 5 is live: `Agent Spine` now
+posts the model output as a ClickUp **draft comment** on the task (`Post Draft Comment`
+node), assigned to the reviewer to notify them, with a "do weryfikacji — nie finalizuje
+zadania" footer; never sets status or `[AI] Finalny…`. Reviewer = manual triggerer
+(operator default / optional `reviewer_user_id` form field); the automatic path's
+assignee→creator rule is data-ready (`Context Gather` now returns assignee/creator) and
+applies in Increment 2. `Build Prompt` emits a soft output structure (Wyniki / Pytania /
+Decyzje / Sugestie, §13.1). Verified live on `869dhad2q` (structured Polish draft posted +
+assigned, nothing finalized). Non-blocking: post-back failure → WARN, run still returns.
+
+Then (next increments): **CU webhook trigger** (`@`-mention → run spine automatically, now
+unblocked by the WEBHOOK_URL fix; assignee→creator reviewer); `linked_doc_leaves` resolution
+(Docs v3, selectively — only the current step's leaf, to avoid context pollution); replace
+`Build Prompt` with the real assembler (GLOBAL agent-rules doc + person preferences, per the
+core model); a true inline `@`-mention tag (vs. the current comment assignment).
 
 ---
 
