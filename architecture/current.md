@@ -485,7 +485,7 @@ Nine principles in priority order. Every architectural decision traces back to o
 
 1. **Process knowledge in ClickUp.** All operational knowledge — process templates, stage instructions, step checklists, agent personas, brand voice — lives in ClickUp Docs and task descriptions. Team members edit it directly without git knowledge.
 
-2. **Agents as ClickUp guest users with caller-scoped permissions.** Each agent has a CU account with broad base permissions. At runtime, the agent's effective scope is constrained to exactly the calling user's permissions.
+2. **Agents run as a ClickUp Member account, with caller-scoped permissions enforced in software.** The agent was intended as a least-privilege Guest, but ClickUp only lets **Members** generate the personal API token the pipeline needs — so `agent@haxe.com` is a Member with broad base permissions. Because the account itself is over-privileged, the agent's effective scope is constrained to the calling user's permissions at the application layers (prompt Layer A + the n8n MCP gateway Layer B), not by the CU account, and the LLM holds no write capability at all (ADR-026). See ADR-004.
 
 3. **Recursive self-improvement via structured proposals.** All proposals tracked in a structured database. The GM agent analyses evaluations and records its verdicts in the same thread it analyses, enabling recursive self-reflection on its own past calls.
 
@@ -844,10 +844,11 @@ comment runs the producer in ~12 ms). This does **not** limit the autonomous `Cz
 path: that is a separate trigger (daily due-date cron + Phase-3 status/field-change webhooks gated
 by `Czy dla AI`), never mention-gated. Guardrail for future events: route by event/field first,
 then apply the right gate per route — never a single global "must be a mention" filter.
-*Note:* the agent's ClickUp account is currently a **member** (role 3), not the guest of §
-"Agents as ClickUp guest users" — a member reads all public spaces (suits workspace-wide mentions)
-but is broader privilege than designed; flagged for a least-privilege decision (private spaces the
-agent isn't in won't deliver/read, so a mention there triggers but Context Gather 403s → WARN).
+*Note:* the agent's ClickUp account is a **member** (role 3) — required because only Members can
+generate the personal API token the pipeline needs (decided 2026-06-02, ADR-004); caller-scoping is
+enforced in software, not by the account. A member reads all public spaces, which also suits
+workspace-wide mentions; private spaces the agent isn't a member of won't deliver/read (a mention
+there triggers but Context Gather 403s → WARN).
 
 Then (next increments): `linked_doc_leaves`
 resolution (Docs v3, selectively — only the current step's leaf, to avoid context pollution);

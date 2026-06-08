@@ -137,7 +137,9 @@ pipeline), ADR-024 (`agent_runs` / cost), ADR-004 (Docs v3 rules loading).
 >   The mention filter lives only on the comment route. **Guardrail:** if the producer ever
 >   subscribes to more events, route by event/field first and apply the right gate per route — never
 >   a single global "must be a mention" filter.
-> - **Identity note.** The agent ClickUp account is a **member** (role 3), not the guest of ADR-004 /
->   the CLAUDE.md design goal. Member = reads all public spaces (suits workspace-wide), broader than
->   designed; private spaces the agent isn't in won't deliver/read (mention triggers but Context
->   Gather 403s → WARN). Flagged for a least-privilege decision; not changed here.
+> - **Identity note.** The agent ClickUp account is a **member** (role 3) — required, not a loose
+>   end: only Members can generate the personal API token the pipeline needs (decided 2026-06-02,
+>   ADR-004 update; see also ADR-026). Member = reads all public spaces, which also suits
+>   workspace-wide mentions; caller-scoping is enforced in software (prompt + MCP) and the LLM stays
+>   tool-less (ADR-026). Private spaces the agent isn't a member of won't deliver/read (a mention
+>   there triggers but Context Gather 403s → WARN).
