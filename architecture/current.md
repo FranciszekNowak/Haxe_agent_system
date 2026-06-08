@@ -777,8 +777,7 @@ returned. All non-blocking.
 the VPS `n8n-main`/`n8n-worker` containers (compose passthrough added + recreated
 2026-06-08) — alert execution links are clickable and n8n generates correct webhook/form
 URLs. Remaining backlog: tidy test-noise alert comments on `869dj2z2c` (no delete-comment
-API available); dedupe redundant lines in the VPS `.env` (`N8N_EDITOR_BASE_URL` ×3,
-`N8N_WORKER_CONCURRENCY` ×2 — harmless).
+API available).
 
 Then (next phase): post the completion back to ClickUp (material in parent, draft as
 comment, @-mention reviewer; never auto-finalize — ADR-026); `linked_doc_leaves` resolution
