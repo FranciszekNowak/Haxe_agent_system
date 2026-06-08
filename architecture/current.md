@@ -225,12 +225,11 @@ Supabase (eu-central-1). Seven live tables, plus two added by migrations 002/003
 > never committed (only `.gitkeep`). It must be back-filled from the live schema so
 > `supabase/migrations/` reflects reality.
 
-> Migration `004_agent_runs_importance_check.sql` (2026-06-08) realigns the
+> Migration `004_agent_runs_importance_check.sql` (2026-06-08, **applied**) realigns the
 > `agent_runs.importance` CHECK from the stale English `Low/Medium/High` set to the live
-> 5-level Polish taxonomy. **Pending apply** (operator-gated): until applied, a run on a
-> real impact tier fails the `agent_runs` insert (the run still returns + a WARN fires,
-> but cost is not logged and won't reach the CU cost field). Found 2026-06-08 via fault
-> injection. Empty/`n/d` impact (→ NULL) is unaffected.
+> 5-level Polish taxonomy. Before it, a run on a real impact tier failed the `agent_runs`
+> insert (run still returned + WARN, but cost wasn't logged) — found via fault injection;
+> now fixed.
 
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
@@ -773,8 +772,7 @@ Error Handler; routing-default-used (real tier downgraded) → WARN + run comple
 cost-missing → fallback cost + WARN; agent_runs-insert-failed → WARN + completion still
 returned. All non-blocking.
 
-Remaining backlog: **apply migration `004`** (agent_runs.importance CHECK — real-tier
-logging is broken until then); set `N8N_EDITOR_BASE_URL=https://agents.haxe.ai` (clickable
+Remaining backlog: set `N8N_EDITOR_BASE_URL=https://agents.haxe.ai` (clickable
 alert links); back-fill `001_initial_schema.sql` from live; tidy test-noise alerts/rows
 (`869dj2z2c` comments + `FAULT-TEST` agent_runs rows); optional ADR-026 telemetry-token
 split (defense-in-depth hardening).
