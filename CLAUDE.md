@@ -68,6 +68,27 @@ Date
   add new ones.
 - SQL uses lowercase keywords, snake_case names.
 
+## Definition of done
+
+Before reporting a feature or fix as complete, you must verify it actually works
+end-to-end — not just that the code was written or the workflow was updated. For
+anything that touches the agent pipeline:
+
+1. **Trigger the full ClickUp flow.** @-mention the agent on a real task (or use
+   the n8n manual test trigger if the webhook isn't wired). Confirm the expected
+   outcome appears in ClickUp — comment posted, status updated, whatever the
+   feature is supposed to produce.
+2. **Check n8n execution logs.** Open the relevant workflow in n8n and inspect the
+   last execution. Look at every node — not just whether the run succeeded overall,
+   but whether any node produced a warning, an empty result it shouldn't have, or
+   a fallback it shouldn't have taken. A green checkmark on the execution does not
+   mean every node did what was intended.
+3. **Check the ClickUp alert channel.** If any WARN or CRITICAL alert fired during
+   the test run, treat it as a failure until explained.
+
+Only after these three checks pass report the task complete. "The code looks
+right" is not a substitute for observing the system behave correctly.
+
 ## Reliability & observability (mandatory)
 
 The goal is a system that runs reliably and, when something goes wrong, lets the
