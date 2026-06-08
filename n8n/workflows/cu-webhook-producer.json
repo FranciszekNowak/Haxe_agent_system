@@ -118,10 +118,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [840, 120],
-      "notes": "matched = the just-posted comment (from the webhook payload, body.history_items[].comment) @-mentions Agent Haxe (99811284). Reads tag ops + author from the payload — NO Get Comments API call (overflow-safe at workspace scale). Agent self-mention allowed (agent->agent), bounded by the downstream circuit breaker. Pure shaping (ADR-019).",
+      "notes": "matched = the just-posted comment (from the webhook payload, body.history_items[].comment) @-mentions Agent Haxe (99811284). Also extracts triggering_comment_id and triggering_comment_text so the spine knows what was asked. text_content is ClickUp's pre-computed plain text; non-tag ops are the fallback. Reads tag ops + author from the payload — NO Get Comments API call (overflow-safe at workspace scale). Pure shaping (ADR-019).",
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const AGENT_ID = 99811284;\nconst body = $('CU Webhook').first().json.body || {};\nconst taskId = body.task_id;\nconst items = (body.history_items || []).filter(h => h && h.field === 'comment' && h.comment);\nconst h = items[items.length - 1]; // the just-posted comment\nlet matched = false, reviewer_user_id = '', caller_username = '';\nif (h) {\n  const ops = h.comment.comment || [];\n  const tagged = ops.some(b => b && b.type === 'tag' && b.user && Number(b.user.id) === AGENT_ID);\n  const author = h.comment.user || h.user || {};\n  if (tagged) {\n    matched = true;\n    reviewer_user_id = String(author.id || '');\n    caller_username = author.username || '';\n  }\n}\nreturn [{ json: { matched, taskId, reviewer_user_id, caller_username } }];"
+        "jsCode": "const AGENT_ID = 99811284;\nconst body = $('CU Webhook').first().json.body || {};\nconst taskId = body.task_id;\nconst items = (body.history_items || []).filter(h => h && h.field === 'comment' && h.comment);\nconst h = items[items.length - 1]; // the just-posted comment\nlet matched = false, reviewer_user_id = '', caller_username = '';\nlet triggering_comment_id = '', triggering_comment_text = '';\nif (h) {\n  const ops = h.comment.comment || [];\n  const tagged = ops.some(b => b && b.type === 'tag' && b.user && Number(b.user.id) === AGENT_ID);\n  const author = h.comment.user || h.user || {};\n  if (tagged) {\n    matched = true;\n    reviewer_user_id = String(author.id || '');\n    caller_username = author.username || '';\n  }\n  triggering_comment_id = String(h.comment.id || h.id || '');\n  // text_content is ClickUp's pre-computed plain text; filter out @-mention tag ops as fallback\n  triggering_comment_text = h.comment.text_content\n    || ops.filter(op => op && op.type !== 'tag').map(op => op.text || '').join('')\n    || '';\n}\nreturn [{ json: { matched, taskId, reviewer_user_id, caller_username, triggering_comment_id, triggering_comment_text } }];"
       }
     },
     {
@@ -193,7 +193,7 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [1720, 40],
-      "notes": "Explicit @-mention invocation: caller = the mentioner (reviewer). triggered_by=explicit_mention.",
+      "notes": "Explicit @-mention invocation: caller = the mentioner (reviewer). triggered_by=explicit_mention. Also passes triggering_comment_id and triggering_comment_text so the spine knows what was asked.",
       "parameters": {
         "source": "database",
         "workflowId": { "__rl": true, "value": "a8XKaijkMFNBpRBa", "mode": "list", "cachedResultName": "Agent Spine (v1)" },
@@ -204,7 +204,9 @@
             "reviewer_user_id": "={{ $('Detect Mention').first().json.reviewer_user_id }}",
             "caller_username": "={{ $('Detect Mention').first().json.caller_username }}",
             "triggered_by": "explicit_mention",
-            "invocation_type": "explicit"
+            "invocation_type": "explicit",
+            "triggering_comment_id": "={{ $('Detect Mention').first().json.triggering_comment_id }}",
+            "triggering_comment_text": "={{ $('Detect Mention').first().json.triggering_comment_text }}"
           },
           "matchingColumns": [],
           "schema": [
@@ -212,7 +214,9 @@
             { "id": "reviewer_user_id", "displayName": "reviewer_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "caller_username", "displayName": "caller_username", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "triggered_by", "displayName": "triggered_by", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+            { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "triggering_comment_id", "displayName": "triggering_comment_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "triggering_comment_text", "displayName": "triggering_comment_text", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
           ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true

@@ -850,8 +850,28 @@ enforced in software, not by the account. A member reads all public spaces, whic
 workspace-wide mentions; private spaces the agent isn't a member of won't deliver/read (a mention
 there triggers but Context Gather 403s → WARN).
 
+**Triggering comment in prompt (2026-06-08).** `Detect Mention` now extracts
+`triggering_comment_id` and `triggering_comment_text` from the webhook payload alongside
+author info. Both are passed through to `Agent Spine` and included in `Build Prompt` as a
+"Wiadomość wywołująca tę akcję" section placed before task context. The agent now acts on
+what was written in the triggering comment rather than re-executing the task description from
+scratch. `personal_data` was also fixed from a hardcoded `true` to `false` (the correct default
+until the PD Verifier seam is built).
+
+**Multi-provider routing live (2026-06-08; ADR-030).** LiteLLM config now has six versioned
+aliases: three Anthropic direct (`haxe-haiku-4-5-direct`, `haxe-sonnet-4-6-direct`,
+`haxe-opus-4-8-direct`) and three Bedrock EU (`haxe-haiku-4-5-bedrock`, `haxe-sonnet-4-6-bedrock`,
+`haxe-opus-4-5-bedrock`). `model_routing` table restructured to composite PK `(impact, personal_data)`:
+`personal_data=false` (default) → Anthropic direct; `personal_data=true` (GDPR) → Bedrock EU.
+`agent_runs.model_used` now stores the versioned model ID from the LiteLLM response body (e.g.,
+`claude-opus-4-8`), not the alias. `ANTHROPIC_API_KEY` must be set in VPS `.env` and the litellm
+container restarted before the direct-routing path is active. Migration 008 must be applied to
+Supabase before the updated `invoke-model.json` is deployed.
+
 Then (next increments): `linked_doc_leaves`
 resolution (Docs v3, selectively — only the current step's leaf, to avoid context pollution);
+thread-aware replies via `conversation_sessions.comment_root_id` (Inc 3);
+`PD Verifier (v1)` seam + `Search (v1)` sub-workflow with Layer B caller-scoped reads (Inc 4);
 autonomous **status/field-change + daily due-date** triggers (Phase 3); the ADR-026 identity
 split (read-only telemetry vs. edit-capable agent token).
 

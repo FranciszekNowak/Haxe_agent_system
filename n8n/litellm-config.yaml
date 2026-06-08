@@ -1,25 +1,48 @@
-# LiteLLM gateway config (ADR-024). Committed — contains NO secrets.
-# AWS credentials, region, and the master key are injected from the VPS .env as
-# environment variables (see docker-compose.yml `litellm` service + .env.example).
+# LiteLLM gateway config (ADR-024, ADR-030). Committed — contains NO secrets.
+# AWS credentials, region, Anthropic API key, and the master key are injected
+# from the VPS .env as environment variables (see docker-compose.yml `litellm`
+# service + .env.example).
 #
-# `model_name` is the alias n8n sends as the "model" field; the Supabase
-# `model_routing` table stores these alias names (not raw Bedrock IDs), so swapping
-# the underlying profile (e.g. Opus 4.5 -> 4.8 once access is granted) is a one-line
-# change here, not a data migration. EU-resident inference profiles only (GDPR, ADR-002).
+# Two provider tiers (ADR-030):
+#   -direct aliases  -> Anthropic API (latest models, non-GDPR tasks)
+#   -bedrock aliases -> AWS Bedrock EU eu-central-1 (GDPR-compliant tasks)
 #
-# NOTE (verify on first deploy): the `bedrock/<inference-profile-id>` string format
-# for cross-region EU profiles must be smoke-tested — same discipline as ADR-021/023.
+# `model_name` is the alias stored in Supabase `model_routing.litellm_model`.
+# Routing chooses the alias based on (impact, personal_data); the gateway
+# resolves it to the underlying model+provider here.
+#
+# NOTE: Bedrock cross-region EU inference-profile strings must be smoke-tested
+# on first deploy (same discipline as ADR-021/023).
 
 model_list:
-  - model_name: haxe-haiku
+  # ── Anthropic direct (non-GDPR default) ─────────────────────────────────────
+  - model_name: haxe-haiku-4-5-direct
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: haxe-sonnet-4-6-direct
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: haxe-opus-4-8-direct
+    litellm_params:
+      model: anthropic/claude-opus-4-8
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # ── Bedrock EU eu-central-1 (GDPR — personal_data=true) ─────────────────────
+  - model_name: haxe-haiku-4-5-bedrock
     litellm_params:
       model: bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0
       aws_region_name: os.environ/AWS_REGION_NAME
-  - model_name: haxe-sonnet
+
+  - model_name: haxe-sonnet-4-6-bedrock
     litellm_params:
       model: bedrock/eu.anthropic.claude-sonnet-4-6
       aws_region_name: os.environ/AWS_REGION_NAME
-  - model_name: haxe-opus
+
+  - model_name: haxe-opus-4-5-bedrock
     litellm_params:
       model: bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0
       aws_region_name: os.environ/AWS_REGION_NAME

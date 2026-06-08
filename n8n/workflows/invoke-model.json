@@ -8,7 +8,7 @@
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
       "position": [0, 304],
-      "notes": "ADR-013 invocation seam. Contract (ADR-024): impact, personal_data(bool); optional clickup_task_id/triggered_by/invocation_type/caller_user_id/process_type enrich agent_runs logging.",
+      "notes": "ADR-013 invocation seam. Contract (ADR-024): impact, personal_data(bool — false = Anthropic direct, true = Bedrock EU GDPR); optional clickup_task_id/triggered_by/invocation_type/caller_user_id/process_type enrich agent_runs logging.",
       "parameters": {
         "inputSource": "workflowInputs",
         "workflowInputs": {
@@ -32,15 +32,15 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [224, 304],
-      "notes": "Data-driven routing (ADR-024). Picks the row for this impact, else __default__. onError=continueErrorOutput -> DB outage falls through to in-code fail-safe in Resolve Routing (ADR-013).",
+      "notes": "Data-driven routing (ADR-024/030). Picks the row for (impact, personal_data), else (__default__, personal_data). personal_data=false -> Anthropic direct; personal_data=true -> Bedrock EU (GDPR). onError=continueErrorOutput -> DB outage falls through to in-code fail-safe in Resolve Routing (ADR-013).",
       "onError": "continueErrorOutput",
       "retryOnFail": true,
       "waitBetweenTries": 2000,
       "maxTries": 2,
       "parameters": {
         "operation": "executeQuery",
-        "query": "select litellm_model, temperature, max_tokens, nudge,\n       price_in_usd_per_1k, price_out_usd_per_1k, impact\nfrom model_routing\nwhere impact in ($1, '__default__') and active = true\norder by (impact = $1) desc\nlimit 1;",
-        "options": { "queryReplacement": "={{ [ $json.impact || '__default__' ] }}" }
+        "query": "select litellm_model, temperature, max_tokens, nudge,\n       price_in_usd_per_1k, price_out_usd_per_1k, impact\nfrom model_routing\nwhere impact in ($1, '__default__') and personal_data = $2 and active = true\norder by (impact = $1) desc\nlimit 1;",
+        "options": { "queryReplacement": "={{ [ $json.impact || '__default__', $json.personal_data === true || $json.personal_data === 'true' ? true : false ] }}" }
       },
       "credentials": { "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" } }
     },
@@ -50,10 +50,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [448, 304],
-      "notes": "Shapes the model-call config. No usable row (DB down/table gap) -> in-code Sonnet last-resort (ADR-013). Flags routing_default_used only when a REAL tier was silently downgraded (ADR-025). Prepends nudge. Carries caller_user_id/process_type. Pure shaping (ADR-019).",
+      "notes": "Shapes the model-call config. No usable row (DB down/table gap) -> in-code Sonnet direct last-resort (ADR-013). Flags routing_default_used only when a REAL tier was silently downgraded (ADR-025). Prepends nudge. personal_data defaults false (direct API); only true when caller has personal data (GDPR). Pure shaping (ADR-019).",
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nif (!row) {\n  row = { litellm_model: 'haxe-sonnet', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\nconst pd = (orig.personal_data === false || orig.personal_data === 'false') ? false : true;\n\nreturn [{ json: {\n  litellm_model: row.litellm_model,\n  temperature: Number(row.temperature),\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  impact,\n  personal_data: pd,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used\n} }];"
+        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nif (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\n// personal_data: true = GDPR/Bedrock EU; false = direct API (default)\nconst pd = (orig.personal_data === true || orig.personal_data === 'true') ? true : false;\n\nreturn [{ json: {\n  litellm_model: row.litellm_model,\n  temperature: Number(row.temperature),\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  impact,\n  personal_data: pd,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used\n} }];"
       }
     },
     {
@@ -98,10 +98,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [1104, 304],
-      "notes": "cost_pln = USD cost (x-litellm-response-cost header) x latest FX. Fallback: model_routing USD prices x tokens -> cost_missing=true (ADR-025). Carries caller_user_id/process_type. Pure shaping (ADR-019).",
+      "notes": "cost_pln = USD cost (x-litellm-response-cost header) x latest FX. model_used from response body.model (versioned, e.g. claude-opus-4-8), falls back to litellm alias if absent. provider derived from alias. Fallback cost: model_routing prices x tokens -> cost_missing=true (ADR-025). Pure shaping (ADR-019).",
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const routing = $('Resolve Routing').first().json;\nconst resp = $('Call LiteLLM').first().json || {};\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\n\nlet fx = null;\ntry { const f = $('Get FX Rate').first().json.rate; if (f != null && f !== '') fx = Number(f); } catch (e) {}\n\nconst ch = headers['x-litellm-response-cost'];\nlet usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\nlet cost_source = 'litellm_header';\nlet cost_missing = false;\nif (usd_cost == null || isNaN(usd_cost) || usd_cost === 0) {\n  cost_missing = true;\n  cost_source = 'fallback_table';\n  const pin = Number(routing.price_in_usd_per_1k || 0);\n  const pout = Number(routing.price_out_usd_per_1k || 0);\n  if (input_tokens != null && output_tokens != null && (pin || pout)) {\n    usd_cost = (input_tokens/1000)*pin + (output_tokens/1000)*pout;\n  } else {\n    usd_cost = null;\n  }\n}\nconst cost_pln = (usd_cost != null && fx != null) ? Number((usd_cost * fx).toFixed(6)) : null;\n\nreturn [{ json: {\n  completion,\n  model_used: routing.litellm_model,\n  provider: 'litellm/bedrock-eu',\n  input_tokens, output_tokens,\n  usd_cost, fx_rate: fx, cost_pln,\n  cost_source, cost_missing,\n  routing_default_used: !!routing.routing_default_used,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
+        "jsCode": "const routing = $('Resolve Routing').first().json;\nconst resp = $('Call LiteLLM').first().json || {};\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\n\nlet fx = null;\ntry { const f = $('Get FX Rate').first().json.rate; if (f != null && f !== '') fx = Number(f); } catch (e) {}\n\nconst ch = headers['x-litellm-response-cost'];\nlet usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\nlet cost_source = 'litellm_header';\nlet cost_missing = false;\nif (usd_cost == null || isNaN(usd_cost) || usd_cost === 0) {\n  cost_missing = true;\n  cost_source = 'fallback_table';\n  const pin = Number(routing.price_in_usd_per_1k || 0);\n  const pout = Number(routing.price_out_usd_per_1k || 0);\n  if (input_tokens != null && output_tokens != null && (pin || pout)) {\n    usd_cost = (input_tokens/1000)*pin + (output_tokens/1000)*pout;\n  } else {\n    usd_cost = null;\n  }\n}\nconst cost_pln = (usd_cost != null && fx != null) ? Number((usd_cost * fx).toFixed(6)) : null;\n\n// Use actual model ID from LiteLLM response (versioned, e.g. claude-opus-4-8);\n// fall back to the alias if the field is absent.\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : routing.litellm_model;\n// Derive provider from the alias so it stays meaningful after the model name normalises\nconst alias = routing.litellm_model || '';\nconst provider = alias.includes('bedrock') ? 'litellm/bedrock-eu' : 'litellm/anthropic-direct';\n\nreturn [{ json: {\n  completion,\n  model_used,\n  provider,\n  input_tokens, output_tokens,\n  usd_cost, fx_rate: fx, cost_pln,\n  cost_source, cost_missing,\n  routing_default_used: !!routing.routing_default_used,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
       }
     },
     {
@@ -110,7 +110,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [1328, 304],
-      "notes": "Observability log (ADR-024). Live cols: model_used, impact (renamed from importance, migration 005), caller_user_id, process_type; no provider col. onError=continueErrorOutput: failed insert must NOT fail the run -> WARN, completion still returned.",
+      "notes": "Observability log (ADR-024). model_used now stores the versioned model ID from the response body (e.g. claude-opus-4-8). onError=continueErrorOutput: failed insert must NOT fail the run -> WARN, completion still returned.",
       "onError": "continueErrorOutput",
       "retryOnFail": true,
       "waitBetweenTries": 2000,

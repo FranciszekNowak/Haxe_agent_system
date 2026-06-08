@@ -107,6 +107,7 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION_NAME: ${AWS_REGION_NAME}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}   # direct API (non-GDPR tasks, ADR-030)
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
     networks:
