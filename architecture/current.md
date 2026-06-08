@@ -370,7 +370,7 @@ Target: 7–9 weeks to v1.
 - **Build control plane**: Claude Code drives n8n programmatically via the `n8n-mcp` server over the public REST API (`https://agents.haxe.ai/api/v1`). Config in committed `.mcp.json`; the n8n API key is supplied from the machine env var `N8N_API_KEY` (setx; expiry 2026-08-31) and never committed. Windows launch must wrap npx in `cmd /c`. See ADR-018 and ADR-017.
 - **AWS**: account 000500193947 (tax reg. Skalus). Root MFA via passkey. IAM user `haxe-agents-bedrock`. Billing alert 50 USD/mo. Region eu-central-1.
 - **Supabase**: provisioned eu-central-1; schema migration 001 applied.
-- **Secrets**: all in 1Password (Cyberfolks account / Solus / root / franciszek / n8n encryption key / UI creds — separately labeled); `.env` on VPS only, never committed. `N8N_ENCRYPTION_KEY` rotated after initial deploy.
+- **Secrets**: all in 1Password (Cyberfolks account / Solus / root / franciszek / n8n encryption key / UI creds — separately labeled); `.env` on VPS only, never committed. `N8N_ENCRYPTION_KEY` rotated after initial deploy. The **ClickUp webhook HMAC secret** lives in the n8n `crypto` credential "ClickUp Webhook HMAC" (`NY5wM3VKKC1jZtQY`, encrypted in n8n's DB, never in the repo) — back it up in 1Password.
 - **Next**: Phase 1 — ClickUp foundation (Agent System Space, custom fields, first personas).
 
 ### Credential architecture
@@ -824,10 +824,13 @@ WARN, no run). The secret lives in a **`crypto` credential** ("ClickUp Webhook H
 `require('crypto')` and `$env` in Code nodes, so credential storage is the only repo-safe option).
 A **`Not Telemetry Task?`** guard drops webhooks for the Alerts task (`869dj2z2c`) *before* the
 signature path — required because a bad-signature WARN comment on that (watched) task would
-otherwise re-fire the webhook into an infinite loop (observed and fixed). **Operator action
-required:** set the credential's `hmacSecret` to the real ClickUp webhook secret (until then it's
-a placeholder → all real mentions are rejected fail-closed, each emitting a `cu-webhook/signature`
-WARN).
+otherwise re-fire the webhook into an infinite loop (observed and fixed). The credential's
+`hmacSecret` is **set to the real ClickUp webhook secret and verified live** (2026-06-08): a
+genuine ClickUp-signed delivery (producer exec 264) passed the signature gate end-to-end while a
+forged/unsigned POST was rejected with a WARN. Rotation: if ClickUp's webhook secret is ever
+regenerated, update the same `crypto` credential's `hmacSecret` (no redeploy). Webhook health read
+`failing/6` transiently (residual from the deactivation window during the build); it self-heals as
+2xx deliveries resume and is far below ClickUp's ~100-consecutive-failure auto-delete threshold.
 
 Then (next increments): `linked_doc_leaves`
 resolution (Docs v3, selectively — only the current step's leaf, to avoid context pollution);

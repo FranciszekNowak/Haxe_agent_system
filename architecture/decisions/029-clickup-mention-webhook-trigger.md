@@ -109,3 +109,13 @@ pipeline), ADR-024 (`agent_runs` / cost), ADR-004 (Docs v3 rules loading).
 > dropped telemetry task). Debounce/rate-limit if it ever becomes a problem. (2) Secret drift
 > (operator rotates ClickUp's webhook but not the credential) now degrades to per-real-mention
 > WARNs (sporadic, no loop) instead of a storm — the WARN is the signal to re-sync.
+
+> Update 2026-06-08 (later) — secret set + verified live; webhook is production-ready.
+> The `hmacSecret` was retrieved from ClickUp (`GET /api/v2/team/761759/webhook`) and written to
+> the "ClickUp Webhook HMAC" credential. End-to-end proof: a real ClickUp-signed `taskCommentPosted`
+> delivery (producer exec 264) passed `Signature Valid?` and continued into the pipeline, while a
+> forged/unsigned POST routed to `Alert Bad Signature`. The earlier "operator action required /
+> placeholder" note is therefore closed. (Webhook `health` read `failing/6` transiently from the
+> deactivation window during the build; self-heals as 2xx deliveries resume — a proactive
+> webhook-health WARN is a recommended future hardening, since auto-deletion after ~100 consecutive
+> failures would otherwise stop mentions silently.)

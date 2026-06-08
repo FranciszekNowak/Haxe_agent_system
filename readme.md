@@ -30,4 +30,6 @@ See `architecture/current.md` for the authoritative architecture description.
 
 ## Status
 
-Phase 0: Infrastructure setup in progress.
+Phase 2 (the agent spine) in progress — core path live: ClickUp @-mention →
+signature-verified webhook → context + rules → model → draft comment posted back.
+See `architecture/current.md` for the authoritative, up-to-date state.
