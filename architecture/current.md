@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v15
-Last updated: 2026-06-03
-Supersedes: v14
+Version: v16
+Last updated: 2026-06-08
+Supersedes: v15
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -36,8 +36,9 @@ senior-management intervention.
    UI, and scheduling; worker processes pull jobs from Redis and execute
    workflows. Redis provides rate-limiting, decoupling, priority, and retries.
 
-3. **AWS Bedrock (eu-central-1)** — Claude inference. Haiku / Sonnet / Opus
-   routed by importance (Ważność). EU region for GDPR.
+3. **AWS Bedrock (eu-central-1) + Anthropic direct** — Claude inference via LiteLLM gateway.
+   Routed by `(impact, personal_data)`: `personal_data=false` → Anthropic direct (Opus 4.8);
+   `personal_data=true` (GDPR gate) → Bedrock EU. See ADR-030.
 
 4. **Supabase (eu-central-1)** — application database. Operational logs, threaded
    human feedback, process-change proposals, conversation session cache, email
@@ -132,15 +133,14 @@ For **due-date triggered** autonomous runs, caller is determined as:
 Two future capabilities are designed-for but NOT built. Seams are preserved so
 they slot in additively. See the corresponding ADRs.
 
-- **Sensitivity-gated multi-provider routing.** Model invocation is centralized
-  behind one "invoke model" sub-workflow; model/provider selection is a discrete
-  step taking (importance, sensitivity, task_type). Routing mappings will be
-  stored as data in Supabase. A hybrid PII/PI classification step (deterministic
-  rules for emails/phones/addresses + lightweight model for non-allowlist names)
-  will set sensitivity. Fail-safe: when uncertain/unavailable, default to
-  Bedrock-EU (asymmetric risk — a missed PII routed off-EU is a GDPR breach; an
-  over-flagged clean task is merely suboptimal). Today everything routes to
-  Bedrock-EU. Do not build the classifier or add providers before Phase 2 seams exist.
+- **Sensitivity-gated multi-provider routing (routing LIVE, classifier deferred).** Model
+  invocation is centralized behind `Invoke Model (v1)`; routing is data-driven via
+  `model_routing (impact, personal_data)` composite PK (ADR-030). `personal_data=false`
+  → Anthropic direct; `personal_data=true` (GDPR) → Bedrock EU. The sensitivity
+  classifier seam exists: `PD Verifier (v1)` always returns `false` until the Phase 3
+  classifier (regex rules + optional Haiku call) replaces it — no pipeline changes
+  needed. Fail-safe preserved: DB-down falls back to `haxe-sonnet-4-6-direct` + WARN.
+  See ADR-031 for the PD Verifier contract.
 
 - **Multimodal I/O.** File references (URLs / ClickUp attachment IDs) are
   first-class through the pipeline; each skill declares its formats; non-text
@@ -237,6 +237,12 @@ Supabase (eu-central-1). Seven live tables, plus two added by migrations 002/003
 > RLS so it's unaffected (verified). `agent_runs` now also populates `caller_user_id` and
 > `process_type`.
 
+> Migration `009_triggered_by_search_step.sql` (2026-06-08, **pending application**) adds
+> `search_step` to the `agent_runs.triggered_by` CHECK. Required before `Search (v1)`
+> processes a triggering comment with external references — until applied, the Haiku
+> sub-call `agent_runs` INSERT will fail the constraint (run still completes, cost not logged).
+> Apply via Supabase SQL editor before the workflow sees production load (ADR-031).
+
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
 is needed; append-only threaded feedback with "current stance" derived via
@@ -250,7 +256,8 @@ triggered_by TEXT CHECK (triggered_by IN (
   'due_date_daily', 'gmail_incoming', 'gmail_sent_analysis',
   'weekly_proposer', 'per_task_proposer',
   'explicit_mention', 'explicit_command',
-  'conversation_reply', 'reset_restart'
+  'conversation_reply', 'reset_restart',
+  'search_step'
 )),
 invocation_type TEXT CHECK (invocation_type IN (
   'autonomous', 'explicit', 'conversation_reply'
@@ -343,7 +350,7 @@ current.md is updated via targeted diffs, not full-file rewrites, to avoid silen
 
 - **Phase 0** — infrastructure (git, AWS, 1Password, Supabase, VPS, Docker stack, Nginx + TLS). **COMPLETE** (infra hardened, password auth disabled, both machines keyed).
 - **Phase 1** — ClickUp foundation. **IN PROGRESS** — research complete (NPD process mapped; observations doc), core model + KM-maintenance confirmed. Pending: custom fields (`Czy dla AI` / `Ważność` / `Typ procesu` — user-created, Polish, global); GLOBAL agent-rules doc; per-person agent-preferences docs.
-- **Phase 2** — the spine. **IN PROGRESS (core path done)** — read→route→infer→post-back is built and verified end-to-end (`Agent Spine (v1)` composing `Context Gather (v1)` → `Invoke Model (v1)` with importance→model routing; rendered draft comment that @-mentions the reviewer; rules-doc loading; status field), and **automatic @-mention triggering** is live via `CU Webhook Producer (v1)` (ADR-029). See §15. Automatic mentions are signature-verified (ADR-029 update). Remaining: selective `linked_doc_leaves`, autonomous (status/due-date) triggers.
+- **Phase 2** — the spine. **IN PROGRESS (core path done)** — read→route→infer→post-back is built and verified end-to-end (`Agent Spine (v1)` composing `Context Gather (v1)` → `Invoke Model (v1)` with importance→model routing; rendered draft comment that @-mentions the reviewer; rules-doc loading; status field), and **automatic @-mention triggering** is live via `CU Webhook Producer (v1)` (ADR-029). See §15. Automatic mentions are signature-verified (ADR-029 update). Thread-aware replies via `conversation_sessions` (Inc 3) and `PD Verifier (v1)` seam + `Search (v1)` + Layer B caller-scoped reads (Inc 4, ADR-031) are also live. Remaining: selective `linked_doc_leaves`, autonomous (status/due-date) triggers.
 - **Phase 3** — email + due-date triggering + queue tuning.
 - **Phase 4** — learning loop (proposers).
 - **Phase 5** — team rollout.
@@ -552,9 +559,11 @@ NOTE TO FUTURE BUILDER SELF: The agent's thinking shouldn't be forced into this 
 
 Single base account `agent@haxe.com`. Intended as a comment-write-only Guest, but
 ClickUp won't let guests mint an API token, so it is a **Member** (broad edit/delete
-rights) — see ADR-004 (2026-06-02 update). Runtime scope is meant to narrow to the
-calling user's permissions (see §3, ADR-004), but **caller-scoping (Layers A/B) is not
-built yet**.
+rights) — see ADR-004 (2026-06-02 update). Runtime scope narrows to the calling user's
+permissions (see §3, ADR-004). **Layer A** (prompt-level) is enforced by the persona
+prompt system. **Layer B** (space-membership enforcement) is implemented in `Search (v1)`
+(ADR-031): candidate artifacts from spaces where the caller is not a member are excluded
+fail-closed (`GET /space/{id}/member` check; failure = exclude, not include).
 
 > **Least-privilege model (ADR-026).** The durable control is *capability containment*:
 > the LLM holds no credentials and no tools (`Invoke Model` is pure prompt→completion),
@@ -868,12 +877,35 @@ aliases: three Anthropic direct (`haxe-haiku-4-5-direct`, `haxe-sonnet-4-6-direc
 container restarted before the direct-routing path is active. Migration 008 must be applied to
 Supabase before the updated `invoke-model.json` is deployed.
 
-Then (next increments): `linked_doc_leaves`
-resolution (Docs v3, selectively — only the current step's leaf, to avoid context pollution);
-thread-aware replies via `conversation_sessions.comment_root_id` (Inc 3);
-`PD Verifier (v1)` seam + `Search (v1)` sub-workflow with Layer B caller-scoped reads (Inc 4);
-autonomous **status/field-change + daily due-date** triggers (Phase 3); the ADR-026 identity
-split (read-only telemetry vs. edit-capable agent token).
+**Thread-aware replies live (2026-06-08).** `Agent Spine (v1)` routes post-back through
+`Check Session` (Postgres). When an active `conversation_sessions` row exists for
+`(clickup_task_id, caller_user_id)`, the reply is posted via
+`POST /api/v2/comment/{comment_root_id}/reply` (nested in the existing thread); on failure
+falls back to a new top-level comment + WARN. When no session exists, a new top-level
+comment is posted and its returned ID anchors the thread as `comment_root_id` via
+`Upsert Session New`. Both paths upsert `conversation_sessions` via
+`ON CONFLICT (clickup_task_id, comment_root_id, caller_user_id) WHERE is_active = true`.
+Upsert failure routes to a WARN side branch and does not abort the run. Spine now 26 nodes.
+
+**PD Verifier seam + Search (v1) + Layer B live (2026-06-08; ADR-031).** Two new
+sub-workflows added between Context Gather and Build Prompt. `PD Verifier (v1)` (id
+`hzwmak7UBpuHaiTO`) is a stub returning `personal_data: false`; it is the seam for
+the Phase 3 sensitivity classifier — replacing the stub requires no changes to Agent
+Spine or Search. `Search (v1)` (id `eL3fJuRMpzVRuVUT`, 22 nodes): always fetches last
+30 task comments; if the triggering comment references external artifacts, extracts search
+queries via a Haiku sub-call (`triggered_by=search_step`, logged as an `agent_runs`
+sub-row), searches ClickUp tasks + docs, enforces **Layer B** fail-closed
+(`GET /space/{id}/member` per candidate space; caller not a member → excluded), reads
+up to 5 accessible artifacts, condenses if > ~4000 tokens (second Haiku sub-run). Returns
+`task_comments`, `additional_context`, `sources_used`, `sources_filtered_out`. `Build
+Prompt` injects these before the task context. Migration `009` adds `search_step` to
+`agent_runs.triggered_by` CHECK — **apply before Search processes a triggering comment
+with external references.**
+
+Remaining: `linked_doc_leaves` resolution (Docs v3, selectively — only the current step's
+leaf, to avoid context pollution); autonomous **status/field-change + daily due-date**
+triggers (Phase 3); the ADR-026 identity split (read-only telemetry vs. edit-capable
+agent token).
 
 ---
 
