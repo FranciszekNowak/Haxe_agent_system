@@ -343,7 +343,7 @@ current.md is updated via targeted diffs, not full-file rewrites, to avoid silen
 
 - **Phase 0** — infrastructure (git, AWS, 1Password, Supabase, VPS, Docker stack, Nginx + TLS). **COMPLETE** (infra hardened, password auth disabled, both machines keyed).
 - **Phase 1** — ClickUp foundation. **IN PROGRESS** — research complete (NPD process mapped; observations doc), core model + KM-maintenance confirmed. Pending: custom fields (`Czy dla AI` / `Ważność` / `Typ procesu` — user-created, Polish, global); GLOBAL agent-rules doc; per-person agent-preferences docs.
-- **Phase 2** — the spine. **IN PROGRESS (core path done)** — read→route→infer→post-back is built and verified end-to-end (`Agent Spine (v1)` composing `Context Gather (v1)` → `Invoke Model (v1)` with importance→model routing; rendered draft comment that @-mentions the reviewer; rules-doc loading; status field), and **automatic @-mention triggering** is live via `CU Webhook Producer (v1)` (ADR-029). See §15. Remaining: webhook signature verification, selective `linked_doc_leaves`, autonomous (status/due-date) triggers.
+- **Phase 2** — the spine. **IN PROGRESS (core path done)** — read→route→infer→post-back is built and verified end-to-end (`Agent Spine (v1)` composing `Context Gather (v1)` → `Invoke Model (v1)` with importance→model routing; rendered draft comment that @-mentions the reviewer; rules-doc loading; status field), and **automatic @-mention triggering** is live via `CU Webhook Producer (v1)` (ADR-029). See §15. Automatic mentions are signature-verified (ADR-029 update). Remaining: selective `linked_doc_leaves`, autonomous (status/due-date) triggers.
 - **Phase 3** — email + due-date triggering + queue tuning.
 - **Phase 4** — learning loop (proposers).
 - **Phase 5** — team rollout.
@@ -814,10 +814,22 @@ Agent Haxe (`99811284`); caller/reviewer = the **mentioner**. It calls the spine
 **Agent→agent chaining** is enabled (the `author != agent` skip was removed) and bounded by a
 **circuit breaker**: `Recent Runs` counts `agent_runs` for the task in the last 10 min and
 `Under Limit?` blocks (+WARN via `Alert Loop Breaker`) at ≥ 8, preventing runaway self-mention
-loops. **Known gap:** the producer does not yet verify ClickUp's `X-Signature` (MVP — obscure
-path, list-scoped; close before sensitive actions).
+loops.
 
-Then (next increments): ClickUp **webhook signature verification**; `linked_doc_leaves`
+**Webhook signature verification DONE (2026-06-08; ADR-029 update).** The producer now verifies
+ClickUp's `X-Signature`: webhook `rawBody:true` → native `Verify Signature` Crypto node computes
+`HMAC-SHA256(secret, rawBody)` → `Signature Valid?` (pass → proceed; fail → `Alert Bad Signature`
+WARN, no run). The secret lives in a **`crypto` credential** ("ClickUp Webhook HMAC",
+`NY5wM3VKKC1jZtQY`) — encrypted in n8n's DB, never in the repo (this instance blocks
+`require('crypto')` and `$env` in Code nodes, so credential storage is the only repo-safe option).
+A **`Not Telemetry Task?`** guard drops webhooks for the Alerts task (`869dj2z2c`) *before* the
+signature path — required because a bad-signature WARN comment on that (watched) task would
+otherwise re-fire the webhook into an infinite loop (observed and fixed). **Operator action
+required:** set the credential's `hmacSecret` to the real ClickUp webhook secret (until then it's
+a placeholder → all real mentions are rejected fail-closed, each emitting a `cu-webhook/signature`
+WARN).
+
+Then (next increments): `linked_doc_leaves`
 resolution (Docs v3, selectively — only the current step's leaf, to avoid context pollution);
 autonomous **status/field-change + daily due-date** triggers (Phase 3); the ADR-026 identity
 split (read-only telemetry vs. edit-capable agent token).

@@ -74,3 +74,38 @@ before a runaway chain is cut.
 Related: ADR-027 (post-back draft + reviewer rule + mention-not-assign), ADR-026 (capability
 containment — deterministic nodes only), ADR-025 (alert seam), ADR-015 (one generic
 pipeline), ADR-024 (`agent_runs` / cost), ADR-004 (Docs v3 rules loading).
+
+> Update 2026-06-08 — signature verification implemented (closes the known gap) + a loop it exposed.
+>
+> **HMAC verification (done).** The webhook node now uses `rawBody: true` (the exact signed
+> bytes land in binary `data`; `$json.body` stays parsed, so `task_id` is unaffected and no
+> decode node is needed). A native **`Verify Signature`** Crypto node computes
+> `HMAC-SHA256(secret, rawBody)` in hex; **`Signature Valid?`** compares it to the
+> `X-Signature` header — pass → `Get Comments` …; fail → **`Alert Bad Signature`** (WARN, seam)
+> and the agent is **not** run. Verified live: valid sig proceeds, wrong/missing sig is
+> rejected with a WARN.
+>
+> **Secret storage.** Empirically, this n8n instance blocks `require('crypto')` and `$env` in
+> Code nodes (`N8N_BLOCK_ENV_ACCESS_IN_NODE`), so HMAC-in-code and env-based secrets are out.
+> The Crypto node's v2 HMAC takes its secret from a **`crypto` credential** (`hmacSecret`),
+> stored encrypted in n8n's DB and **never** serialized into the exported workflow JSON (only a
+> credential-ID reference). That is the chosen secret store — no repo exposure, no `$env`.
+> Credential: **"ClickUp Webhook HMAC"** (`NY5wM3VKKC1jZtQY`).
+> **Operator action required:** set that credential's `hmacSecret` to the **real ClickUp webhook
+> secret**. Until then it holds a placeholder and *all* real mentions are rejected (fail-closed)
+> — each emits a `cu-webhook/signature` WARN explaining the mismatch.
+>
+> **Loop discovered & fixed.** Posting a bad-signature WARN as a comment on the **Alerts & Health
+> task (`869dj2z2c`)** — which sits inside the watched list — re-fires the webhook → fails again
+> → posts again → infinite loop (observed ~80 iterations before manual stop while the placeholder
+> secret rejected everything). Fix: a **`Not Telemetry Task?`** guard as the *first* step drops
+> any webhook whose `task_id` is the telemetry task, *before* the signature/alert path, so our own
+> alert echoes can never re-trigger — independent of secret state. Verified live: a real WARN echo
+> on `869dj2z2c` was dropped at the guard. (General principle: the producer must not act on its own
+> telemetry; the alert channel and the watched work-list overlap.)
+>
+> **Residual risks:** (1) a deliberate flood of forged webhooks aimed at a *work* task_id would
+> each fail verification and emit a WARN — i.e. an alert-spam vector (no loop; the WARN lands on the
+> dropped telemetry task). Debounce/rate-limit if it ever becomes a problem. (2) Secret drift
+> (operator rotates ClickUp's webhook but not the credential) now degrades to per-real-mention
+> WARNs (sporadic, no loop) instead of a storm — the WARN is the signal to re-sync.

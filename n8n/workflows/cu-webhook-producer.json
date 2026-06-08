@@ -9,12 +9,107 @@
       "typeVersion": 2,
       "position": [0, 300],
       "webhookId": "cu-comment-prod-001",
-      "notes": "ClickUp taskCommentPosted webhook (scoped to Lista testy AI). Responds 200 immediately (onReceived) to decouple from ClickUp's retry window (queue-less MVP, §14). Public URL: https://agents.haxe.ai/webhook/cu-comment.",
+      "notes": "ClickUp taskCommentPosted webhook (scoped to Lista testy AI). Responds 200 immediately (onReceived) to decouple from ClickUp's retry window (queue-less MVP, §14). rawBody:true keeps the exact signed bytes (binary 'data') for HMAC while $json.body stays parsed. Public URL: https://agents.haxe.ai/webhook/cu-comment.",
       "parameters": {
         "httpMethod": "POST",
         "path": "cu-comment",
         "responseMode": "onReceived",
-        "options": {}
+        "options": {
+          "rawBody": true
+        }
+      }
+    },
+    {
+      "id": "ignore-telemetry",
+      "name": "Not Telemetry Task?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [180, 120],
+      "notes": "Loop guard: drop webhooks for the Alerts & Health task (869dj2z2c). Our own alert comments land there; without this, a failed-signature WARN posted to that task re-fires the webhook -> fails again -> infinite loop. Runs BEFORE signature check so echoes are dropped even when the secret is wrong/drifted. Dropping on (unverified) task_id is fail-safe: it only ever skips work, never grants it.",
+      "parameters": {
+        "conditions": {
+          "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "t1",
+              "leftValue": "={{ $json.body.task_id }}",
+              "rightValue": "869dj2z2c",
+              "operator": { "type": "string", "operation": "notEquals" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "verify-sig",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [400, 120],
+      "notes": "HMAC-SHA256(secret, rawBody) hex = ClickUp X-Signature. Secret lives in the 'ClickUp Webhook HMAC' crypto credential (n8n DB, never in repo). rawBody (binary 'data') is the exact bytes ClickUp signed; $json.body stays parsed for task_id.",
+      "parameters": {
+        "action": "hmac",
+        "type": "SHA256",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "dataPropertyName": "computedSig",
+        "encoding": "hex"
+      },
+      "credentials": {
+        "crypto": { "id": "NY5wM3VKKC1jZtQY", "name": "ClickUp Webhook HMAC" }
+      }
+    },
+    {
+      "id": "sig-valid",
+      "name": "Signature Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [620, 120],
+      "notes": "Reject unless computed HMAC equals the X-Signature header. Missing/forged signature -> false -> WARN, agent not run.",
+      "parameters": {
+        "conditions": {
+          "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "s1",
+              "leftValue": "={{ $json.computedSig }}",
+              "rightValue": "={{ $('CU Webhook').first().json.headers['x-signature'] }}",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "alert-badsig",
+      "name": "Alert Bad Signature",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [840, 280],
+      "notes": "Rejected webhook (bad/missing X-Signature). WARN via Post Alert seam. If it fires for genuine mentions, the crypto credential is out of sync with ClickUp's webhook secret. (Echoes of this WARN land on the telemetry task and are dropped by 'Not Telemetry Task?', so no loop.)",
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "cu-webhook/signature",
+            "message": "Odrzucono webhook ClickUp: nieprawidłowy lub brakujący podpis X-Signature.",
+            "details": "=task={{ $('CU Webhook').first().json.body.task_id }}; got_sig={{ ($('CU Webhook').first().json.headers['x-signature'] || 'BRAK').toString().slice(0,12) }}…; jeśli dotyczy prawdziwych wzmianek — sprawdź, czy poświadczenie 'ClickUp Webhook HMAC' zgadza się z sekretem webhooka w ClickUp."
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
       }
     },
     {
@@ -22,7 +117,7 @@
       "name": "Get Comments",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [220, 300],
+      "position": [840, 120],
       "notes": "Fetch the task's comments to inspect the just-posted one (the webhook payload alone doesn't reliably carry the mention tags).",
       "onError": "continueRegularOutput",
       "retryOnFail": true,
@@ -44,7 +139,7 @@
       "name": "Detect Mention",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [440, 300],
+      "position": [1060, 120],
       "notes": "matched = newest comment @-mentions Agent Haxe (99811284). Agent self-mention is ALLOWED (agent->agent chaining); the loop is bounded by the circuit breaker downstream (Recent Runs / Under Limit?). Outputs caller = mentioner. Pure shaping (ADR-019).",
       "parameters": {
         "language": "javaScript",
@@ -56,7 +151,7 @@
       "name": "If Mentioned",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [660, 300],
+      "position": [1280, 120],
       "parameters": {
         "conditions": {
           "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
@@ -77,7 +172,7 @@
       "name": "Recent Runs",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
-      "position": [900, 380],
+      "position": [1500, 120],
       "notes": "Loop circuit-breaker: count agent_runs for this task in the last 10 min. Allows agent->agent chaining but bounds runaway. onError=continueRegularOutput (DB issue -> n null -> allowed).",
       "onError": "continueRegularOutput",
       "retryOnFail": true,
@@ -97,7 +192,7 @@
       "name": "Under Limit?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [1120, 380],
+      "position": [1720, 120],
       "notes": "Allow if < 8 runs on this task in the last 10 min; else trip the loop breaker.",
       "parameters": {
         "conditions": {
@@ -119,7 +214,7 @@
       "name": "Run Agent Spine",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1340, 300],
+      "position": [1940, 40],
       "notes": "Explicit @-mention invocation: caller = the mentioner (reviewer). triggered_by=explicit_mention.",
       "parameters": {
         "source": "database",
@@ -151,7 +246,7 @@
       "name": "Alert Loop Breaker",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1340, 480],
+      "position": [1940, 220],
       "notes": "Circuit breaker tripped: too many agent runs on this task in 10 min (possible agent->agent loop). WARN, run not started.",
       "parameters": {
         "source": "database",
@@ -178,7 +273,15 @@
     }
   ],
   "connections": {
-    "CU Webhook": { "main": [[{ "node": "Get Comments", "type": "main", "index": 0 }]] },
+    "CU Webhook": { "main": [[{ "node": "Not Telemetry Task?", "type": "main", "index": 0 }]] },
+    "Not Telemetry Task?": { "main": [[{ "node": "Verify Signature", "type": "main", "index": 0 }]] },
+    "Verify Signature": { "main": [[{ "node": "Signature Valid?", "type": "main", "index": 0 }]] },
+    "Signature Valid?": {
+      "main": [
+        [{ "node": "Get Comments", "type": "main", "index": 0 }],
+        [{ "node": "Alert Bad Signature", "type": "main", "index": 0 }]
+      ]
+    },
     "Get Comments": { "main": [[{ "node": "Detect Mention", "type": "main", "index": 0 }]] },
     "Detect Mention": { "main": [[{ "node": "If Mentioned", "type": "main", "index": 0 }]] },
     "If Mentioned": { "main": [[{ "node": "Recent Runs", "type": "main", "index": 0 }]] },
