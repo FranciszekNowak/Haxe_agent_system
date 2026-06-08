@@ -343,7 +343,7 @@ current.md is updated via targeted diffs, not full-file rewrites, to avoid silen
 
 - **Phase 0** — infrastructure (git, AWS, 1Password, Supabase, VPS, Docker stack, Nginx + TLS). **COMPLETE** (infra hardened, password auth disabled, both machines keyed).
 - **Phase 1** — ClickUp foundation. **IN PROGRESS** — research complete (NPD process mapped; observations doc), core model + KM-maintenance confirmed. Pending: custom fields (`Czy dla AI` / `Ważność` / `Typ procesu` — user-created, Polish, global); GLOBAL agent-rules doc; per-person agent-preferences docs.
-- **Phase 2** — the spine. **IN PROGRESS** — the read→route→infer half is built and tested end-to-end (`Agent Spine (v1)` composing `Context Gather (v1)` → `Invoke Model (v1)` with importance→model routing; see §15). Remaining: post-back to ClickUp (comment + reviewer @-mention, never auto-finalize), then first real test on the product-description task.
+- **Phase 2** — the spine. **IN PROGRESS (core path done)** — read→route→infer→post-back is built and verified end-to-end (`Agent Spine (v1)` composing `Context Gather (v1)` → `Invoke Model (v1)` with importance→model routing; rendered draft comment that @-mentions the reviewer; rules-doc loading; status field), and **automatic @-mention triggering** is live via `CU Webhook Producer (v1)` (ADR-029). See §15. Remaining: webhook signature verification, selective `linked_doc_leaves`, autonomous (status/due-date) triggers.
 - **Phase 3** — email + due-date triggering + queue tuning.
 - **Phase 4** — learning loop (proposers).
 - **Phase 5** — team rollout.
@@ -804,11 +804,23 @@ v3, `q7wz-16892`; core-model step 3), so output follows firm rules + person styl
 Status agenta` flips **W trakcie → Zakończono** around the run. RLS is on (ADR-028). All
 verified live on `869dhad2q`.
 
-Then (next increments): **CU webhook trigger** (`@`-mention → run spine automatically, now
-unblocked by the WEBHOOK_URL fix; assignee→creator reviewer); `linked_doc_leaves` resolution
-(Docs v3, selectively — only the current step's leaf, to avoid context pollution); replace
-`Build Prompt` with the real assembler (GLOBAL agent-rules doc + person preferences, per the
-core model); a true inline `@`-mention tag (vs. the current comment assignment).
+**CU @-mention webhook trigger DONE (2026-06-08; ADR-029).** Automatic runs are live: a new
+`CU Webhook Producer (v1)` workflow (id `eS66Sk6fweQ0EOPa`) receives ClickUp
+`taskCommentPosted` (scoped to `Lista testy AI`, `responseMode: onReceived` → instant 200),
+re-fetches the task's comments, and `Detect Mention` matches the newest comment that tags
+Agent Haxe (`99811284`); caller/reviewer = the **mentioner**. It calls the spine via a new
+`When Called` trigger with `triggered_by=explicit_mention`. Verified live on `869dhad2q`
+(mention → spine run 104 → rules loaded → rendered draft @-mentioning the mentioner).
+**Agent→agent chaining** is enabled (the `author != agent` skip was removed) and bounded by a
+**circuit breaker**: `Recent Runs` counts `agent_runs` for the task in the last 10 min and
+`Under Limit?` blocks (+WARN via `Alert Loop Breaker`) at ≥ 8, preventing runaway self-mention
+loops. **Known gap:** the producer does not yet verify ClickUp's `X-Signature` (MVP — obscure
+path, list-scoped; close before sensitive actions).
+
+Then (next increments): ClickUp **webhook signature verification**; `linked_doc_leaves`
+resolution (Docs v3, selectively — only the current step's leaf, to avoid context pollution);
+autonomous **status/field-change + daily due-date** triggers (Phase 3); the ADR-026 identity
+split (read-only telemetry vs. edit-capable agent token).
 
 ---
 

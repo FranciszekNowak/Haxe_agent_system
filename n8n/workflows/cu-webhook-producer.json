@@ -1,0 +1,194 @@
+{
+  "name": "CU Webhook Producer (v1)",
+  "active": false,
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "CU Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "cu-comment-prod-001",
+      "notes": "ClickUp taskCommentPosted webhook (scoped to Lista testy AI). Responds 200 immediately (onReceived) to decouple from ClickUp's retry window (queue-less MVP, §14). Public URL: https://agents.haxe.ai/webhook/cu-comment.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cu-comment",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "id": "get-comments",
+      "name": "Get Comments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 300],
+      "notes": "Fetch the task's comments to inspect the just-posted one (the webhook payload alone doesn't reliably carry the mention tags).",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $json.body.task_id }}/comment",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" }
+      }
+    },
+    {
+      "id": "detect",
+      "name": "Detect Mention",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300],
+      "notes": "matched = newest comment @-mentions Agent Haxe (99811284). Agent self-mention is ALLOWED (agent->agent chaining); the loop is bounded by the circuit breaker downstream (Recent Runs / Under Limit?). Outputs caller = mentioner. Pure shaping (ADR-019).",
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const AGENT_ID = 99811284;\nconst taskId = $('CU Webhook').first().json.body.task_id;\nlet comments = [];\ntry { comments = $input.first().json.comments || []; } catch (e) {}\ncomments = comments.slice().sort((a,b) => Number(b.date||0) - Number(a.date||0));\nconst c = comments[0];\nlet matched = false, reviewer_user_id = '', caller_username = '';\nif (c) {\n  const authorId = c.user && c.user.id;\n  const tagged = (c.comment || []).some(b => b && b.type === 'tag' && b.user && Number(b.user.id) === AGENT_ID);\n  if (tagged) { // agent self-mention allowed (agent->agent chaining); loop bounded by the circuit breaker downstream\n    matched = true;\n    reviewer_user_id = String(authorId);\n    caller_username = (c.user && c.user.username) || '';\n  }\n}\nreturn [{ json: { matched, taskId, reviewer_user_id, caller_username } }];"
+      }
+    },
+    {
+      "id": "if-mention",
+      "name": "If Mentioned",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [660, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "m1",
+              "leftValue": "={{ $json.matched }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "recent-runs",
+      "name": "Recent Runs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [900, 380],
+      "notes": "Loop circuit-breaker: count agent_runs for this task in the last 10 min. Allows agent->agent chaining but bounds runaway. onError=continueRegularOutput (DB issue -> n null -> allowed).",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select count(*)::int as n from agent_runs where clickup_task_id = $1 and created_at > now() - interval '10 minutes';",
+        "options": { "queryReplacement": "={{ [ $('Detect Mention').first().json.taskId ] }}" }
+      },
+      "credentials": {
+        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
+      }
+    },
+    {
+      "id": "run-or-break",
+      "name": "Under Limit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1120, 380],
+      "notes": "Allow if < 8 runs on this task in the last 10 min; else trip the loop breaker.",
+      "parameters": {
+        "conditions": {
+          "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "lim",
+              "leftValue": "={{ Number($json.n || 0) }}",
+              "rightValue": 8,
+              "operator": { "type": "number", "operation": "lt" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "run-spine",
+      "name": "Run Agent Spine",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1340, 300],
+      "notes": "Explicit @-mention invocation: caller = the mentioner (reviewer). triggered_by=explicit_mention.",
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "a8XKaijkMFNBpRBa", "mode": "list", "cachedResultName": "Agent Spine (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $('Detect Mention').first().json.taskId }}",
+            "reviewer_user_id": "={{ $('Detect Mention').first().json.reviewer_user_id }}",
+            "caller_username": "={{ $('Detect Mention').first().json.caller_username }}",
+            "triggered_by": "explicit_mention",
+            "invocation_type": "explicit"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "taskId", "displayName": "taskId", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "reviewer_user_id", "displayName": "reviewer_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "caller_username", "displayName": "caller_username", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "triggered_by", "displayName": "triggered_by", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "alert-loop",
+      "name": "Alert Loop Breaker",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1340, 480],
+      "notes": "Circuit breaker tripped: too many agent runs on this task in 10 min (possible agent->agent loop). WARN, run not started.",
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "cu-webhook/loop-breaker",
+            "message": "Przerwano możliwą pętlę agent→agent: zbyt wiele uruchomień na tym zadaniu w 10 min.",
+            "details": "=task={{ $('Detect Mention').first().json.taskId }}; runs_10min={{ $json.n }}; próg=8"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "CU Webhook": { "main": [[{ "node": "Get Comments", "type": "main", "index": 0 }]] },
+    "Get Comments": { "main": [[{ "node": "Detect Mention", "type": "main", "index": 0 }]] },
+    "Detect Mention": { "main": [[{ "node": "If Mentioned", "type": "main", "index": 0 }]] },
+    "If Mentioned": { "main": [[{ "node": "Recent Runs", "type": "main", "index": 0 }]] },
+    "Recent Runs": { "main": [[{ "node": "Under Limit?", "type": "main", "index": 0 }]] },
+    "Under Limit?": {
+      "main": [
+        [{ "node": "Run Agent Spine", "type": "main", "index": 0 }],
+        [{ "node": "Alert Loop Breaker", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1", "errorWorkflow": "81eplXMD1v5ONhzs" }
+}
