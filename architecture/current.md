@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v17
+Version: v19
 Last updated: 2026-06-08
-Supersedes: v16
+Supersedes: v18
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -64,9 +64,9 @@ senior-management intervention.
 └────────────────────────────────────────────────────────────────┘
                               ↕
 ┌────────────────────────────────────────────────────────────────┐
-│  LAYER 3: AWS Bedrock (eu-central-1) — Claude Inference        │
-│  Haiku (Low) / Sonnet (Medium) / Opus (High + proposer)        │
-│  Single-prompt draft+critique+synthesis per call               │
+│  LAYER 3: LiteLLM Gateway → Anthropic direct / Bedrock EU      │
+│  personal_data=false → Anthropic (Haiku/Sonnet/Opus 4.8)       │
+│  personal_data=true (GDPR) → Bedrock EU (Haiku/Sonnet/Opus)    │
 └────────────────────────────────────────────────────────────────┘
                               ↕
 ┌────────────────────────────────────────────────────────────────┐
@@ -377,9 +377,14 @@ Target: 7–9 weeks to v1.
   - `litellm` (ghcr.io/berriai/litellm, v1.87.0 pinned by digest) — **deployed + active** (ADR-024/030).
     Internal-only LLM gateway (127.0.0.1:4000): signs Bedrock, returns exact token usage + USD cost header,
     multi-provider. **IS the production model-call path** (§15). Six versioned aliases: three Anthropic direct
-    (`haxe-haiku/sonnet/opus-*-direct`) + three Bedrock EU (`*-bedrock`). `ANTHROPIC_API_KEY` added to VPS
-    `.env` and container recreated 2026-06-08. Config in committed `n8n/litellm-config.yaml`; credentials
-    in `.env` (never committed). Native Bedrock node retained in n8n **disabled** as fallback.
+    (`haxe-haiku/sonnet/opus-*-direct`) + three Bedrock EU (`*-bedrock`). `ANTHROPIC_API_KEY` in `.env` and
+    passed through via `docker-compose.yml`; confirmed working 2026-06-08. Config in committed
+    `n8n/litellm-config.yaml`; credentials in `.env` (never committed). Native Bedrock node retained in n8n
+    **disabled** as fallback.
+    > **Config drift incident (2026-06-08):** The VPS `docker-compose.yml` predated ADR-030 and lacked the
+    > `ANTHROPIC_API_KEY` passthrough. LiteLLM's router surfaced the resulting 401 as a 429 cooldown, causing
+    > ~8 h of misdiagnosis. Fixed by redeploying `docker-compose.yml` via scp. See ADR-033 for the deploy
+    > model and mitigations.
 - **Public endpoint**: `https://agents.haxe.ai` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing, 90-day). HTTP → HTTPS redirect active. See ADR-012.
 - **Build control plane**: Claude Code drives infrastructure via two MCP servers in `.mcp.json`:
   - **`n8n-mcp`** (`n8n-mcp@2.56.0`) — n8n REST API (`https://agents.haxe.ai/api/v1`); key from `N8N_API_KEY` (setx; expiry 2026-08-31). See ADR-017/018.
@@ -388,6 +393,11 @@ Target: 7–9 weeks to v1.
 - **AWS**: account 000500193947 (tax reg. Skalus). Root MFA via passkey. IAM user `haxe-agents-bedrock`. Billing alert 50 USD/mo. Region eu-central-1.
 - **Supabase**: project `hkeslnosxibeuesxndnz`, eu-west-1 (Ireland). Migrations 001–009 applied. Schema managed via Supabase MCP from the operator desktop.
 - **Secrets**: all in 1Password (Cyberfolks account / Solus / root / franciszek / n8n encryption key / UI creds — separately labeled); `.env` on VPS only, never committed. `N8N_ENCRYPTION_KEY` rotated after initial deploy. The **ClickUp webhook HMAC secret** lives in the n8n `crypto` credential "ClickUp Webhook HMAC".
+- **VPS deployment model**: `/opt/haxe-agents/` is NOT a git repo. Infra files (`docker-compose.yml`,
+  `litellm-config.yaml`) live flat there; canonical copies are in the repo under `n8n/`. After any
+  change to either file in the repo, run `infrastructure/scripts/deploy-infra.bat` to push to VPS, then
+  `docker compose up -d <service>` to recreate. **Never** `restart` to pick up env var changes —
+  it does not re-read `.env`. See ADR-033.
 - **Next**: Phase 1 — ClickUp foundation (Agent System Space, custom fields, first personas).
 
 ### Credential architecture
@@ -397,10 +407,10 @@ YOUR LAPTOP                         THE VPS (185.25.149.174)
 -----------                         ------------------------
 SSH private key  ──key auth──────►  franciszek account (NOPASSWD sudo)
 (no passphrase)                       │
-                                      ├─ /opt/haxe-agents/
-                                      │    ├─ docker-compose.yml  (also in git repo)
-                                      │    ├─ .env                (VPS ONLY, never git)
-                                      │    └─ .env.example        (also in git repo)
+                                      ├─ /opt/haxe-agents/          ← flat; NOT a git repo (ADR-033)
+                                      │    ├─ docker-compose.yml  (canonical: n8n/docker-compose.yml)
+                                      │    ├─ litellm-config.yaml (canonical: n8n/litellm-config.yaml)
+                                      │    └─ .env                (VPS ONLY, never git)
                                       │
                                       ├─ Docker containers (private bridge network):
                                       │    ├─ n8n-main    127.0.0.1:5678  (localhost only)
