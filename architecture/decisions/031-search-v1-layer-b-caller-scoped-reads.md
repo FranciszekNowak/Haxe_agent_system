@@ -80,3 +80,25 @@ Context Gather (v1)
 ## Date
 
 2026-06-08
+
+---
+
+> **Update 2026-06-08** — Three inaccuracies corrected to match the live implementation:
+>
+> 1. **Search trigger (step 2):** The ADR states "If triggering comment contains external
+>    references." The implementation always runs query extraction — it uses task name +
+>    description (up to 1200 chars) as the primary input, supplemented by the triggering
+>    comment when present. The `Has Triggering Text` gate that bypassed extraction for
+>    autonomous triggers (empty `triggering_comment_text`) has been removed. The model
+>    returns `queries: []` when nothing warrants a search, which is the correct empty-path
+>    signal.
+>
+> 2. **Artifact cap (step 5):** Changed from "up to 5 accessible artifacts" to **up to 8**.
+>    The original implementation cap was 3 (a code discrepancy with the ADR); it is now
+>    explicitly 8 in `Layer B Filter`.
+>
+> 3. **Condense trigger (step 6):** The ADR states "If total content exceeds ~4000 tokens."
+>    The live `Has Condense Content` node fires whenever `additional_context` is non-empty
+>    (i.e., whenever any artifact was retrieved). The condense prompt is quality-based and
+>    selective — it instructs the model to keep technical specs and exact requirements
+>    verbatim while summarising repetitive or low-value content. No token count is checked.

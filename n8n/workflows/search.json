@@ -3,12 +3,6 @@
   "active": true,
   "nodes": [
     {
-      "id": "s-trigger",
-      "name": "When Called",
-      "type": "n8n-nodes-base.executeWorkflowTrigger",
-      "typeVersion": 1.1,
-      "position": [0, 0],
-      "notes": "Inputs: current_task (object), triggering_comment_text (string), caller_user_id (string), personal_data (boolean), clickup_task_id (string). Returns: {task_comments, additional_context, sources_used, sources_filtered_out}.",
       "parameters": {
         "workflowInputs": {
           "values": [
@@ -19,71 +13,44 @@
             { "name": "clickup_task_id" }
           ]
         }
-      }
+      },
+      "id": "s-trigger",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 0],
+      "notes": "Inputs: current_task (object), triggering_comment_text (string), caller_user_id (string), personal_data (boolean), clickup_task_id (string). Returns: {task_comments, additional_context, sources_used, sources_filtered_out}."
     },
     {
-      "id": "s-fetch-comments",
-      "name": "Fetch Task Comments",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [224, 0],
-      "notes": "Step 0 (always): fetch last 30 comments. onError=continueRegularOutput.",
-      "onError": "continueRegularOutput",
       "parameters": {
         "url": "=https://api.clickup.com/api/v2/task/{{ $json.clickup_task_id }}/comment?order_by=date&reverse=true",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "clickUpApi",
         "options": {}
       },
-      "credentials": {
-        "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" }
-      }
+      "id": "s-fetch-comments",
+      "name": "Fetch Task Comments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [224, 0],
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
+      "onError": "continueRegularOutput",
+      "notes": "Step 0 (always): fetch last 30 comments. onError=continueRegularOutput."
     },
     {
-      "id": "s-has-text",
-      "name": "Has Triggering Text",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.3,
-      "position": [448, 0],
-      "notes": "False -> Build Output (just comments, no search).",
       "parameters": {
-        "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
-          "combinator": "and",
-          "conditions": [
-            { "id": "t1", "leftValue": "={{ $('When Called').first().json.triggering_comment_text }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } }
-          ]
-        },
-        "options": {}
-      }
-    },
-    {
+        "jsCode": "const wc = $('When Called').first().json;\nconst task = wc.current_task || {};\nconst text = (wc.triggering_comment_text || '').trim();\nconst header = text\n  ? 'Na podstawie zadania i wiadomości użytkownika, wyodrębnij do 5 fraz wyszukiwania, które pomogą znaleźć w ClickUp powiązane zadania lub dokumenty.'\n  : 'Na podstawie opisu zadania, wyodrębnij do 5 fraz wyszukiwania, które pomogą znaleźć w ClickUp powiązane zadania lub dokumenty.';\nconst prompt =\n  header + '\\n\\n' +\n  '## Zadanie\\n' + (task.name || '') + '\\n' + (task.description || '').slice(0, 1200) + '\\n\\n' +\n  (text ? '## Wiadomość użytkownika\\n' + text + '\\n\\n' : '') +\n  'Zwróć TYLKO JSON (bez dodatkowego tekstu):\\n' +\n  '{\"queries\": [\"fraza 1\", \"fraza 2\"], \"reason\": \"krótki powód\"}\\n' +\n  'Jeśli brak zewnętrznych odniesień do innych zadań lub dokumentów: {\"queries\": [], \"reason\": \"brak\"}';\nreturn [{ json: { search_prompt: prompt } }];"
+      },
       "id": "s-build-prompt",
       "name": "Build Search Prompt",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [672, -96],
-      "notes": "Assembles query-extraction prompt for Haiku.",
-      "parameters": {
-        "jsCode": "const wc = $('When Called').first().json;\nconst task = wc.current_task || {};\nconst text = (wc.triggering_comment_text || '').trim();\nconst prompt =\n  'Na podstawie zadania i wiadomości użytkownika, wyodrębnij do 5 fraz do wyszukiwania w ClickUp.\\n\\n' +\n  '## Zadanie\\n' + (task.name || '') + '\\n' + (task.description || '').slice(0, 800) + '\\n\\n' +\n  '## Wiadomość użytkownika\\n' + text + '\\n\\n' +\n  'Zwróć TYLKO JSON (bez dodatkowego tekstu):\\n' +\n  '{\"queries\": [\"fraza 1\", \"fraza 2\"], \"reason\": \"krótki powód\"}\\n' +\n  'Jeśli brak zewnętrznych odniesień: {\"queries\": [], \"reason\": \"brak\"}';\nreturn [{ json: { search_prompt: prompt } }];"
-      }
+      "position": [448, -96],
+      "notes": "Assembles query-extraction prompt for Haiku. Uses task name+description (always, up to 1200 chars) plus triggering comment when present. Always fires — model returns queries:[] when nothing to search."
     },
     {
-      "id": "s-extract-queries",
-      "name": "Extract Queries",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.3,
-      "position": [880, -96],
-      "notes": "Haiku call via Invoke Model. triggered_by=search_step (needs migration 009). onError=continueErrorOutput -> alert -> Build Output.",
-      "onError": "continueErrorOutput",
       "parameters": {
-        "workflowId": {
-          "__rl": true,
-          "value": "XcOIVdZnVCCWNPeb",
-          "mode": "list",
-          "cachedResultUrl": "/workflow/XcOIVdZnVCCWNPeb",
-          "cachedResultName": "Invoke Model (v1)"
-        },
+        "workflowId": { "__rl": true, "value": "XcOIVdZnVCCWNPeb", "mode": "list", "cachedResultName": "Invoke Model (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -113,22 +80,18 @@
           "convertFieldsToString": false
         },
         "options": {}
-      }
-    },
-    {
-      "id": "s-alert-extract",
-      "name": "Alert Extract Failed",
+      },
+      "id": "s-extract-queries",
+      "name": "Extract Queries",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [880, -288],
-      "notes": "WARN when query extraction fails.",
+      "position": [672, -96],
+      "onError": "continueErrorOutput",
+      "notes": "Haiku call via Invoke Model. triggered_by=search_step (needs migration 009). onError=continueErrorOutput -> alert -> Build Output."
+    },
+    {
       "parameters": {
-        "workflowId": {
-          "__rl": true,
-          "value": "YSCdHlmdf3p9XEUx",
-          "mode": "list",
-          "cachedResultName": "Post Alert (v1)"
-        },
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -148,266 +111,238 @@
           "convertFieldsToString": true
         },
         "options": {}
-      }
+      },
+      "id": "s-alert-extract",
+      "name": "Alert Extract Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [672, -288],
+      "notes": "WARN when query extraction fails."
     },
     {
+      "parameters": {
+        "jsCode": "const completion = ($('Extract Queries').first().json.completion || '').trim();\nlet queries = [];\ntry {\n  const match = completion.match(/\\{[\\s\\S]*\\}/);\n  if (match) {\n    const p = JSON.parse(match[0]);\n    queries = (Array.isArray(p.queries) ? p.queries : [])\n      .filter(q => typeof q === 'string' && q.trim())\n      .slice(0, 5);\n  }\n} catch(e) {}\nreturn [{ json: { queries } }];"
+      },
       "id": "s-parse-queries",
       "name": "Parse Queries",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1104, -96],
-      "notes": "Parse model JSON -> queries[]. Empty array on parse failure.",
-      "parameters": {
-        "jsCode": "const completion = ($('Extract Queries').first().json.completion || '').trim();\nlet queries = [];\ntry {\n  const match = completion.match(/\\{[\\s\\S]*\\}/);\n  if (match) {\n    const p = JSON.parse(match[0]);\n    queries = (Array.isArray(p.queries) ? p.queries : [])\n      .filter(q => typeof q === 'string' && q.trim())\n      .slice(0, 5);\n  }\n} catch(e) {}\nreturn [{ json: { queries } }];"
-      }
+      "position": [896, -96],
+      "notes": "Parse model JSON -> queries[]. Empty array on parse failure."
     },
     {
-      "id": "s-has-queries",
-      "name": "Has Queries",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.3,
-      "position": [1328, -96],
-      "notes": "False -> Build Output (no external search needed).",
       "parameters": {
         "conditions": {
           "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
           "combinator": "and",
-          "conditions": [
-            { "id": "q1", "leftValue": "={{ $json.queries.length }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }
-          ]
+          "conditions": [{ "id": "q1", "leftValue": "={{ $json.queries.length }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }]
         },
         "options": {}
-      }
+      },
+      "id": "s-has-queries",
+      "name": "Has Queries",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1120, -96],
+      "notes": "False -> Build Output (model found nothing to search for)."
     },
     {
+      "parameters": { "jsCode": "return ($json.queries || []).map(q => ({ json: { query: q } }));" },
       "id": "s-expand-queries",
       "name": "Expand Queries",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1552, -96],
-      "notes": "Expand queries array to multiple items for SplitInBatches.",
-      "parameters": {
-        "jsCode": "return ($json.queries || []).map(q => ({ json: { query: q } }));"
-      }
+      "position": [1344, -96],
+      "notes": "Expand queries array to multiple items for SplitInBatches."
     },
     {
+      "parameters": { "options": {} },
       "id": "s-query-loop",
       "name": "Query Loop",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
-      "position": [1760, -96],
-      "notes": "Loop output -> Search Tasks -> back. Done -> Merge Results.",
-      "parameters": { "options": {} }
+      "position": [1552, -96],
+      "notes": "Loop output -> Search Tasks -> back. Done -> Merge Results."
     },
     {
-      "id": "s-search-tasks",
-      "name": "Search Tasks",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1984, -96],
-      "notes": "Search ClickUp tasks. onError=continueRegularOutput: failed search = empty tasks array.",
-      "onError": "continueRegularOutput",
       "parameters": {
         "url": "=https://api.clickup.com/api/v2/team/761759/task?search={{ encodeURIComponent($json.query) }}&subtasks=true&include_closed=false",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "clickUpApi",
         "options": {}
       },
-      "credentials": {
-        "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" }
-      }
+      "id": "s-search-tasks",
+      "name": "Search Tasks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1776, -96],
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
+      "onError": "continueRegularOutput",
+      "notes": "Search ClickUp tasks. onError=continueRegularOutput: failed search = empty tasks array."
     },
     {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst seen = new Set();\nconst candidates = [];\nfor (const item of items) {\n  for (const t of (item.json.tasks || [])) {\n    if (!t.id || seen.has(t.id)) continue;\n    seen.add(t.id);\n    const spaceId = String((t.space && t.space.id) || '');\n    candidates.push({ id: t.id, name: t.name || '', space_id: spaceId });\n  }\n}\nconst space_ids = [...new Set(candidates.map(c => c.space_id).filter(Boolean))];\nreturn [{ json: { candidates, space_ids } }];"
+      },
       "id": "s-merge-results",
       "name": "Merge Results",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1760, 112],
-      "notes": "Deduplicate search results from all query loop iterations.",
-      "parameters": {
-        "jsCode": "const items = $input.all();\nconst seen = new Set();\nconst candidates = [];\nfor (const item of items) {\n  for (const t of (item.json.tasks || [])) {\n    if (!t.id || seen.has(t.id)) continue;\n    seen.add(t.id);\n    const spaceId = String((t.space && t.space.id) || '');\n    candidates.push({ id: t.id, name: t.name || '', space_id: spaceId });\n  }\n}\nconst space_ids = [...new Set(candidates.map(c => c.space_id).filter(Boolean))];\nreturn [{ json: { candidates, space_ids } }];"
-      }
+      "position": [1552, 112],
+      "notes": "Deduplicate search results from all query loop iterations."
     },
     {
-      "id": "s-has-candidates",
-      "name": "Has Candidates",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.3,
-      "position": [1984, 112],
-      "notes": "False -> Build Output (no results found).",
       "parameters": {
         "conditions": {
           "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
           "combinator": "and",
-          "conditions": [
-            { "id": "c1", "leftValue": "={{ $json.candidates.length }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }
-          ]
+          "conditions": [{ "id": "c1", "leftValue": "={{ $json.candidates.length }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }]
         },
         "options": {}
-      }
+      },
+      "id": "s-has-candidates",
+      "name": "Has Candidates",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1776, 112],
+      "notes": "False -> Build Output (no results found)."
     },
     {
+      "parameters": { "jsCode": "return ($json.space_ids || []).map(id => ({ json: { space_id: id } }));" },
       "id": "s-expand-spaces",
       "name": "Expand Spaces",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2208, 112],
-      "notes": "Expand space_ids to individual items for Space Loop.",
-      "parameters": {
-        "jsCode": "return ($json.space_ids || []).map(id => ({ json: { space_id: id } }));"
-      }
+      "position": [2000, 112],
+      "notes": "Expand space_ids to individual items for Space Loop."
     },
     {
+      "parameters": { "options": {} },
       "id": "s-space-loop",
       "name": "Space Loop",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
-      "position": [2432, 112],
-      "notes": "Loop over space_ids. Loop -> Check Space Member -> back. Done -> Layer B Filter.",
-      "parameters": { "options": {} }
+      "position": [2224, 112],
+      "notes": "Loop over space_ids. Loop -> Check Space Member -> back. Done -> Layer B Filter."
     },
     {
-      "id": "s-check-member",
-      "name": "Check Space Member",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [2640, 112],
-      "notes": "Fetch space members for Layer B. onError=continueRegularOutput: empty members = fail-closed (caller excluded).",
-      "onError": "continueRegularOutput",
       "parameters": {
         "url": "=https://api.clickup.com/api/v2/space/{{ $json.space_id }}/member",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "clickUpApi",
         "options": {}
       },
-      "credentials": {
-        "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" }
-      }
+      "id": "s-check-member",
+      "name": "Check Space Member",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2432, 112],
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
+      "onError": "continueRegularOutput",
+      "notes": "Fetch space members for Layer B. onError=continueRegularOutput: empty members = fail-closed (caller excluded)."
     },
     {
+      "parameters": {
+        "jsCode": "const membershipItems = $input.all();\nconst expandedItems = $('Expand Spaces').all();\nconst callerUserId = String($('When Called').first().json.caller_user_id || '');\nconst candidates = $('Merge Results').first().json.candidates || [];\n\nconst accessibleSpaces = new Set();\nconst blockedSpaces = new Set();\n\nfor (let i = 0; i < membershipItems.length; i++) {\n  const spaceId = (expandedItems[i] && expandedItems[i].json.space_id) || '';\n  const members = membershipItems[i].json.members || [];\n  const isMember = members.some(m => {\n    const uid = String((m.user && m.user.id !== undefined) ? m.user.id : (m.id || ''));\n    return uid === callerUserId;\n  });\n  if (spaceId) { if (isMember) accessibleSpaces.add(spaceId); else blockedSpaces.add(spaceId); }\n}\n\nconst accessible = candidates.filter(c => accessibleSpaces.has(c.space_id));\nconst filtered_out = candidates.filter(c => blockedSpaces.has(c.space_id)).length;\n\nreturn [{ json: { accessible: accessible.slice(0, 8), filtered_out } }];"
+      },
       "id": "s-layer-b",
       "name": "Layer B Filter",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2432, 288],
-      "notes": "Layer B (ADR-004): keep only artifacts in spaces where caller_user_id is a member. Matches Expand Spaces items (by order) to membership responses. Fail-closed.",
-      "parameters": {
-        "jsCode": "const membershipItems = $input.all();\nconst expandedItems = $('Expand Spaces').all();\nconst callerUserId = String($('When Called').first().json.caller_user_id || '');\nconst candidates = $('Merge Results').first().json.candidates || [];\n\nconst accessibleSpaces = new Set();\nconst blockedSpaces = new Set();\n\nfor (let i = 0; i < membershipItems.length; i++) {\n  const spaceId = (expandedItems[i] && expandedItems[i].json.space_id) || '';\n  const members = membershipItems[i].json.members || [];\n  const isMember = members.some(m => {\n    const uid = String((m.user && m.user.id !== undefined) ? m.user.id : (m.id || ''));\n    return uid === callerUserId;\n  });\n  if (spaceId) { if (isMember) accessibleSpaces.add(spaceId); else blockedSpaces.add(spaceId); }\n}\n\nconst accessible = candidates.filter(c => accessibleSpaces.has(c.space_id));\nconst filtered_out = candidates.filter(c => blockedSpaces.has(c.space_id)).length;\n\nreturn [{ json: { accessible: accessible.slice(0, 3), filtered_out } }];"
-      }
+      "position": [2224, 288],
+      "notes": "Layer B (ADR-004): keep only artifacts in spaces where caller_user_id is a member. Matches Expand Spaces items (by order) to membership responses. Fail-closed. Cap: 8 artifacts."
     },
     {
-      "id": "s-has-accessible",
-      "name": "Has Accessible",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.3,
-      "position": [2640, 288],
-      "notes": "False -> Build Output (all filtered by Layer B).",
       "parameters": {
         "conditions": {
           "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
           "combinator": "and",
-          "conditions": [
-            { "id": "a1", "leftValue": "={{ $json.accessible.length }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }
-          ]
+          "conditions": [{ "id": "a1", "leftValue": "={{ $json.accessible.length }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }]
         },
         "options": {}
-      }
+      },
+      "id": "s-has-accessible",
+      "name": "Has Accessible",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [2432, 288],
+      "notes": "False -> Build Output (all filtered by Layer B)."
     },
     {
+      "parameters": { "jsCode": "return ($json.accessible || []).map(a => ({ json: a }));" },
       "id": "s-expand-artifacts",
       "name": "Expand Artifacts",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2864, 288],
-      "notes": "Expand accessible artifacts to individual items for Artifact Loop.",
-      "parameters": {
-        "jsCode": "return ($json.accessible || []).map(a => ({ json: a }));"
-      }
+      "position": [2656, 288],
+      "notes": "Expand accessible artifacts to individual items for Artifact Loop."
     },
     {
+      "parameters": { "options": {} },
       "id": "s-artifact-loop",
       "name": "Artifact Loop",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
-      "position": [3088, 288],
-      "notes": "Loop over up to 3 accessible artifacts. Loop -> Read Task -> back. Done -> Build Output.",
-      "parameters": { "options": {} }
+      "position": [2880, 288],
+      "notes": "Loop over accessible artifacts (up to 8). Loop -> Read Task -> back. Done -> Build Output."
     },
     {
-      "id": "s-read-task",
-      "name": "Read Task",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [3312, 288],
-      "notes": "Read full task content. onError=continueRegularOutput: failed reads return empty and loop continues.",
-      "onError": "continueRegularOutput",
       "parameters": {
         "url": "=https://api.clickup.com/api/v2/task/{{ $json.id }}",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "clickUpApi",
         "options": {}
       },
-      "credentials": {
-        "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" }
-      }
+      "id": "s-read-task",
+      "name": "Read Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3104, 288],
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
+      "onError": "continueRegularOutput",
+      "notes": "Read full task content. onError=continueRegularOutput: failed reads return empty and loop continues."
     },
     {
+      "parameters": {
+        "jsCode": "let task_comments = [];\ntry {\n  const r = $('Fetch Task Comments').first().json;\n  task_comments = (r.comments || []).slice(0, 30).map(c => ({\n    id: c.id,\n    author: (c.user && (c.user.username || c.user.email)) || '',\n    text: (c.comment_text || (c.comment || []).map(op => (op.text || '')).join('')).slice(0, 600),\n    date: c.date\n  }));\n} catch(e) {}\n\nlet additional_context = '';\nlet sources_used = [];\nlet sources_filtered_out = 0;\n\ntry { sources_filtered_out = $('Layer B Filter').first().json.filtered_out || 0; } catch(e) {}\n\ntry {\n  const readItems = $('Read Task').all();\n  const parts = [];\n  for (const item of readItems) {\n    const t = item.json || {};\n    if (!t.id) continue;\n    parts.push('### ' + (t.name || t.id));\n    if (t.description) parts.push(t.description);\n    sources_used.push('task/' + t.id);\n  }\n  additional_context = parts.join('\\n\\n');\n} catch(e) {}\n\nreturn [{ json: { task_comments, additional_context, sources_used, sources_filtered_out } }];"
+      },
       "id": "s-build-output",
       "name": "Build Output",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [3520, 288],
-      "notes": "Assemble final output. Uses node references with try/catch so all convergence paths work.",
-      "parameters": {
-        "jsCode": "let task_comments = [];\ntry {\n  const r = $('Fetch Task Comments').first().json;\n  task_comments = (r.comments || []).slice(0, 30).map(c => ({\n    id: c.id,\n    author: (c.user && (c.user.username || c.user.email)) || '',\n    text: (c.comment_text || (c.comment || []).map(op => (op.text || '')).join('')).slice(0, 600),\n    date: c.date\n  }));\n} catch(e) {}\n\nlet additional_context = '';\nlet sources_used = [];\nlet sources_filtered_out = 0;\n\ntry { sources_filtered_out = $('Layer B Filter').first().json.filtered_out || 0; } catch(e) {}\n\ntry {\n  const readItems = $('Read Task').all();\n  const parts = [];\n  for (const item of readItems) {\n    const t = item.json || {};\n    if (!t.id) continue;\n    parts.push('### ' + (t.name || t.id));\n    if (t.description) parts.push(t.description);\n    sources_used.push('task/' + t.id);\n  }\n  additional_context = parts.join('\\n\\n');\n} catch(e) {}\n\nreturn [{ json: { task_comments, additional_context, sources_used, sources_filtered_out } }];"
-      }
+      "position": [3312, 288],
+      "notes": "Assemble final output. Uses node references with try/catch so all convergence paths work."
     },
     {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "conditions": [{ "id": "hc1", "leftValue": "={{ $json.additional_context }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
       "id": "s-has-condense-content",
       "name": "Has Condense Content",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [3744, 288],
-      "notes": "True -> selectively condense additional_context with Haiku (quality-based, not size-based). False -> pass through unchanged.",
-      "parameters": {
-        "conditions": {
-          "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" },
-          "combinator": "and",
-          "conditions": [
-            { "id": "hc1", "leftValue": "={{ $json.additional_context }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } }
-          ]
-        },
-        "options": {}
-      }
+      "position": [3536, 288],
+      "notes": "True -> selectively condense additional_context with Haiku (quality-based, not size-based). False -> pass through unchanged."
     },
     {
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nconst task = wc.current_task || {};\nconst prevOutput = $('Build Output').first().json;\n\nconst prompt =\n  'Przejrzyj poniższe treści pobrane z ClickUp dla zadania. Twoim celem jest przygotowanie wersji jak najbardziej użytecznej dla modelu AI pracującego nad tym zadaniem.\\n\\n' +\n  'Zasady:\\n' +\n  '- ZACHOWAJ DOSŁOWNIE: specyfikacje techniczne, dokładne wymagania, instrukcje krok po kroku, konkretne liczby, daty, decyzje, kod, unikalne informacje, konkretne wytyczne.\\n' +\n  '- SKONDENSUJ w 1–3 zdaniach: powtarzające się komentarze, ogólne aktualizacje, wiadomości o niskiej gęstości informacji, powtórzenia, kwestie nieistotne dla sukcesu zadania.\\n' +\n  '- Zachowaj nagłówki i strukturę.\\n' +\n  '- Nie dodawaj własnych komentarzy ani wyjaśnień — tylko przetworzona treść.\\n\\n' +\n  '## Zadanie\\n' + (task.name || '') + '\\n\\n' +\n  (wc.triggering_comment_text ? '## Pytanie użytkownika\\n' + wc.triggering_comment_text + '\\n\\n' : '') +\n  '## Treść do przejrzenia\\n' + prevOutput.additional_context + '\\n\\n' +\n  'Zwróć przetworzoną treść. Bez wstępów ani dodatkowych wyjaśnień.';\n\nreturn [{ json: { condense_prompt: prompt } }];"
+      },
       "id": "s-build-condense-prompt",
       "name": "Build Condense Prompt",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [3968, 160],
-      "notes": "Builds prompt for selective condense: keep technical specs verbatim, summarize repetitive/low-value content.",
-      "parameters": {
-        "language": "javaScript",
-        "jsCode": "const wc = $('When Called').first().json;\nconst task = wc.current_task || {};\nconst prevOutput = $('Build Output').first().json;\n\nconst prompt =\n  'Przejrzyj poniższe treści pobrane z ClickUp dla zadania. Twoim celem jest przygotowanie wersji jak najbardziej użytecznej dla modelu AI pracującego nad tym zadaniem.\\n\\n' +\n  'Zasady:\\n' +\n  '- ZACHOWAJ DOSŁOWNIE: specyfikacje techniczne, dokładne wymagania, instrukcje krok po kroku, konkretne liczby, daty, decyzje, kod, unikalne informacje.\\n' +\n  '- SKONDENSUJ w 1–3 zdaniach: powtarzające się komentarze, ogólne aktualizacje statusu, wiadomości o niskiej gęstości informacji.\\n' +\n  '- Zachowaj nagłówki i strukturę.\\n' +\n  '- Nie dodawaj własnych komentarzy ani wyjaśnień — tylko przetworzona treść.\\n\\n' +\n  '## Zadanie\\n' + (task.name || '') + '\\n\\n' +\n  (wc.triggering_comment_text ? '## Pytanie użytkownika\\n' + wc.triggering_comment_text + '\\n\\n' : '') +\n  '## Treść do przejrzenia\\n' + prevOutput.additional_context + '\\n\\n' +\n  'Zwróć przetworzoną treść. Bez wstępów ani dodatkowych wyjaśnień.';\n\nreturn [{ json: { condense_prompt: prompt } }];"
-      }
+      "position": [3760, 160],
+      "notes": "Builds prompt for selective condense: keep technical specs verbatim, summarize repetitive/low-value content."
     },
     {
-      "id": "s-call-condense",
-      "name": "Call Condense",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.3,
-      "position": [4192, 160],
-      "notes": "Haiku call to selectively condense search results. onError=continueErrorOutput -> Alert Condense Failed -> Final Output with uncompressed content.",
-      "onError": "continueErrorOutput",
       "parameters": {
-        "source": "database",
-        "workflowId": {
-          "__rl": true,
-          "value": "XcOIVdZnVCCWNPeb",
-          "mode": "list",
-          "cachedResultName": "Invoke Model (v1)"
-        },
+        "workflowId": { "__rl": true, "value": "XcOIVdZnVCCWNPeb", "mode": "list", "cachedResultName": "Invoke Model (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -437,23 +372,18 @@
           "convertFieldsToString": false
         },
         "options": {}
-      }
-    },
-    {
-      "id": "s-alert-condense-fail",
-      "name": "Alert Condense Failed",
+      },
+      "id": "s-call-condense",
+      "name": "Call Condense",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [4192, 0],
-      "notes": "WARN when condense Haiku call fails. Final Output falls back to uncompressed Build Output data.",
+      "position": [3984, 160],
+      "onError": "continueErrorOutput",
+      "notes": "Haiku call to selectively condense search results. onError=continueErrorOutput -> Alert Condense Failed -> Final Output with uncompressed content."
+    },
+    {
       "parameters": {
-        "source": "database",
-        "workflowId": {
-          "__rl": true,
-          "value": "YSCdHlmdf3p9XEUx",
-          "mode": "list",
-          "cachedResultName": "Post Alert (v1)"
-        },
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -473,145 +403,109 @@
           "convertFieldsToString": true
         },
         "options": {}
-      }
+      },
+      "id": "s-alert-condense-fail",
+      "name": "Alert Condense Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [3984, 0],
+      "notes": "WARN when condense Haiku call fails. Final Output falls back to uncompressed Build Output data."
     },
     {
+      "parameters": {
+        "jsCode": "const prev = $('Build Output').first().json;\nconst condensed = ($('Call Condense').first().json.completion || '').trim();\nreturn [{ json: {\n  task_comments: prev.task_comments,\n  additional_context: condensed,\n  sources_used: prev.sources_used,\n  sources_filtered_out: prev.sources_filtered_out\n} }];"
+      },
       "id": "s-assemble-condensed",
       "name": "Assemble Condensed",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [4416, 160],
-      "notes": "Merge condensed additional_context back with task_comments, sources_used, sources_filtered_out from Build Output.",
-      "parameters": {
-        "language": "javaScript",
-        "jsCode": "const prev = $('Build Output').first().json;\nconst condensed = ($('Call Condense').first().json.completion || '').trim();\nreturn [{ json: {\n  task_comments: prev.task_comments,\n  additional_context: condensed,\n  sources_used: prev.sources_used,\n  sources_filtered_out: prev.sources_filtered_out\n} }];"
-      }
+      "position": [4208, 160],
+      "notes": "Merge condensed additional_context back with task_comments, sources_used, sources_filtered_out from Build Output."
     },
     {
+      "parameters": {
+        "jsCode": "let result;\ntry {\n  result = $('Assemble Condensed').first().json;\n} catch(e) {\n  result = $('Build Output').first().json;\n}\nreturn [{ json: result }];"
+      },
       "id": "s-final-output",
       "name": "Final Output",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [4640, 288],
-      "notes": "Terminal node. Prefers Assemble Condensed output; falls back to Build Output if condense path did not run.",
-      "parameters": {
-        "language": "javaScript",
-        "jsCode": "let result;\ntry {\n  result = $('Assemble Condensed').first().json;\n} catch(e) {\n  result = $('Build Output').first().json;\n}\nreturn [{ json: result }];"
-      }
+      "position": [4432, 288],
+      "notes": "Terminal node. Prefers Assemble Condensed output; falls back to Build Output if condense path did not run."
     }
   ],
   "connections": {
-    "When Called": {
-      "main": [[{ "node": "Fetch Task Comments", "type": "main", "index": 0 }]]
-    },
-    "Fetch Task Comments": {
-      "main": [[{ "node": "Has Triggering Text", "type": "main", "index": 0 }]]
-    },
-    "Has Triggering Text": {
-      "main": [
-        [{ "node": "Build Search Prompt", "type": "main", "index": 0 }],
-        [{ "node": "Build Output", "type": "main", "index": 0 }]
-      ]
-    },
-    "Build Search Prompt": {
-      "main": [[{ "node": "Extract Queries", "type": "main", "index": 0 }]]
-    },
+    "When Called": { "main": [[{ "node": "Fetch Task Comments", "type": "main", "index": 0 }]] },
+    "Fetch Task Comments": { "main": [[{ "node": "Build Search Prompt", "type": "main", "index": 0 }]] },
+    "Build Search Prompt": { "main": [[{ "node": "Extract Queries", "type": "main", "index": 0 }]] },
     "Extract Queries": {
       "main": [
         [{ "node": "Parse Queries", "type": "main", "index": 0 }],
         [{ "node": "Alert Extract Failed", "type": "main", "index": 0 }]
       ]
     },
-    "Alert Extract Failed": {
-      "main": [[{ "node": "Build Output", "type": "main", "index": 0 }]]
-    },
-    "Parse Queries": {
-      "main": [[{ "node": "Has Queries", "type": "main", "index": 0 }]]
-    },
+    "Alert Extract Failed": { "main": [[{ "node": "Build Output", "type": "main", "index": 0 }]] },
+    "Parse Queries": { "main": [[{ "node": "Has Queries", "type": "main", "index": 0 }]] },
     "Has Queries": {
       "main": [
         [{ "node": "Expand Queries", "type": "main", "index": 0 }],
         [{ "node": "Build Output", "type": "main", "index": 0 }]
       ]
     },
-    "Expand Queries": {
-      "main": [[{ "node": "Query Loop", "type": "main", "index": 0 }]]
-    },
+    "Expand Queries": { "main": [[{ "node": "Query Loop", "type": "main", "index": 0 }]] },
     "Query Loop": {
       "main": [
         [{ "node": "Search Tasks", "type": "main", "index": 0 }],
         [{ "node": "Merge Results", "type": "main", "index": 0 }]
       ]
     },
-    "Search Tasks": {
-      "main": [[{ "node": "Query Loop", "type": "main", "index": 0 }]]
-    },
-    "Merge Results": {
-      "main": [[{ "node": "Has Candidates", "type": "main", "index": 0 }]]
-    },
+    "Search Tasks": { "main": [[{ "node": "Query Loop", "type": "main", "index": 0 }]] },
+    "Merge Results": { "main": [[{ "node": "Has Candidates", "type": "main", "index": 0 }]] },
     "Has Candidates": {
       "main": [
         [{ "node": "Expand Spaces", "type": "main", "index": 0 }],
         [{ "node": "Build Output", "type": "main", "index": 0 }]
       ]
     },
-    "Expand Spaces": {
-      "main": [[{ "node": "Space Loop", "type": "main", "index": 0 }]]
-    },
+    "Expand Spaces": { "main": [[{ "node": "Space Loop", "type": "main", "index": 0 }]] },
     "Space Loop": {
       "main": [
         [{ "node": "Check Space Member", "type": "main", "index": 0 }],
         [{ "node": "Layer B Filter", "type": "main", "index": 0 }]
       ]
     },
-    "Check Space Member": {
-      "main": [[{ "node": "Space Loop", "type": "main", "index": 0 }]]
-    },
-    "Layer B Filter": {
-      "main": [[{ "node": "Has Accessible", "type": "main", "index": 0 }]]
-    },
+    "Check Space Member": { "main": [[{ "node": "Space Loop", "type": "main", "index": 0 }]] },
+    "Layer B Filter": { "main": [[{ "node": "Has Accessible", "type": "main", "index": 0 }]] },
     "Has Accessible": {
       "main": [
         [{ "node": "Expand Artifacts", "type": "main", "index": 0 }],
         [{ "node": "Build Output", "type": "main", "index": 0 }]
       ]
     },
-    "Expand Artifacts": {
-      "main": [[{ "node": "Artifact Loop", "type": "main", "index": 0 }]]
-    },
+    "Expand Artifacts": { "main": [[{ "node": "Artifact Loop", "type": "main", "index": 0 }]] },
     "Artifact Loop": {
       "main": [
         [{ "node": "Read Task", "type": "main", "index": 0 }],
         [{ "node": "Build Output", "type": "main", "index": 0 }]
       ]
     },
-    "Read Task": {
-      "main": [[{ "node": "Artifact Loop", "type": "main", "index": 0 }]]
-    },
-    "Build Output": {
-      "main": [[{ "node": "Has Condense Content", "type": "main", "index": 0 }]]
-    },
+    "Read Task": { "main": [[{ "node": "Artifact Loop", "type": "main", "index": 0 }]] },
+    "Build Output": { "main": [[{ "node": "Has Condense Content", "type": "main", "index": 0 }]] },
     "Has Condense Content": {
       "main": [
         [{ "node": "Build Condense Prompt", "type": "main", "index": 0 }],
         [{ "node": "Final Output", "type": "main", "index": 0 }]
       ]
     },
-    "Build Condense Prompt": {
-      "main": [[{ "node": "Call Condense", "type": "main", "index": 0 }]]
-    },
+    "Build Condense Prompt": { "main": [[{ "node": "Call Condense", "type": "main", "index": 0 }]] },
     "Call Condense": {
       "main": [
         [{ "node": "Assemble Condensed", "type": "main", "index": 0 }],
         [{ "node": "Alert Condense Failed", "type": "main", "index": 0 }]
       ]
     },
-    "Alert Condense Failed": {
-      "main": [[{ "node": "Final Output", "type": "main", "index": 0 }]]
-    },
-    "Assemble Condensed": {
-      "main": [[{ "node": "Final Output", "type": "main", "index": 0 }]]
-    }
+    "Alert Condense Failed": { "main": [[{ "node": "Final Output", "type": "main", "index": 0 }]] },
+    "Assemble Condensed": { "main": [[{ "node": "Final Output", "type": "main", "index": 0 }]] }
   },
   "settings": {
     "executionOrder": "v1",
@@ -621,6 +515,6 @@
   "staticData": null,
   "meta": null,
   "pinData": {},
-  "versionId": "220a095d-053d-41ae-ada0-12771103e057",
+  "versionId": "297355b5-31c3-4330-b102-f32df9f44575",
   "tags": []
 }

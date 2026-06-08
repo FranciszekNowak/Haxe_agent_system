@@ -49,16 +49,13 @@
           "__rl": true,
           "value": "qgM37HdQj78Rn090",
           "mode": "list",
-          "cachedResultUrl": "/workflow/qgM37HdQj78Rn090",
           "cachedResultName": "Context Gather (v1)"
         },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": { "taskId": "={{ $json.taskId }}" },
           "matchingColumns": [],
-          "schema": [
-            { "id": "taskId", "displayName": "taskId", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
+          "schema": [{ "id": "taskId", "displayName": "taskId", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
         },
@@ -69,6 +66,74 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [240, 304]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "hzwmak7UBpuHaiTO",
+          "mode": "list",
+          "cachedResultName": "PD Verifier (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "current_task": "={{ $('Call Context Gather').first().json.current_task }}",
+            "triggering_comment_text": "={{ $if($('When Called').isExecuted, $('When Called').first().json.triggering_comment_text || '', '') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "current_task", "displayName": "current_task", "type": "object", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "triggering_comment_text", "displayName": "triggering_comment_text", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "call-pd-verifier",
+      "name": "Call PD Verifier",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [448, 160],
+      "notes": "Inc 4: personal-data seam, always returns false (stub). Output used by Call Search (personal_data routing) and Build Prompt (Invoke Model routing)."
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "eL3fJuRMpzVRuVUT",
+          "mode": "list",
+          "cachedResultName": "Search (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "current_task": "={{ $('Call Context Gather').first().json.current_task }}",
+            "triggering_comment_text": "={{ $if($('When Called').isExecuted, $('When Called').first().json.triggering_comment_text || '', '') }}",
+            "caller_user_id": "={{ $if($('When Called').isExecuted, ($('When Called').first().json.reviewer_user_id || '2521617').toString(), ($('Form Trigger').first().json.reviewer_user_id || '2521617').toString()) }}",
+            "personal_data": "={{ $('Call PD Verifier').first().json.personal_data === true }}",
+            "clickup_task_id": "={{ ($('Call Context Gather').first().json.current_task || {}).id || '' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "current_task", "displayName": "current_task", "type": "object", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "triggering_comment_text", "displayName": "triggering_comment_text", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "caller_user_id", "displayName": "caller_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "personal_data", "displayName": "personal_data", "type": "boolean", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "clickup_task_id", "displayName": "clickup_task_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "call-search",
+      "name": "Call Search",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [672, 160],
+      "notes": "Inc 4: task comments + semantic search + Layer B access filter. Returns {task_comments, additional_context, sources_used, sources_filtered_out}."
     },
     {
       "parameters": {
@@ -110,7 +175,6 @@
           "__rl": true,
           "value": "XcOIVdZnVCCWNPeb",
           "mode": "list",
-          "cachedResultUrl": "/workflow/XcOIVdZnVCCWNPeb",
           "cachedResultName": "Invoke Model (v1)"
         },
         "workflowInputs": {
@@ -173,12 +237,7 @@
     },
     {
       "parameters": {
-        "workflowId": {
-          "__rl": true,
-          "value": "YSCdHlmdf3p9XEUx",
-          "mode": "list",
-          "cachedResultName": "Post Alert (v1)"
-        },
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -250,12 +309,7 @@
     },
     {
       "parameters": {
-        "workflowId": {
-          "__rl": true,
-          "value": "YSCdHlmdf3p9XEUx",
-          "mode": "list",
-          "cachedResultName": "Post Alert (v1)"
-        },
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -296,7 +350,7 @@
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" },
           "combinator": "and",
           "conditions": [
             { "id": "s1", "leftValue": "={{ $('Build Prompt').first().json.triggering_comment_id }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } }
@@ -305,11 +359,11 @@
         "options": {}
       },
       "id": "has-session",
-      "name": "Has Session",
+      "name": "Is @mention?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [1248, 64],
-      "notes": "Inc 3: true branch -> Post Reply (thread in existing session); false branch -> Post Draft Comment (new top-level comment, starts a new thread)."
+      "notes": "True (triggering_comment_id set = @mention trigger) → reply in-thread via Post Reply. False (no triggering comment = autonomous trigger, e.g. due-date arrival) → new top-level comment via Post Draft Comment. Routing is purely based on whether the current run was triggered by a specific comment."
     },
     {
       "parameters": {
@@ -332,16 +386,11 @@
       "waitBetweenTries": 2000,
       "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
       "onError": "continueErrorOutput",
-      "notes": "Inc 3: post agent response as a reply within the existing thread (comment_root_id from Check Session). Body ops from Build Comment (not $json — $json here is the Check Session result). onError=continueErrorOutput -> Alert Reply Failed + fallback to Post Draft Comment (new thread)."
+      "notes": "Reply path for @mention triggers: posts agent response as a reply to the triggering comment (nested in that thread). Body ops from Build Comment — not $json, which is the routing item. onError=continueErrorOutput → Alert Reply Failed, then fallback to Post Draft Comment (new top-level comment)."
     },
     {
       "parameters": {
-        "workflowId": {
-          "__rl": true,
-          "value": "YSCdHlmdf3p9XEUx",
-          "mode": "list",
-          "cachedResultName": "Post Alert (v1)"
-        },
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -367,7 +416,7 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [1648, -128],
-      "notes": "Inc 3: WARN when replying to an existing thread fails. Run continues — Post Draft Comment is the fallback (also connected from Post Reply error output)."
+      "notes": "WARN when replying in-thread fails. Run continues — Post Draft Comment (new top-level comment) is the fallback."
     },
     {
       "parameters": {
@@ -390,16 +439,11 @@
       "waitBetweenTries": 2000,
       "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
       "onError": "continueErrorOutput",
-      "notes": "Core-model step 5 (ADR-027): posts agent output as a new top-level ClickUp comment. Used when: (a) no active session exists, or (b) Post Reply failed (fallback). Body ops from Build Comment (not $json — $json is the incoming routing item). onError=continueErrorOutput -> WARN; run still returns."
+      "notes": "Core-model step 5 (ADR-027): posts agent output as a new top-level ClickUp comment. Used when: (a) no triggering comment (autonomous trigger), or (b) Post Reply failed (fallback). Body ops from Build Comment (not $json — $json is the incoming routing item). onError=continueErrorOutput -> WARN; run still returns."
     },
     {
       "parameters": {
-        "workflowId": {
-          "__rl": true,
-          "value": "YSCdHlmdf3p9XEUx",
-          "mode": "list",
-          "cachedResultName": "Post Alert (v1)"
-        },
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -451,12 +495,7 @@
     },
     {
       "parameters": {
-        "workflowId": {
-          "__rl": true,
-          "value": "YSCdHlmdf3p9XEUx",
-          "mode": "list",
-          "cachedResultName": "Post Alert (v1)"
-        },
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -528,13 +567,7 @@
     },
     {
       "parameters": {
-        "workflowId": {
-          "__rl": true,
-          "value": "YSCdHlmdf3p9XEUx",
-          "mode": "list",
-          "cachedResultUrl": "/workflow/YSCdHlmdf3p9XEUx",
-          "cachedResultName": "Post Alert (v1)"
-        },
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -560,87 +593,15 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [1184, 528]
-    },
-    {
-      "parameters": {
-        "workflowId": {
-          "__rl": true,
-          "value": "hzwmak7UBpuHaiTO",
-          "mode": "list",
-          "cachedResultUrl": "/workflow/hzwmak7UBpuHaiTO",
-          "cachedResultName": "PD Verifier (v1)"
-        },
-        "workflowInputs": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "current_task": "={{ $('Call Context Gather').first().json.current_task }}",
-            "triggering_comment_text": "={{ $if($('When Called').isExecuted, $('When Called').first().json.triggering_comment_text || '', '') }}"
-          },
-          "matchingColumns": [],
-          "schema": [
-            { "id": "current_task", "displayName": "current_task", "type": "object", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggering_comment_text", "displayName": "triggering_comment_text", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": false
-        },
-        "options": {}
-      },
-      "id": "call-pd-verifier",
-      "name": "Call PD Verifier",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.3,
-      "position": [448, 160],
-      "notes": "Inc 4: personal-data seam, always returns false (stub). Output used by Call Search (personal_data routing) and Build Prompt (Invoke Model routing)."
-    },
-    {
-      "parameters": {
-        "workflowId": {
-          "__rl": true,
-          "value": "eL3fJuRMpzVRuVUT",
-          "mode": "list",
-          "cachedResultName": "Search (v1)"
-        },
-        "workflowInputs": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "current_task": "={{ $('Call Context Gather').first().json.current_task }}",
-            "triggering_comment_text": "={{ $if($('When Called').isExecuted, $('When Called').first().json.triggering_comment_text || '', '') }}",
-            "caller_user_id": "={{ $if($('When Called').isExecuted, ($('When Called').first().json.reviewer_user_id || '2521617').toString(), ($('Form Trigger').first().json.reviewer_user_id || '2521617').toString()) }}",
-            "personal_data": "={{ $('Call PD Verifier').first().json.personal_data === true }}",
-            "clickup_task_id": "={{ ($('Call Context Gather').first().json.current_task || {}).id || '' }}"
-          },
-          "matchingColumns": [],
-          "schema": [
-            { "id": "current_task", "displayName": "current_task", "type": "object", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggering_comment_text", "displayName": "triggering_comment_text", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "caller_user_id", "displayName": "caller_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "personal_data", "displayName": "personal_data", "type": "boolean", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "clickup_task_id", "displayName": "clickup_task_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": false
-        },
-        "options": {}
-      },
-      "id": "call-search",
-      "name": "Call Search",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.3,
-      "position": [672, 160],
-      "notes": "Inc 4: task comments + semantic search + Layer B access filter. Returns {task_comments, additional_context, sources_used, sources_filtered_out}."
     }
   ],
   "connections": {
-    "Form Trigger": {
-      "main": [[{ "node": "Call Context Gather", "type": "main", "index": 0 }]]
-    },
-    "When Called": {
-      "main": [[{ "node": "Call Context Gather", "type": "main", "index": 0 }]]
-    },
-    "Load Agent Rules": {
-      "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]]
-    },
+    "Form Trigger": { "main": [[{ "node": "Call Context Gather", "type": "main", "index": 0 }]] },
+    "When Called": { "main": [[{ "node": "Call Context Gather", "type": "main", "index": 0 }]] },
+    "Call Context Gather": { "main": [[{ "node": "Call PD Verifier", "type": "main", "index": 0 }]] },
+    "Call PD Verifier": { "main": [[{ "node": "Call Search", "type": "main", "index": 0 }]] },
+    "Call Search": { "main": [[{ "node": "Load Agent Rules", "type": "main", "index": 0 }]] },
+    "Load Agent Rules": { "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]] },
     "Build Prompt": {
       "main": [[
         { "node": "Call Invoke Model", "type": "main", "index": 0 },
@@ -663,10 +624,9 @@
         [{ "node": "Alert Invoke Model Failed", "type": "main", "index": 0 }]
       ]
     },
-    "Check Rules Loaded": {
-      "main": [[{ "node": "Alert Rules Missing", "type": "main", "index": 0 }]]
-    },
-    "Has Session": {
+    "Check Rules Loaded": { "main": [[{ "node": "Alert Rules Missing", "type": "main", "index": 0 }]] },
+    "Build Comment": { "main": [[{ "node": "Is @mention?", "type": "main", "index": 0 }]] },
+    "Is @mention?": {
       "main": [
         [{ "node": "Post Reply", "type": "main", "index": 0 }],
         [{ "node": "Post Draft Comment", "type": "main", "index": 0 }]
@@ -687,42 +647,15 @@
         [{ "node": "Alert Post-back Failed", "type": "main", "index": 0 }]
       ]
     },
-    "Set Status W trakcie": {
-      "main": [
-        [],
-        [{ "node": "Alert Status Failed", "type": "main", "index": 0 }]
-      ]
-    },
-    "Set Status Zakonczono": {
-      "main": [
-        [],
-        [{ "node": "Alert Status Failed", "type": "main", "index": 0 }]
-      ]
-    },
+    "Set Status W trakcie": { "main": [[], [{ "node": "Alert Status Failed", "type": "main", "index": 0 }]] },
+    "Set Status Zakonczono": { "main": [[], [{ "node": "Alert Status Failed", "type": "main", "index": 0 }]] },
     "Sum Task Cost": {
       "main": [
         [{ "node": "Update CU Cost Field", "type": "main", "index": 0 }],
         [{ "node": "Alert Cost Sync Failed", "type": "main", "index": 0 }]
       ]
     },
-    "Update CU Cost Field": {
-      "main": [
-        [],
-        [{ "node": "Alert Cost Sync Failed", "type": "main", "index": 0 }]
-      ]
-    },
-    "Call Context Gather": {
-      "main": [[{ "node": "Call PD Verifier", "type": "main", "index": 0 }]]
-    },
-    "Call PD Verifier": {
-      "main": [[{ "node": "Call Search", "type": "main", "index": 0 }]]
-    },
-    "Call Search": {
-      "main": [[{ "node": "Load Agent Rules", "type": "main", "index": 0 }]]
-    },
-    "Build Comment": {
-      "main": [[{ "node": "Has Session", "type": "main", "index": 0 }]]
-    }
+    "Update CU Cost Field": { "main": [[], [{ "node": "Alert Cost Sync Failed", "type": "main", "index": 0 }]] }
   },
   "settings": {
     "executionOrder": "v1",
@@ -732,6 +665,6 @@
   "staticData": null,
   "meta": null,
   "pinData": {},
-  "versionId": "8d12968b-75c0-4477-b314-8ea0ccb1afcb",
+  "versionId": "74782409-4fd3-4bec-9f83-414711945a0f",
   "tags": []
 }
