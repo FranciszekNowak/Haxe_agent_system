@@ -370,7 +370,7 @@ Target: 7–9 weeks to v1.
 - **Build control plane**: Claude Code drives n8n programmatically via the `n8n-mcp` server over the public REST API (`https://agents.haxe.ai/api/v1`). Config in committed `.mcp.json`; the n8n API key is supplied from the machine env var `N8N_API_KEY` (setx; expiry 2026-08-31) and never committed. Windows launch must wrap npx in `cmd /c`. See ADR-018 and ADR-017.
 - **AWS**: account 000500193947 (tax reg. Skalus). Root MFA via passkey. IAM user `haxe-agents-bedrock`. Billing alert 50 USD/mo. Region eu-central-1.
 - **Supabase**: provisioned eu-central-1; schema migration 001 applied.
-- **Secrets**: all in 1Password (Cyberfolks account / Solus / root / franciszek / n8n encryption key / UI creds — separately labeled); `.env` on VPS only, never committed. `N8N_ENCRYPTION_KEY` rotated after initial deploy. The **ClickUp webhook HMAC secret** lives in the n8n `crypto` credential "ClickUp Webhook HMAC" (`NY5wM3VKKC1jZtQY`, encrypted in n8n's DB, never in the repo) — back it up in 1Password.
+- **Secrets**: all in 1Password (Cyberfolks account / Solus / root / franciszek / n8n encryption key / UI creds — separately labeled); `.env` on VPS only, never committed. `N8N_ENCRYPTION_KEY` rotated after initial deploy. The **ClickUp webhook HMAC secret** lives in the n8n `crypto` credential "ClickUp Webhook HMAC".
 - **Next**: Phase 1 — ClickUp foundation (Agent System Space, custom fields, first personas).
 
 ### Credential architecture
