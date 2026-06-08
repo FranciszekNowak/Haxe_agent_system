@@ -1,71 +1,62 @@
 {
+  "id": "XcOIVdZnVCCWNPeb",
   "name": "Invoke Model (v1)",
-  "active": false,
+  "active": true,
   "nodes": [
     {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "prompt" },
+            { "name": "impact" },
+            { "name": "personal_data", "type": "boolean" },
+            { "name": "task_type" },
+            { "name": "clickup_task_id" },
+            { "name": "triggered_by" },
+            { "name": "invocation_type" },
+            { "name": "caller_user_id" },
+            { "name": "process_type" }
+          ]
+        }
+      },
       "id": "exec-trigger",
       "name": "When Called",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
-      "position": [0, 304],
-      "notes": "ADR-013 invocation seam. Contract (ADR-024): impact, personal_data(bool — false = Anthropic direct, true = Bedrock EU GDPR); optional clickup_task_id/triggered_by/invocation_type/caller_user_id/process_type enrich agent_runs logging.",
-      "parameters": {
-        "inputSource": "workflowInputs",
-        "workflowInputs": {
-          "values": [
-            { "name": "prompt", "type": "string" },
-            { "name": "impact", "type": "string" },
-            { "name": "personal_data", "type": "boolean" },
-            { "name": "task_type", "type": "string" },
-            { "name": "clickup_task_id", "type": "string" },
-            { "name": "triggered_by", "type": "string" },
-            { "name": "invocation_type", "type": "string" },
-            { "name": "caller_user_id", "type": "string" },
-            { "name": "process_type", "type": "string" }
-          ]
-        }
-      }
+      "position": [0, 304]
     },
     {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select litellm_model, temperature, max_tokens, nudge,\n       price_in_usd_per_1k, price_out_usd_per_1k, impact\nfrom model_routing\nwhere impact in ($1, '__default__') and personal_data = $2 and active = true\norder by (impact = $1) desc\nlimit 1;",
+        "options": {
+          "queryReplacement": "={{ [ $json.impact || '__default__', $json.personal_data === true || $json.personal_data === 'true' ? true : false ] }}"
+        }
+      },
       "id": "lookup-routing",
       "name": "Lookup Routing",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [224, 304],
-      "notes": "Data-driven routing (ADR-024/030). Picks the row for (impact, personal_data), else (__default__, personal_data). personal_data=false -> Anthropic direct; personal_data=true -> Bedrock EU (GDPR). onError=continueErrorOutput -> DB outage falls through to in-code fail-safe in Resolve Routing (ADR-013).",
-      "onError": "continueErrorOutput",
       "retryOnFail": true,
       "waitBetweenTries": 2000,
       "maxTries": 2,
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "select litellm_model, temperature, max_tokens, nudge,\n       price_in_usd_per_1k, price_out_usd_per_1k, impact\nfrom model_routing\nwhere impact in ($1, '__default__') and personal_data = $2 and active = true\norder by (impact = $1) desc\nlimit 1;",
-        "options": { "queryReplacement": "={{ [ $json.impact || '__default__', $json.personal_data === true || $json.personal_data === 'true' ? true : false ] }}" }
+      "credentials": {
+        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
       },
-      "credentials": { "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" } }
+      "onError": "continueErrorOutput"
     },
     {
+      "parameters": {
+        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nif (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\nconst pd = (orig.personal_data === true || orig.personal_data === 'true') ? true : false;\n// null = model doesn't support the parameter (e.g. claude-opus-4-8)\nconst temperature = (row.temperature != null && row.temperature !== '') ? Number(row.temperature) : null;\n\nreturn [{ json: {\n  litellm_model: row.litellm_model,\n  temperature,\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  impact,\n  personal_data: pd,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used\n} }];"
+      },
       "id": "resolve-routing",
       "name": "Resolve Routing",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [448, 304],
-      "notes": "Shapes the model-call config. No usable row (DB down/table gap) -> in-code Sonnet direct last-resort (ADR-013). Flags routing_default_used only when a REAL tier was silently downgraded (ADR-025). Prepends nudge. personal_data defaults false (direct API); only true when caller has personal data (GDPR). Pure shaping (ADR-019).",
-      "parameters": {
-        "language": "javaScript",
-        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nif (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\n// personal_data: true = GDPR/Bedrock EU; false = direct API (default)\nconst pd = (orig.personal_data === true || orig.personal_data === 'true') ? true : false;\n\nreturn [{ json: {\n  litellm_model: row.litellm_model,\n  temperature: Number(row.temperature),\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  impact,\n  personal_data: pd,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used\n} }];"
-      }
+      "position": [448, 304]
     },
     {
-      "id": "call-litellm",
-      "name": "Call LiteLLM",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [672, 304],
-      "notes": "Production model caller (ADR-024). OpenAI-compatible /chat/completions on the internal LiteLLM gateway. Header auth = LiteLLM master key (credential; value must include 'Bearer '). fullResponse=true to capture x-litellm-response-cost + usage. Hard failure throws -> Error Handler -> CRITICAL.",
-      "retryOnFail": true,
-      "waitBetweenTries": 2000,
-      "maxTries": 2,
       "parameters": {
         "method": "POST",
         "url": "http://litellm:4000/v1/chat/completions",
@@ -73,65 +64,81 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $json.litellm_model, messages: [{ role: 'user', content: $json.prompt }], temperature: $json.temperature, max_tokens: $json.max_tokens }) }}",
-        "options": { "response": { "response": { "fullResponse": true, "responseFormat": "json" } }, "timeout": 120000 }
+        "jsonBody": "={{ JSON.stringify(Object.assign({ model: $json.litellm_model, messages: [{ role: 'user', content: $json.prompt }], max_tokens: $json.max_tokens }, $json.temperature != null ? { temperature: $json.temperature } : {})) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 120000
+        }
       },
-      "credentials": { "httpHeaderAuth": { "id": "396fqTZqWdFosVpT", "name": "LiteLLM master key" } }
+      "id": "call-litellm",
+      "name": "Call LiteLLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [672, 304],
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "maxTries": 2,
+      "credentials": {
+        "httpHeaderAuth": { "id": "396fqTZqWdFosVpT", "name": "LiteLLM master key" }
+      }
     },
     {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select rate from fx_rates where base='USD' and quote='PLN' order by rate_date desc limit 1;",
+        "options": {}
+      },
       "id": "get-fx",
       "name": "Get FX Rate",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [880, 304],
-      "notes": "Latest USD/PLN for cost conversion (ADR-024). onError=continueRegularOutput: if Supabase is unreachable keep the completion and log cost_pln=null rather than losing the run.",
-      "onError": "continueRegularOutput",
       "retryOnFail": true,
       "waitBetweenTries": 2000,
       "maxTries": 2,
-      "parameters": { "operation": "executeQuery", "query": "select rate from fx_rates where base='USD' and quote='PLN' order by rate_date desc limit 1;", "options": {} },
-      "credentials": { "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" } }
+      "credentials": {
+        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
+      },
+      "onError": "continueRegularOutput"
     },
     {
+      "parameters": {
+        "jsCode": "const routing = $('Resolve Routing').first().json;\nconst resp = $('Call LiteLLM').first().json || {};\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\n\nlet fx = null;\ntry { const f = $('Get FX Rate').first().json.rate; if (f != null && f !== '') fx = Number(f); } catch (e) {}\n\nconst ch = headers['x-litellm-response-cost'];\nlet usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\nlet cost_source = 'litellm_header';\nlet cost_missing = false;\nif (usd_cost == null || isNaN(usd_cost) || usd_cost === 0) {\n  cost_missing = true;\n  cost_source = 'fallback_table';\n  const pin = Number(routing.price_in_usd_per_1k || 0);\n  const pout = Number(routing.price_out_usd_per_1k || 0);\n  if (input_tokens != null && output_tokens != null && (pin || pout)) {\n    usd_cost = (input_tokens/1000)*pin + (output_tokens/1000)*pout;\n  } else {\n    usd_cost = null;\n  }\n}\nconst cost_pln = (usd_cost != null && fx != null) ? Number((usd_cost * fx).toFixed(6)) : null;\n\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : routing.litellm_model;\nconst alias = routing.litellm_model || '';\nconst provider = alias.includes('bedrock') ? 'litellm/bedrock-eu' : 'litellm/anthropic-direct';\n\nreturn [{ json: {\n  completion,\n  model_used,\n  provider,\n  input_tokens, output_tokens,\n  usd_cost, fx_rate: fx, cost_pln,\n  cost_source, cost_missing,\n  routing_default_used: !!routing.routing_default_used,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
+      },
       "id": "compute-cost",
       "name": "Compute Cost",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1104, 304],
-      "notes": "cost_pln = USD cost (x-litellm-response-cost header) x latest FX. model_used from response body.model (versioned, e.g. claude-opus-4-8), falls back to litellm alias if absent. provider derived from alias. Fallback cost: model_routing prices x tokens -> cost_missing=true (ADR-025). Pure shaping (ADR-019).",
-      "parameters": {
-        "language": "javaScript",
-        "jsCode": "const routing = $('Resolve Routing').first().json;\nconst resp = $('Call LiteLLM').first().json || {};\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\n\nlet fx = null;\ntry { const f = $('Get FX Rate').first().json.rate; if (f != null && f !== '') fx = Number(f); } catch (e) {}\n\nconst ch = headers['x-litellm-response-cost'];\nlet usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\nlet cost_source = 'litellm_header';\nlet cost_missing = false;\nif (usd_cost == null || isNaN(usd_cost) || usd_cost === 0) {\n  cost_missing = true;\n  cost_source = 'fallback_table';\n  const pin = Number(routing.price_in_usd_per_1k || 0);\n  const pout = Number(routing.price_out_usd_per_1k || 0);\n  if (input_tokens != null && output_tokens != null && (pin || pout)) {\n    usd_cost = (input_tokens/1000)*pin + (output_tokens/1000)*pout;\n  } else {\n    usd_cost = null;\n  }\n}\nconst cost_pln = (usd_cost != null && fx != null) ? Number((usd_cost * fx).toFixed(6)) : null;\n\n// Use actual model ID from LiteLLM response (versioned, e.g. claude-opus-4-8);\n// fall back to the alias if the field is absent.\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : routing.litellm_model;\n// Derive provider from the alias so it stays meaningful after the model name normalises\nconst alias = routing.litellm_model || '';\nconst provider = alias.includes('bedrock') ? 'litellm/bedrock-eu' : 'litellm/anthropic-direct';\n\nreturn [{ json: {\n  completion,\n  model_used,\n  provider,\n  input_tokens, output_tokens,\n  usd_cost, fx_rate: fx, cost_pln,\n  cost_source, cost_missing,\n  routing_default_used: !!routing.routing_default_used,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
-      }
+      "position": [1104, 304]
     },
     {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into agent_runs\n  (clickup_task_id, caller_user_id, process_type, triggered_by, invocation_type, model_used, impact,\n   input_tokens, output_tokens, cost_pln, status)\nvalues ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'completed')\nreturning id;",
+        "options": {
+          "queryReplacement": "={{ [ $('Compute Cost').first().json.clickup_task_id || null, $('Compute Cost').first().json.caller_user_id || null, $('Compute Cost').first().json.process_type || null, $('Compute Cost').first().json.triggered_by || 'explicit_command', $('Compute Cost').first().json.invocation_type || 'explicit', $('Compute Cost').first().json.model_used, $('Compute Cost').first().json.impact || null, $('Compute Cost').first().json.input_tokens, $('Compute Cost').first().json.output_tokens, $('Compute Cost').first().json.cost_pln ] }}"
+        }
+      },
       "id": "insert-run",
       "name": "Insert agent_runs",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [1328, 304],
-      "notes": "Observability log (ADR-024). model_used now stores the versioned model ID from the response body (e.g. claude-opus-4-8). onError=continueErrorOutput: failed insert must NOT fail the run -> WARN, completion still returned.",
-      "onError": "continueErrorOutput",
       "retryOnFail": true,
       "waitBetweenTries": 2000,
       "maxTries": 2,
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "insert into agent_runs\n  (clickup_task_id, caller_user_id, process_type, triggered_by, invocation_type, model_used, impact,\n   input_tokens, output_tokens, cost_pln, status)\nvalues ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'completed')\nreturning id;",
-        "options": { "queryReplacement": "={{ [ $('Compute Cost').first().json.clickup_task_id || null, $('Compute Cost').first().json.caller_user_id || null, $('Compute Cost').first().json.process_type || null, $('Compute Cost').first().json.triggered_by || 'explicit_command', $('Compute Cost').first().json.invocation_type || 'explicit', $('Compute Cost').first().json.model_used, $('Compute Cost').first().json.impact || null, $('Compute Cost').first().json.input_tokens, $('Compute Cost').first().json.output_tokens, $('Compute Cost').first().json.cost_pln ] }}" }
+      "credentials": {
+        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
       },
-      "credentials": { "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" } }
+      "onError": "continueErrorOutput"
     },
     {
-      "id": "shape-output",
-      "name": "Shape Output",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
-      "position": [1568, 208],
-      "notes": "Sub-workflow return contract: completion + model/provider + exact tokens + PLN cost. References Compute Cost so it is path-independent (single terminal).",
       "parameters": {
-        "mode": "manual",
-        "includeOtherFields": false,
         "assignments": {
           "assignments": [
             { "id": "b1", "name": "completion", "value": "={{ $('Compute Cost').first().json.completion }}", "type": "string" },
@@ -142,40 +149,89 @@
             { "id": "b6", "name": "cost_pln", "value": "={{ $('Compute Cost').first().json.cost_pln }}", "type": "number" },
             { "id": "b7", "name": "usd_cost", "value": "={{ $('Compute Cost').first().json.usd_cost }}", "type": "number" }
           ]
-        }
-      }
+        },
+        "options": {}
+      },
+      "id": "shape-output",
+      "name": "Shape Output",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1568, 208]
     },
     {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d1",
+              "leftValue": "={{ $json.routing_default_used }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            },
+            {
+              "id": "d2",
+              "leftValue": "={{ $json.cost_missing }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
       "id": "check-degradation",
       "name": "Check Degradation",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [1328, 528],
-      "notes": "Inline guard (ADR-025): WARN if a real impact was silently downgraded OR cost data missing. Both branches converge on Insert agent_runs so Shape Output stays the single terminal.",
-      "parameters": {
-        "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
-          "combinator": "or",
-          "conditions": [
-            { "id": "d1", "leftValue": "={{ $json.routing_default_used }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } },
-            { "id": "d2", "leftValue": "={{ $json.cost_missing }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
-          ]
-        }
-      }
+      "position": [1328, 528]
     },
     {
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "invoke-model",
+            "message": "Degradacja w Invoke Model: routing fail-safe i/lub brak danych o koszcie.",
+            "details": "=routing_default_used={{ $json.routing_default_used }}; cost_missing={{ $json.cost_missing }}; cost_source={{ $json.cost_source }}; impact={{ $json.impact }}; model={{ $json.model_used }}; task={{ $json.clickup_task_id }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
       "id": "alert-degradation",
       "name": "Alert Degradation",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [1568, 528],
-      "onError": "continueRegularOutput",
+      "onError": "continueRegularOutput"
+    },
+    {
       "parameters": {
-        "source": "database",
         "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
-          "value": { "severity": "WARN", "source": "invoke-model", "message": "Degradacja w Invoke Model: routing fail-safe i/lub brak danych o koszcie.", "details": "=routing_default_used={{ $json.routing_default_used }}; cost_missing={{ $json.cost_missing }}; cost_source={{ $json.cost_source }}; impact={{ $json.impact }}; model={{ $json.model_used }}; task={{ $json.clickup_task_id }}" },
+          "value": {
+            "severity": "WARN",
+            "source": "invoke-model",
+            "message": "Nie udało się zapisać agent_runs (utrata obserwowalności; run zwrócony mimo to).",
+            "details": "=task={{ $('Compute Cost').first().json.clickup_task_id }}; model={{ $('Compute Cost').first().json.model_used }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
           "matchingColumns": [],
           "schema": [
             { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
@@ -185,67 +241,97 @@
           ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
-        }
-      }
-    },
-    {
+        },
+        "options": {}
+      },
       "id": "alert-insert-failed",
       "name": "Alert Insert Failed",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1568, 368],
-      "parameters": {
-        "source": "database",
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
-        "workflowInputs": {
-          "mappingMode": "defineBelow",
-          "value": { "severity": "WARN", "source": "invoke-model", "message": "Nie udało się zapisać agent_runs (utrata obserwowalności; run zwrócony mimo to).", "details": "=task={{ $('Compute Cost').first().json.clickup_task_id }}; model={{ $('Compute Cost').first().json.model_used }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}" },
-          "matchingColumns": [],
-          "schema": [
-            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": true
-        }
-      }
+      "position": [1568, 368]
     },
     {
+      "parameters": {
+        "modelSource": "inferenceProfile",
+        "model": "eu.anthropic.claude-sonnet-4-6",
+        "options": {}
+      },
       "id": "bedrock-model",
       "name": "AWS Bedrock Chat Model (fallback)",
       "type": "@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
       "typeVersion": 1.1,
       "position": [672, 768],
-      "disabled": true,
-      "notes": "DOCUMENTED FALLBACK (ADR-021/024). Native Bedrock path, disabled. Break-glass if LiteLLM is unavailable. Does not capture token usage.",
-      "parameters": { "modelSource": "inferenceProfile", "model": "eu.anthropic.claude-sonnet-4-6", "options": {} },
-      "credentials": { "aws": { "id": "8TDwsQAJFkSWUEJF", "name": "AWS (IAM) account" } }
+      "credentials": {
+        "aws": { "id": "8TDwsQAJFkSWUEJF", "name": "AWS (IAM) account" }
+      },
+      "disabled": true
     },
     {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "batching": {}
+      },
       "id": "llm-chain",
       "name": "Basic LLM Chain (fallback)",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.9,
       "position": [672, 624],
-      "disabled": true,
-      "notes": "DOCUMENTED FALLBACK (ADR-024). Paired with the disabled native Bedrock node.",
-      "parameters": { "promptType": "define", "text": "={{ $json.prompt }}" }
+      "disabled": true
     }
   ],
   "connections": {
-    "When Called": { "main": [[{ "node": "Lookup Routing", "type": "main", "index": 0 }]] },
-    "Lookup Routing": { "main": [[{ "node": "Resolve Routing", "type": "main", "index": 0 }], [{ "node": "Resolve Routing", "type": "main", "index": 0 }]] },
-    "Resolve Routing": { "main": [[{ "node": "Call LiteLLM", "type": "main", "index": 0 }]] },
-    "Call LiteLLM": { "main": [[{ "node": "Get FX Rate", "type": "main", "index": 0 }]] },
-    "Get FX Rate": { "main": [[{ "node": "Compute Cost", "type": "main", "index": 0 }]] },
-    "Compute Cost": { "main": [[{ "node": "Check Degradation", "type": "main", "index": 0 }]] },
-    "Check Degradation": { "main": [[{ "node": "Alert Degradation", "type": "main", "index": 0 }], [{ "node": "Insert agent_runs", "type": "main", "index": 0 }]] },
-    "Alert Degradation": { "main": [[{ "node": "Insert agent_runs", "type": "main", "index": 0 }]] },
-    "Insert agent_runs": { "main": [[{ "node": "Shape Output", "type": "main", "index": 0 }], [{ "node": "Alert Insert Failed", "type": "main", "index": 0 }]] },
-    "Alert Insert Failed": { "main": [[{ "node": "Shape Output", "type": "main", "index": 0 }]] },
-    "AWS Bedrock Chat Model (fallback)": { "ai_languageModel": [[{ "node": "Basic LLM Chain (fallback)", "type": "ai_languageModel", "index": 0 }]] }
+    "When Called": {
+      "main": [[{ "node": "Lookup Routing", "type": "main", "index": 0 }]]
+    },
+    "Lookup Routing": {
+      "main": [
+        [{ "node": "Resolve Routing", "type": "main", "index": 0 }],
+        [{ "node": "Resolve Routing", "type": "main", "index": 0 }]
+      ]
+    },
+    "Resolve Routing": {
+      "main": [[{ "node": "Call LiteLLM", "type": "main", "index": 0 }]]
+    },
+    "Call LiteLLM": {
+      "main": [[{ "node": "Get FX Rate", "type": "main", "index": 0 }]]
+    },
+    "Get FX Rate": {
+      "main": [[{ "node": "Compute Cost", "type": "main", "index": 0 }]]
+    },
+    "Compute Cost": {
+      "main": [[{ "node": "Check Degradation", "type": "main", "index": 0 }]]
+    },
+    "Check Degradation": {
+      "main": [
+        [{ "node": "Alert Degradation", "type": "main", "index": 0 }],
+        [{ "node": "Insert agent_runs", "type": "main", "index": 0 }]
+      ]
+    },
+    "Alert Degradation": {
+      "main": [[{ "node": "Insert agent_runs", "type": "main", "index": 0 }]]
+    },
+    "Insert agent_runs": {
+      "main": [
+        [{ "node": "Shape Output", "type": "main", "index": 0 }],
+        [{ "node": "Alert Insert Failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Alert Insert Failed": {
+      "main": [[{ "node": "Shape Output", "type": "main", "index": 0 }]]
+    },
+    "AWS Bedrock Chat Model (fallback)": {
+      "ai_languageModel": [[{ "node": "Basic LLM Chain (fallback)", "type": "ai_languageModel", "index": 0 }]]
+    }
   },
-  "settings": { "executionOrder": "v1", "errorWorkflow": "81eplXMD1v5ONhzs" }
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "0f182a68-4376-44fd-b78c-6a84eb477a66",
+  "tags": []
 }
