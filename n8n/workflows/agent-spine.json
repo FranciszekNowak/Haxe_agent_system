@@ -223,12 +223,127 @@
       }
     },
     {
+      "id": "check-session",
+      "name": "Check Session",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1040, 60],
+      "notes": "Inc 3 (threading): look up the active conversation session for this (task, caller) pair. Returns comment_root_id='' if no session. coalesce guarantees exactly one row so first() never throws. onError=continueRegularOutput: DB failure passes through as empty json -> Has Session takes false branch -> new top-level comment (correct fallback).",
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select coalesce(\n  (select comment_root_id from conversation_sessions\n   where clickup_task_id = $1\n     and caller_user_id = $2\n     and is_active = true\n   order by last_turn_at desc\n   limit 1),\n  ''\n) as comment_root_id",
+        "options": {
+          "queryReplacement": "={{ [ $('Build Prompt').first().json.clickup_task_id, $('Build Prompt').first().json.caller_user_id ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
+      }
+    },
+    {
+      "id": "has-session",
+      "name": "Has Session",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1240, 60],
+      "notes": "Inc 3: true branch -> Post Reply (thread in existing session); false branch -> Post Draft Comment (new top-level comment, starts a new thread).",
+      "parameters": {
+        "conditions": {
+          "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "s1",
+              "leftValue": "={{ $json.comment_root_id }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty", "singleValue": true }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "post-reply",
+      "name": "Post Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, -60],
+      "notes": "Inc 3: post agent response as a reply within the existing thread (comment_root_id from Check Session). Body ops from Build Comment (not $json — $json here is the Check Session result). onError=continueErrorOutput -> Alert Reply Failed + fallback to Post Draft Comment (new thread).",
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/comment/{{ $('Check Session').first().json.comment_root_id }}/reply",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ comment: $('Build Comment').first().json.ops, notify_all: false }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" }
+      }
+    },
+    {
+      "id": "alert-reply-fail",
+      "name": "Alert Reply Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1640, -120],
+      "notes": "Inc 3: WARN when replying to an existing thread fails. Run continues — Post Draft Comment is the fallback (also connected from Post Reply error output).",
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-spine/thread-reply",
+            "message": "Nie udało się odpowiedzieć w wątku — fallback na nowy komentarz najwyższego poziomu.",
+            "details": "=task={{ $('Build Prompt').first().json.clickup_task_id }}; comment_root={{ $('Check Session').first().json.comment_root_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "upsert-session-reply",
+      "name": "Upsert Session Reply",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1640, 0],
+      "notes": "Inc 3: update existing session's last_turn_at + turn_count after a successful thread reply. comment_root_id stays the same (thread anchor never moves). onError=continueErrorOutput -> WARN; session tracking broken but main run succeeds.",
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into conversation_sessions\n  (clickup_task_id, comment_root_id, caller_user_id, last_turn_at, turn_count, is_active)\nvalues ($1, $2, $3, now(), 1, true)\non conflict (clickup_task_id, comment_root_id, caller_user_id)\n  where is_active = true\ndo update set\n  last_turn_at = now(),\n  turn_count = conversation_sessions.turn_count + 1\nreturning clickup_task_id, comment_root_id, turn_count",
+        "options": {
+          "queryReplacement": "={{ [ $('Build Prompt').first().json.clickup_task_id, $('Check Session').first().json.comment_root_id, $('Build Prompt').first().json.caller_user_id ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
+      }
+    },
+    {
       "id": "post-comment",
       "name": "Post Draft Comment",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [960, 120],
-      "notes": "Core-model step 5 (ADR-027): posts the agent output as a ClickUp comment that @-mentions the reviewer at the top. Body is built by 'Build Comment' as a Quill-delta ops array, so markdown RENDERS (headings, bold/italic/code, lists, links, code blocks, blockquotes, tables — verified live). Never finalizes. Deterministic node, capability not LLM-exposed (ADR-026). onError=continueErrorOutput -> WARN; run still returns.",
+      "position": [1440, 160],
+      "notes": "Core-model step 5 (ADR-027): posts agent output as a new top-level ClickUp comment. Used when: (a) no active session exists, or (b) Post Reply failed (fallback). Body ops from Build Comment (not $json — $json is the incoming routing item). onError=continueErrorOutput -> WARN; run still returns.",
       "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
@@ -240,7 +355,7 @@
         "nodeCredentialType": "clickUpApi",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ comment: $json.ops, notify_all: false }) }}",
+        "jsonBody": "={{ JSON.stringify({ comment: $('Build Comment').first().json.ops, notify_all: false }) }}",
         "options": {}
       },
       "credentials": {
@@ -252,7 +367,7 @@
       "name": "Alert Post-back Failed",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1180, 120],
+      "position": [1640, 220],
       "parameters": {
         "source": "database",
         "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
@@ -277,12 +392,61 @@
       }
     },
     {
+      "id": "upsert-session-new",
+      "name": "Upsert Session New",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1640, 340],
+      "notes": "Inc 3: record a new thread root after posting a new top-level comment. $json.id = the new ClickUp comment ID, which becomes comment_root_id (the thread anchor). onError=continueErrorOutput -> WARN; session tracking broken but main run succeeds.",
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into conversation_sessions\n  (clickup_task_id, comment_root_id, caller_user_id, last_turn_at, turn_count, is_active)\nvalues ($1, $2, $3, now(), 1, true)\non conflict (clickup_task_id, comment_root_id, caller_user_id)\n  where is_active = true\ndo update set\n  last_turn_at = now(),\n  turn_count = conversation_sessions.turn_count + 1\nreturning clickup_task_id, comment_root_id, turn_count",
+        "options": {
+          "queryReplacement": "={{ [ $('Build Prompt').first().json.clickup_task_id, $json.id, $('Build Prompt').first().json.caller_user_id ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
+      }
+    },
+    {
+      "id": "alert-upsert-fail",
+      "name": "Alert Session Upsert Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1840, 340],
+      "notes": "Inc 3: WARN when session upsert fails (shared by both Upsert Session Reply and Upsert Session New error paths). Threading broken for future turns on this task.",
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-spine/session-upsert",
+            "message": "Nie udało się zapisać sesji konwersacji — threading może być uszkodzony dla kolejnych odpowiedzi.",
+            "details": "=task={{ $('Build Prompt').first().json.clickup_task_id }}; caller={{ $('Build Prompt').first().json.caller_user_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
       "id": "status-done",
       "name": "Set Status Zakonczono",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1180, -40],
-      "notes": "Item 4 (ADR-026): sets [AI] Status agenta -> 'Zakończono' after the draft comment is posted. onError=continueErrorOutput -> WARN; non-blocking.",
+      "position": [1840, 60],
+      "notes": "Item 4 (ADR-026): sets [AI] Status agenta -> 'Zakończono' after the draft comment is posted. Fires from both Post Reply and Post Draft Comment success paths. onError=continueErrorOutput -> WARN; non-blocking.",
       "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
@@ -306,7 +470,7 @@
       "name": "Alert Status Failed",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1400, 60],
+      "position": [2060, 60],
       "parameters": {
         "source": "database",
         "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
@@ -428,11 +592,45 @@
       ]
     },
     "Check Rules Loaded": { "main": [[{ "node": "Alert Rules Missing", "type": "main", "index": 0 }]] },
-    "Build Comment": { "main": [[{ "node": "Post Draft Comment", "type": "main", "index": 0 }]] },
+    "Build Comment": { "main": [[{ "node": "Check Session", "type": "main", "index": 0 }]] },
+    "Check Session": { "main": [[{ "node": "Has Session", "type": "main", "index": 0 }]] },
+    "Has Session": {
+      "main": [
+        [{ "node": "Post Reply", "type": "main", "index": 0 }],
+        [{ "node": "Post Draft Comment", "type": "main", "index": 0 }]
+      ]
+    },
+    "Post Reply": {
+      "main": [
+        [
+          { "node": "Set Status Zakonczono", "type": "main", "index": 0 },
+          { "node": "Upsert Session Reply", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Alert Reply Failed", "type": "main", "index": 0 },
+          { "node": "Post Draft Comment", "type": "main", "index": 0 }
+        ]
+      ]
+    },
     "Post Draft Comment": {
       "main": [
-        [{ "node": "Set Status Zakonczono", "type": "main", "index": 0 }],
+        [
+          { "node": "Set Status Zakonczono", "type": "main", "index": 0 },
+          { "node": "Upsert Session New", "type": "main", "index": 0 }
+        ],
         [{ "node": "Alert Post-back Failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upsert Session Reply": {
+      "main": [
+        [],
+        [{ "node": "Alert Session Upsert Failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upsert Session New": {
+      "main": [
+        [],
+        [{ "node": "Alert Session Upsert Failed", "type": "main", "index": 0 }]
       ]
     },
     "Set Status W trakcie": {
