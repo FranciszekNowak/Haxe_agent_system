@@ -71,7 +71,7 @@ Date
 ## Definition of done
 
 Before reporting a feature or fix as complete, you must verify it actually works
-end-to-end — not just that the code was written or the workflow was updated. For
+end-to-end — not just that the code was written or the workflow was updated. For example, for/
 anything that touches the agent pipeline:
 
 1. **Trigger the full ClickUp flow.** @-mention the agent on a real task (or use
@@ -90,11 +90,9 @@ Only after these three checks pass report the task complete. "The code looks
 right" is not a substitute for observing the system behave correctly.
 
 **Claude must attempt verification autonomously before asking the user to do it.**
-Steps 2 and 3 (n8n logs, alert channel) are always accessible via MCP tools — do them
-yourself. Step 1 (triggering the ClickUp flow) often requires a real @-mention, which
-only a human can do; if you cannot trigger the run yourself, say so explicitly and ask
-the user to perform only that step. Never hand the entire verification back to the user
+ Never hand the entire verification back to the user
 when you can complete parts of it independently.
+This applies to all actions and parts of the system, not only ClickUp.
 
 ## Reliability & observability (mandatory)
 
