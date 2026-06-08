@@ -52,6 +52,7 @@ services:
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
       TZ: ${TZ}
       N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL}   # makes execution links in alerts clickable (ADR-025)
+      WEBHOOK_URL: ${WEBHOOK_URL}                   # public base for generated webhook/form URLs (ADR-012)
     volumes:
       - n8n-main-data:/home/node/.n8n
     networks:
@@ -82,6 +83,7 @@ services:
       TZ: ${TZ}
       N8N_CONCURRENCY_PRODUCTION_LIMIT: ${N8N_WORKER_CONCURRENCY}
       N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL}   # execution links in alerts (ADR-025)
+      WEBHOOK_URL: ${WEBHOOK_URL}                   # public base for generated webhook/form URLs (ADR-012)
     networks:
       - n8n-internal
     depends_on:

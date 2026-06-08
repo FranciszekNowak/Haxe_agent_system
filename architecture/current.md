@@ -773,12 +773,12 @@ Error Handler; routing-default-used (real tier downgraded) → WARN + run comple
 cost-missing → fallback cost + WARN; agent_runs-insert-failed → WARN + completion still
 returned. All non-blocking.
 
-`N8N_EDITOR_BASE_URL=https://agents.haxe.ai` is now wired into the VPS `n8n-main`/`n8n-worker`
-containers (compose passthrough added + recreated 2026-06-08) — alert execution links are
-clickable. Remaining backlog: tidy test-noise alert comments on `869dj2z2c` (no
-delete-comment API available); dedupe redundant lines in the VPS `.env`
-(`N8N_EDITOR_BASE_URL` ×3, `N8N_WORKER_CONCURRENCY` ×2 — harmless); optionally wire
-`WEBHOOK_URL` (already in `.env`) through the compose so n8n generates correct webhook URLs.
+`N8N_EDITOR_BASE_URL` and `WEBHOOK_URL` (both `https://agents.haxe.ai`) are now wired into
+the VPS `n8n-main`/`n8n-worker` containers (compose passthrough added + recreated
+2026-06-08) — alert execution links are clickable and n8n generates correct webhook/form
+URLs. Remaining backlog: tidy test-noise alert comments on `869dj2z2c` (no delete-comment
+API available); dedupe redundant lines in the VPS `.env` (`N8N_EDITOR_BASE_URL` ×3,
+`N8N_WORKER_CONCURRENCY` ×2 — harmless).
 
 Then (next phase): post the completion back to ClickUp (material in parent, draft as
 comment, @-mention reviewer; never auto-finalize — ADR-026); `linked_doc_leaves` resolution

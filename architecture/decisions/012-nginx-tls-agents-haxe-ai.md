@@ -46,3 +46,11 @@ nodes.
 - The live Nginx config at `/etc/nginx/conf.d/agents.conf` is managed
   partly by certbot (TLS blocks). Do not hand-edit the certbot-managed
   sections. Reference copy committed at `n8n/nginx-agents.conf` in the repo.
+
+> Update 2026-06-08: `WEBHOOK_URL` (and `N8N_EDITOR_BASE_URL`, ADR-025) were present in
+> `/opt/haxe-agents/.env` but **not reaching the n8n containers** — Compose only reads
+> `.env` to interpolate `${VARS}` in the compose file; a var must also be listed in the
+> service's `environment:` block to be injected. Both are now passed through to
+> `n8n-main`/`n8n-worker` (compose updated + containers recreated; verified via
+> `docker exec n8n-main printenv`). The repo `n8n/docker-compose.yml` + `.env.example`
+> reflect this.
