@@ -53,3 +53,14 @@ Two complementary layers, behind one channel seam:
 
 Related: ADR-024 (LiteLLM/routing/cost — the pipeline being monitored), ADR-018
 (built via the n8n MCP control plane), ADR-011 (stack/secrets).
+
+> Update 2026-06-08 (proactive layer built). The Phase-C monitors now exist and are
+> live: **FX freshness dead-man's-switch** (`FX Freshness Monitor (v1)`, daily; WARN if
+> latest `fx_rates` row >4 days old — threshold tolerates NBP weekend/holiday gaps);
+> and in-flow **degradation WARNs** through `Post Alert` — `routing-default-used`
+> (real impact silently downgraded), `cost-missing` (no LiteLLM cost header),
+> `agent_runs-insert-failed` (in Invoke Model), and `cost-sync-failed` (Agent Spine CU
+> cost write). All fire on non-blocking side branches / `onError`, so the run still
+> returns its result. The FX cron + both FX/monitor workflows set `errorWorkflow` =
+> `Error Handler (v1)`. This convention is now mandatory project-wide (CLAUDE.md
+> "Reliability & observability").

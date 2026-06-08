@@ -68,6 +68,32 @@ Date
   add new ones.
 - SQL uses lowercase keywords, snake_case names.
 
+## Reliability & observability (mandatory)
+
+The goal is a system that runs reliably and, when something goes wrong, lets the
+maintainer act in an informed and timely way. Therefore:
+
+- **Every feature that can fail or silently degrade MUST have an error handler that
+  posts an appropriate note to the ClickUp alerting channel.** "Silently degrade"
+  means it keeps running while delivering reduced/zero value with nobody noticing
+  (e.g. a cron that stops, a fallback that quietly downgrades quality, a missing
+  cost/usage figure, a failed log write). A loud crash is not enough on its own —
+  ask "what breaks without throwing?" and cover that too.
+- Route every alert through the centralized **`Post Alert (v1)`** seam (ADR-025),
+  with a severity (`INFO`/`WARN`/`CRITICAL`), a `source`, a human-readable message,
+  and actionable `details` (task id, which check failed, what to do). Don't post
+  ad-hoc to ClickUp from individual nodes — go through the seam so the channel stays
+  swappable.
+- Two layers, both required where applicable (ADR-025): **reactive** — set the global
+  `Error Handler (v1)` as the `errorWorkflow` on every pipeline workflow so throws
+  surface as CRITICAL; **proactive** — for anything that can fail *without* throwing,
+  add an explicit check (a freshness/dead-man's-switch cron, an in-flow IF that fires
+  a WARN). The reactive layer cannot catch a job that simply never ran.
+- A degradation alert must **not** break the main path: fire it on a side branch / via
+  `onError: continueErrorOutput`, and let the run still return its result.
+- When you build or change a feature, state in your summary which silent-failure modes
+  you covered and how. If a failure mode is knowingly left uncovered, say so explicitly.
+
 ## What's in this repo vs in ClickUp
 
 **In this repo (I edit, version-controlled):**

@@ -207,7 +207,7 @@ Abandoned: AI write-back to docs; self-sufficiency as a separate probe; compound
 ## 5. Database
 
 Supabase (eu-central-1). Seven live tables, plus two added by migrations 002/003
-(decided in ADR-024, pending apply). Authoritative DDL: `supabase/migrations/`.
+(decided in ADR-024, **applied 2026-06-03**). Authoritative DDL: `supabase/migrations/`.
 
 - `agent_runs`, `agent_run_evaluations`
 - `agent_proposals`, `agent_proposal_evaluations`
@@ -224,6 +224,13 @@ Supabase (eu-central-1). Seven live tables, plus two added by migrations 002/003
 > Repo gap (ADR-024): `001_initial_schema.sql` is applied to the live DB but was
 > never committed (only `.gitkeep`). It must be back-filled from the live schema so
 > `supabase/migrations/` reflects reality.
+
+> Migration `004_agent_runs_importance_check.sql` (2026-06-08) realigns the
+> `agent_runs.importance` CHECK from the stale English `Low/Medium/High` set to the live
+> 5-level Polish taxonomy. **Pending apply** (operator-gated): until applied, a run on a
+> real impact tier fails the `agent_runs` insert (the run still returns + a WARN fires,
+> but cost is not logged and won't reach the CU cost field). Found 2026-06-08 via fault
+> injection. Empty/`n/d` impact (→ NULL) is unaffected.
 
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
@@ -538,9 +545,21 @@ NOTE TO FUTURE BUILDER SELF: The agent's thinking shouldn't be forced into this 
 
 ### 13.3 Agent CU account
 
-Single base account `agent@haxe.com`, added to all Spaces as Guest with
-comment-write-only permission. Runtime scope is the calling user's permissions
-(see §3, ADR-004).
+Single base account `agent@haxe.com`. Intended as a comment-write-only Guest, but
+ClickUp won't let guests mint an API token, so it is a **Member** (broad edit/delete
+rights) — see ADR-004 (2026-06-02 update). Runtime scope is meant to narrow to the
+calling user's permissions (see §3, ADR-004), but **caller-scoping (Layers A/B) is not
+built yet**.
+
+> **Least-privilege model (ADR-026).** The durable control is *capability containment*:
+> the LLM holds no credentials and no tools (`Invoke Model` is pure prompt→completion),
+> so the agent can only do what deterministic, version-controlled n8n nodes are wired to
+> do — default **read + draft-comment only**. The Member token is over-privileged
+> (defense-in-depth gap): it is the one identity used for all ClickUp I/O. **Custom-field
+> writes are permitted** (resolved 2026-06-08) but **only via deterministic nodes/code,
+> never a capability exposed to the LLM** — the Agent-Spine `[AI] Koszt akcji [PLN]` write
+> (a fixed `SUM(agent_runs.cost_pln)` set-field call) satisfies this. A dedicated
+> Space-scoped telemetry token is optional future hardening (ADR-026).
 
 ### 13.4 Process knowledge hierarchy
 
@@ -722,15 +741,46 @@ model-call layer is being moved onto a self-hosted LiteLLM gateway + Supabase ro
   set as `errorWorkflow` on Invoke Model / Agent Spine / Context Gather. Proven by a
   real failure raising a CRITICAL alert.
 
-**RESUME CHECKLIST (Phase C — next session):**
-1. **FX cron** — Schedule → HTTP GET `api.nbp.pl/.../rates/a/usd` → upsert `fx_rates`; seed today. Then **FX freshness monitor** (stale-rate → Post Alert).
-2. **Rewire `Invoke Model (v1)`** (`XcOIVdZnVCCWNPeb`): `Select Model` Code node → Supabase `model_routing` lookup (`impact in ($impact,'__default__')`); replace `Basic LLM Chain`+native node with an HTTP Request to `http://litellm:4000/v1/chat/completions` (Bearer `LITELLM_MASTER_KEY`, include response headers); read `usage` + `x-litellm-response-cost`; `cost_pln = cost × latest fx_rates.rate`; insert `agent_runs` (query its live columns first). Renames `importance→impact`, `sensitivity→personal_data` (bool, fail-safe true) across Invoke Model / Context Gather output / Build Prompt / Agent Spine mappings. In-flow alerts: routing-default-used, cost-missing, agent_runs-insert-failed.
-3. **Test** the spine on the `impact`-tagged tasks (right model + real `cost_pln` logged).
-4. **Export** new/changed workflows to `n8n/workflows/` (incl. Post Alert, Error Handler, FX cron) + reflect `errorWorkflow` settings; **commit & push**.
-5. Backlog: set `N8N_EDITOR_BASE_URL=https://agents.haxe.ai` (clickable alert links); back-fill `001_initial_schema.sql` from live; check `.env` line 5 formatting.
+**Phase C — COMPLETE (2026-06-08; ADR-024/025/026).** The spine now runs fully on the
+LiteLLM gateway + Supabase routing + exact PLN cost, with proactive monitoring:
+- **FX cron** `FX Rates Daily (v1)` (id `b7A3y6bXwOj1G3XR`, active): Schedule 06:00 +
+  manual harness → NBP `rates/a/usd` → upsert `fx_rates`. Seeded (USD/PLN 3.6392,
+  2026-06-05). **FX freshness monitor** `FX Freshness Monitor (v1)` (id `XTP16Hb5aMe2Mp5Z`,
+  active): daily check → WARN if latest rate >4 days old (tolerates NBP weekend/holiday
+  gaps; verified quiet at age 3).
+- **`Invoke Model (v1)` rewired** (id `XcOIVdZnVCCWNPeb`): `Lookup Routing` (Supabase
+  `model_routing`, `__default__` fail-safe, DB-error tolerant) → `Resolve Routing`
+  (in-code Sonnet last-resort + nudge prepend) → `Call LiteLLM` (HTTP, header-auth
+  credential, full response) → `Get FX Rate` → `Compute Cost` → `Insert agent_runs` →
+  `Shape Output` (single terminal). Native Bedrock node + chain retained **disabled** as
+  fallback. Renames `importance→impact`, `sensitivity→personal_data` (bool, fail-safe
+  true) across Invoke Model / Context Gather output / Build Prompt / Agent Spine.
+- **Cost:** `x-litellm-response-cost` USD header × latest `fx_rates.rate` = `cost_pln`;
+  fallback to `model_routing` USD prices → `cost_missing` WARN. Logged to `agent_runs`
+  (live cols: `model_used`, `importance`, `input/output_tokens`, `cost_pln`, …; no
+  `provider` col; `triggered_by` NOT NULL → test path logs `explicit_command`/`explicit`).
+- **CU cost field** (Agent Spine): `[AI] Koszt akcji [PLN]` = `SUM(agent_runs.cost_pln)`
+  for the task (idempotent, drift-free). ⚠ Uses the edit-capable agent Member token —
+  flagged for the ADR-026 identity split.
+- **Proactive alerts** (ADR-025) all via `Post Alert`: routing-default-used, cost-missing,
+  agent_runs-insert-failed (non-blocking side branches), FX-freshness, cost-sync-failed.
+- **Verified end-to-end** on test task `869dhad2q`: Sonnet (default), 4640/1197 tokens,
+  usd 0.0350625 × 3.6392 = `cost_pln` 0.127599, `agent_runs` row written, CU field set;
+  routing matrix correct for all five tiers (haiku/sonnet/opus + critical nudge/16k).
 
-Then (post-rewire): post the completion back to ClickUp (material in parent, draft as
-comment, @-mention reviewer; never auto-finalize); `linked_doc_leaves` resolution
+**Failure paths fault-injected & proven (2026-06-08):** LiteLLM unreachable → CRITICAL via
+Error Handler; routing-default-used (real tier downgraded) → WARN + run completes;
+cost-missing → fallback cost + WARN; agent_runs-insert-failed → WARN + completion still
+returned. All non-blocking.
+
+Remaining backlog: **apply migration `004`** (agent_runs.importance CHECK — real-tier
+logging is broken until then); set `N8N_EDITOR_BASE_URL=https://agents.haxe.ai` (clickable
+alert links); back-fill `001_initial_schema.sql` from live; tidy test-noise alerts/rows
+(`869dj2z2c` comments + `FAULT-TEST` agent_runs rows); optional ADR-026 telemetry-token
+split (defense-in-depth hardening).
+
+Then (next phase): post the completion back to ClickUp (material in parent, draft as
+comment, @-mention reviewer; never auto-finalize — ADR-026); `linked_doc_leaves` resolution
 (Docs v3, selectively — only the current step's leaf, not all, to avoid context
 pollution); replace `Build Prompt` with the real assembler (GLOBAL agent-rules doc +
 person preferences, per the core model).

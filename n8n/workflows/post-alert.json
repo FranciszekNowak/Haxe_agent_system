@@ -1,0 +1,47 @@
+{
+  "name": "Post Alert (v1)",
+  "active": false,
+  "nodes": [
+    {
+      "id": "exec-trigger",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "notes": "Centralized alert seam (ADR-025). Contract: {severity, source, message, details}. Single channel choke-point so email/Slack can be added in one place later.",
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            { "name": "severity", "type": "string" },
+            { "name": "source", "type": "string" },
+            { "name": "message", "type": "string" },
+            { "name": "details", "type": "string" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "post-comment",
+      "name": "Post to Alerts Task",
+      "type": "n8n-nodes-base.clickUp",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "notes": "Posts to the Alerts & Health task (869dj2z2c) and notifies watchers/assignee. To add email/Slack later, add a node here — single place (ADR-025).",
+      "parameters": {
+        "authentication": "accessToken",
+        "resource": "comment",
+        "operation": "create",
+        "commentOn": "task",
+        "id": "869dj2z2c",
+        "commentText": "=**[{{ $json.severity }}] {{ $json.source }}**\n{{ $json.message }}\n\n{{ $json.details }}",
+        "additionalFields": { "notifyAll": true }
+      },
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } }
+    }
+  ],
+  "connections": {
+    "When Called": { "main": [[{ "node": "Post to Alerts Task", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

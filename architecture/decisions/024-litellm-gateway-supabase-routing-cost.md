@@ -86,3 +86,17 @@ community node.
 Related: ADR-013 (centralized invocation, routing-as-data, gateway), ADR-021
 (native node — now fallback), ADR-023 (the mapping — now in Supabase), ADR-011
 (Docker stack + Tier-3 secrets), ADR-019 (credential-aware nodes), ADR-002 (Bedrock-EU).
+
+> Update 2026-06-08 (rollout complete). The rewire shipped and is verified end-to-end:
+> `Invoke Model (v1)` now does Supabase `model_routing` lookup → LiteLLM HTTP call
+> (header-auth credential `396fqTZqWdFosVpT`; the master key needs the `Bearer ` prefix
+> — bare key returns LiteLLM `400 no_db_connection`) → cost from the
+> `x-litellm-response-cost` header × latest NBP `fx_rates.rate` → `agent_runs` log.
+> The daily FX cron + a freshness dead-man's-switch are live. Cost is **primary = LiteLLM
+> header**, fallback = `model_routing` USD prices (flagged `cost_missing`); the seeded
+> USD prices in `002` are now only the fallback path. `agent_runs` live columns differ
+> from the §5 sketch: `model_used` (not `model`), `importance` (un-renamed log column;
+> the pipeline field is `impact`), no `provider` column, `triggered_by` NOT NULL.
+> The per-task `[AI] Koszt akcji [PLN]` write (= `SUM(agent_runs.cost_pln)`) runs in
+> Agent Spine but needs an edit-capable token — see **ADR-026** for the least-privilege
+> remediation (move it to a telemetry identity, or drop it).

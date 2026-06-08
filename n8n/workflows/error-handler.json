@@ -1,0 +1,48 @@
+{
+  "name": "Error Handler (v1)",
+  "active": false,
+  "nodes": [
+    {
+      "id": "error-trigger",
+      "name": "On Workflow Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [0, 300],
+      "notes": "Reactive layer (ADR-025). Set as the errorWorkflow on every pipeline workflow; any throw becomes a CRITICAL alert via Post Alert.",
+      "parameters": {}
+    },
+    {
+      "id": "call-alert",
+      "name": "Call Post Alert",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [240, 300],
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "={{ $json.workflow.name }}",
+            "message": "={{ ($json.execution && $json.execution.error && $json.execution.error.message) || 'Workflow execution failed' }}",
+            "details": "=Execution {{ $json.execution.id }} failed at node \"{{ $json.execution.lastNodeExecuted }}\". {{ $json.execution.url || '' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "On Workflow Error": { "main": [[{ "node": "Call Post Alert", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

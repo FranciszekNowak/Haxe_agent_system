@@ -1,0 +1,65 @@
+{
+  "name": "FX Rates Daily (v1)",
+  "active": false,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Daily 06:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [0, 300],
+      "notes": "Daily FX import (ADR-024). NBP publishes table A on business days; 06:00 picks up the latest publication. The freshness monitor (separate wf) alarms if it goes stale.",
+      "parameters": { "rule": { "interval": [{ "field": "days", "triggerAtHour": 6, "triggerAtMinute": 0 }] } }
+    },
+    {
+      "id": "form-seed",
+      "name": "Run now (manual)",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [0, 480],
+      "webhookId": "fx-rates-daily-manual-seed",
+      "notes": "Manual harness to seed / re-run the FX import on demand (the Schedule Trigger can't be fired via API). Same downstream path.",
+      "parameters": {
+        "formTitle": "FX import (manual run)",
+        "formDescription": "Press submit to fetch today's NBP USD/PLN rate and upsert fx_rates.",
+        "formFields": { "values": [{ "fieldLabel": "confirm", "fieldType": "dropdown", "fieldOptions": { "values": [{ "option": "run" }] }, "requiredField": true }] },
+        "responseMode": "lastNode"
+      }
+    },
+    {
+      "id": "fetch-nbp",
+      "name": "Fetch NBP USD/PLN",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 300],
+      "notes": "NBP Web API table A average rate (official Polish accounting rate, free/no key). rates[0]: {no, effectiveDate, mid}.",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "maxTries": 3,
+      "parameters": { "method": "GET", "url": "https://api.nbp.pl/api/exchangerates/rates/a/usd/?format=json", "options": {} }
+    },
+    {
+      "id": "upsert-fx",
+      "name": "Upsert fx_rates",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [480, 300],
+      "notes": "Append-only daily row. ON CONFLICT updates rate/table_no/fetched_at so re-runs are idempotent. Parameterized ($1=date,$2=mid,$3=table_no) to avoid quoting issues.",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "maxTries": 3,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into fx_rates (rate_date, base, quote, rate, source, table_no)\nvalues ($1, 'USD', 'PLN', $2, 'NBP-A', $3)\non conflict (rate_date, base, quote)\ndo update set rate = excluded.rate, table_no = excluded.table_no, fetched_at = now()\nreturning rate_date, rate, table_no;",
+        "options": { "queryReplacement": "={{ [$json.rates[0].effectiveDate, $json.rates[0].mid, $json.rates[0].no] }}" }
+      },
+      "credentials": { "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" } }
+    }
+  ],
+  "connections": {
+    "Daily 06:00": { "main": [[{ "node": "Fetch NBP USD/PLN", "type": "main", "index": 0 }]] },
+    "Run now (manual)": { "main": [[{ "node": "Fetch NBP USD/PLN", "type": "main", "index": 0 }]] },
+    "Fetch NBP USD/PLN": { "main": [[{ "node": "Upsert fx_rates", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "timezone": "Europe/Warsaw", "errorWorkflow": "81eplXMD1v5ONhzs" }
+}

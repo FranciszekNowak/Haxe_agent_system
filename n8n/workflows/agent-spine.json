@@ -7,38 +7,33 @@
       "name": "Form Trigger",
       "type": "n8n-nodes-base.formTrigger",
       "typeVersion": 2.5,
-      "position": [0, 300],
+      "position": [0, 304],
+      "webhookId": "agent-spine-v1-webhook-001",
       "parameters": {
         "formTitle": "Agent Spine",
         "formDescription": "Enter a ClickUp task ID. Gathers context, routes by importance, returns a model completion.",
-        "formFields": {
-          "values": [
-            { "fieldLabel": "taskId", "requiredField": true }
-          ]
-        },
-        "responseMode": "lastNode"
-      },
-      "webhookId": "agent-spine-v1-webhook-001"
+        "formFields": { "values": [{ "fieldLabel": "taskId", "requiredField": true }] },
+        "responseMode": "lastNode",
+        "options": {}
+      }
     },
     {
       "id": "call-context",
       "name": "Call Context Gather",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [240, 300],
+      "position": [240, 304],
       "parameters": {
-        "source": "database",
         "workflowId": { "__rl": true, "value": "qgM37HdQj78Rn090", "mode": "list", "cachedResultName": "Context Gather (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": { "taskId": "={{ $json.taskId }}" },
           "matchingColumns": [],
-          "schema": [
-            { "id": "taskId", "displayName": "taskId", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
+          "schema": [{ "id": "taskId", "displayName": "taskId", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
-        }
+        },
+        "options": {}
       }
     },
     {
@@ -46,11 +41,10 @@
       "name": "Build Prompt",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [480, 300],
-      "notes": "Stub prompt assembler (v1): turns the context object into one prompt string + carries importance for routing. Later this incorporates the GLOBAL agent-rules doc + person preferences (core model). Pure shaping (ADR-019).",
+      "position": [480, 304],
+      "notes": "Stub prompt assembler (v1): turns the context object into one prompt string + carries impact for routing + clickup_task_id/triggered_by/invocation_type for logging. Later this incorporates the GLOBAL agent-rules doc + person preferences (core model). Pure shaping (ADR-019).",
       "parameters": {
-        "language": "javaScript",
-        "jsCode": "const ctx = $input.first().json;\nconst ct = ctx.current_task || {};\nconst chain = ctx.ancestor_chain || [];\nconst leaves = ctx.linked_doc_leaves || [];\n\nconst lines = [];\nlines.push('Jesteś asystentem AI wspierającym zespół Haxe. Wykonaj poniższe zadanie rzetelnie.');\nlines.push('');\nlines.push('# Zadanie');\nlines.push(ct.name || '(bez nazwy)');\nif (ct.description) { lines.push(''); lines.push(ct.description); }\n\nif (chain.length) {\n  lines.push('');\n  lines.push('# Kontekst nadrzędny (od najogólniejszego do najbliższego)');\n  for (const a of chain.slice().reverse()) {\n    lines.push('');\n    lines.push('## ' + (a.name || ''));\n    if (a.description) lines.push(a.description);\n  }\n}\n\nif (leaves.length) {\n  lines.push('');\n  lines.push('# Szczegółowe wytyczne');\n  for (const l of leaves) { lines.push('- ' + (l.name || '')); if (l.content) lines.push(l.content); }\n}\n\nlines.push('');\nlines.push('Przygotuj wynik dla powyższego zadania.');\n\nconst prompt = lines.join('\\n');\nreturn [{ json: { prompt, importance: ctx.importance || '', sensitivity: 'unknown', task_type: '' } }];"
+        "jsCode": "const ctx = $input.first().json;\nconst ct = ctx.current_task || {};\nconst chain = ctx.ancestor_chain || [];\nconst leaves = ctx.linked_doc_leaves || [];\n\nconst lines = [];\nlines.push('# Zadanie');\nlines.push(ct.name || '(bez nazwy)');\nif (ct.description) { lines.push(''); lines.push(ct.description); }\n\nif (chain.length) {\n  lines.push('');\n  lines.push('# Kontekst nadrzędny (od najogólniejszego do najbliższego)');\n  for (const a of chain.slice().reverse()) {\n    lines.push('');\n    lines.push('## ' + (a.name || ''));\n    if (a.description) lines.push(a.description);\n  }\n}\n\nif (leaves.length) {\n  lines.push('');\n  lines.push('# Szczegółowe wytyczne');\n  for (const l of leaves) { lines.push('- ' + (l.name || '')); if (l.content) lines.push(l.content); }\n}\n\nlines.push('');\nlines.push('Przygotuj odpowiedź dla powyższego zadania.');\n\nconst prompt = lines.join('\\n');\nreturn [{ json: { prompt, impact: ctx.impact || '', personal_data: true, task_type: '', clickup_task_id: (ct.id || ''), triggered_by: 'explicit_command', invocation_type: 'explicit' } }];"
       }
     },
     {
@@ -58,7 +52,7 @@
       "name": "Call Invoke Model",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [720, 300],
+      "position": [720, 304],
       "parameters": {
         "source": "database",
         "workflowId": { "__rl": true, "value": "XcOIVdZnVCCWNPeb", "mode": "list", "cachedResultName": "Invoke Model (v1)" },
@@ -66,16 +60,92 @@
           "mappingMode": "defineBelow",
           "value": {
             "prompt": "={{ $json.prompt }}",
-            "importance": "={{ $json.importance }}",
-            "sensitivity": "={{ $json.sensitivity }}",
-            "task_type": "={{ $json.task_type }}"
+            "impact": "={{ $json.impact }}",
+            "personal_data": "={{ $json.personal_data }}",
+            "task_type": "={{ $json.task_type }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}"
           },
           "matchingColumns": [],
           "schema": [
             { "id": "prompt", "displayName": "prompt", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "importance", "displayName": "importance", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "sensitivity", "displayName": "sensitivity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "task_type", "displayName": "task_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+            { "id": "impact", "displayName": "impact", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "personal_data", "displayName": "personal_data", "type": "boolean", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "task_type", "displayName": "task_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "clickup_task_id", "displayName": "clickup_task_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "triggered_by", "displayName": "triggered_by", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      }
+    },
+    {
+      "id": "sum-cost",
+      "name": "Sum Task Cost",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [960, 300],
+      "notes": "Authoritative task cost = SUM(agent_runs.cost_pln) for this task (ADR-024). Idempotent: the CU field mirrors this sum, no read-modify-write drift. onError=continueErrorOutput -> failure alerts, run not killed.",
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select coalesce(sum(cost_pln), 0) as total\nfrom agent_runs\nwhere clickup_task_id = $1;",
+        "options": { "queryReplacement": "={{ [ $('Build Prompt').first().json.clickup_task_id ] }}" }
+      },
+      "credentials": { "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" } }
+    },
+    {
+      "id": "update-cost",
+      "name": "Update CU Cost Field",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 300],
+      "notes": "Writes the running total to ClickUp '[AI] Koszt akcji [PLN]' (field ca7a3874...). onError=continueErrorOutput -> WARN on failure (silent-failure guard). Deterministic field write is permitted (ADR-026): capability is never exposed to the LLM. Uses the system ClickUp token; a dedicated telemetry token is optional future hardening.",
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('Build Prompt').first().json.clickup_task_id }}/field/ca7a3874-b83d-403c-8266-426935e38eae",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ value: Number($json.total) }) }}",
+        "options": {}
+      },
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } }
+    },
+    {
+      "id": "alert-cost-fail",
+      "name": "Alert Cost Sync Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1180, 520],
+      "parameters": {
+        "source": "database",
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-spine/cost-sync",
+            "message": "Nie udało się zsynchronizować kosztu zadania do pola CU '[AI] Koszt akcji [PLN]'.",
+            "details": "=task={{ $('Build Prompt').first().json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
           ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
@@ -86,7 +156,10 @@
   "connections": {
     "Form Trigger": { "main": [[{ "node": "Call Context Gather", "type": "main", "index": 0 }]] },
     "Call Context Gather": { "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]] },
-    "Build Prompt": { "main": [[{ "node": "Call Invoke Model", "type": "main", "index": 0 }]] }
+    "Build Prompt": { "main": [[{ "node": "Call Invoke Model", "type": "main", "index": 0 }]] },
+    "Call Invoke Model": { "main": [[{ "node": "Sum Task Cost", "type": "main", "index": 0 }]] },
+    "Sum Task Cost": { "main": [[{ "node": "Update CU Cost Field", "type": "main", "index": 0 }], [{ "node": "Alert Cost Sync Failed", "type": "main", "index": 0 }]] },
+    "Update CU Cost Field": { "main": [[], [{ "node": "Alert Cost Sync Failed", "type": "main", "index": 0 }]] }
   },
-  "settings": { "executionOrder": "v1" }
+  "settings": { "executionOrder": "v1", "errorWorkflow": "81eplXMD1v5ONhzs" }
 }
