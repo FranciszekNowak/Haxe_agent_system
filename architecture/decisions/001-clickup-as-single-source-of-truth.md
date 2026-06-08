@@ -45,3 +45,10 @@ Negative:
 ## Date
 
 2026-05-26
+
+> Update 2026-06-08 (supersedes the "guest users" detail in Decision): the agent
+> account `agent@haxe.com` is a ClickUp **Member**, not a guest — ClickUp only lets
+> Members generate the personal API token the pipeline needs. Caller-scoping is now
+> enforced in software (prompt + n8n MCP gateway) rather than by the CU account, and
+> the LLM holds no write capability. See ADR-004 (2026-06-02 update) and ADR-026.
+> The "single source of truth" decision above is unaffected.
