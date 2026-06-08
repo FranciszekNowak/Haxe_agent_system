@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v16
+Version: v17
 Last updated: 2026-06-08
-Supersedes: v15
+Supersedes: v16
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -40,7 +40,7 @@ senior-management intervention.
    Routed by `(impact, personal_data)`: `personal_data=false` → Anthropic direct (Opus 4.8);
    `personal_data=true` (GDPR gate) → Bedrock EU. See ADR-030.
 
-4. **Supabase (eu-central-1)** — application database. Operational logs, threaded
+4. **Supabase (eu-west-1, Ireland)** — application database. Operational logs, threaded
    human feedback, process-change proposals, conversation session cache, email
    audit. (n8n's own internal database is a separate Postgres container on the
    VPS — not Supabase.)
@@ -206,8 +206,11 @@ Abandoned: AI write-back to docs; self-sufficiency as a separate probe; compound
 
 ## 5. Database
 
-Supabase (eu-central-1). Seven live tables, plus two added by migrations 002/003
+Supabase (eu-west-1, Ireland). Seven live tables, plus two added by migrations 002/003
 (decided in ADR-024, **applied 2026-06-03**). Authoritative DDL: `supabase/migrations/`.
+Note: architecture originally specified eu-central-1 (Frankfurt); the live project is
+eu-west-1 (Ireland). Both are EU/GDPR-compliant; this is a documentation correction, not
+a data location change.
 
 - `agent_runs`, `agent_run_evaluations`
 - `agent_proposals`, `agent_proposal_evaluations`
@@ -237,11 +240,13 @@ Supabase (eu-central-1). Seven live tables, plus two added by migrations 002/003
 > RLS so it's unaffected (verified). `agent_runs` now also populates `caller_user_id` and
 > `process_type`.
 
-> Migration `009_triggered_by_search_step.sql` (2026-06-08, **pending application**) adds
-> `search_step` to the `agent_runs.triggered_by` CHECK. Required before `Search (v1)`
-> processes a triggering comment with external references — until applied, the Haiku
-> sub-call `agent_runs` INSERT will fail the constraint (run still completes, cost not logged).
-> Apply via Supabase SQL editor before the workflow sees production load (ADR-031).
+> Migration `008_model_routing_composite.sql` (2026-06-08, **applied**) restructures
+> `model_routing` to a composite PK `(impact, personal_data)` and seeds all 12 routing
+> rows: 6 impact tiers × 2 `personal_data` values (`false` → Anthropic direct,
+> `true` → Bedrock EU). Versioned aliases replace the old unversioned names (ADR-030).
+
+> Migration `009_triggered_by_search_step.sql` (2026-06-08, **applied**) adds
+> `search_step` to the `agent_runs.triggered_by` CHECK (ADR-031).
 
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
@@ -369,14 +374,19 @@ Target: 7–9 weeks to v1.
   - `n8n-redis` (redis:7-alpine) — queue backing; AOF persistence enabled; named volume.
   - `n8n-main` (n8nio/n8n:2.22.5) — UI, webhooks, scheduler; binds to 127.0.0.1:5678 only.
   - `n8n-worker` (n8nio/n8n:2.22.5) — queue consumer; concurrency 5.
-  - `litellm` (ghcr.io/berriai/litellm, v1.87.0 pinned by digest) — **deployed + verified 2026-06-03** (ADR-024). Internal-only
-    LLM gateway (127.0.0.1:4000): signs Bedrock, returns exact token usage + USD cost header, enables prompt
-    caching + multi-provider. Becomes the production model-call path (rewire pending, see §15); native Bedrock node = fallback.
-    Config in committed `n8n/litellm-config.yaml`; AWS keys + master key from `.env`.
+  - `litellm` (ghcr.io/berriai/litellm, v1.87.0 pinned by digest) — **deployed + active** (ADR-024/030).
+    Internal-only LLM gateway (127.0.0.1:4000): signs Bedrock, returns exact token usage + USD cost header,
+    multi-provider. **IS the production model-call path** (§15). Six versioned aliases: three Anthropic direct
+    (`haxe-haiku/sonnet/opus-*-direct`) + three Bedrock EU (`*-bedrock`). `ANTHROPIC_API_KEY` added to VPS
+    `.env` and container recreated 2026-06-08. Config in committed `n8n/litellm-config.yaml`; credentials
+    in `.env` (never committed). Native Bedrock node retained in n8n **disabled** as fallback.
 - **Public endpoint**: `https://agents.haxe.ai` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing, 90-day). HTTP → HTTPS redirect active. See ADR-012.
-- **Build control plane**: Claude Code drives n8n programmatically via the `n8n-mcp` server over the public REST API (`https://agents.haxe.ai/api/v1`). Config in committed `.mcp.json`; the n8n API key is supplied from the machine env var `N8N_API_KEY` (setx; expiry 2026-08-31) and never committed. Windows launch must wrap npx in `cmd /c`. See ADR-018 and ADR-017.
+- **Build control plane**: Claude Code drives infrastructure via two MCP servers in `.mcp.json`:
+  - **`n8n-mcp`** (`n8n-mcp@2.56.0`) — n8n REST API (`https://agents.haxe.ai/api/v1`); key from `N8N_API_KEY` (setx; expiry 2026-08-31). See ADR-017/018.
+  - **`@supabase/mcp-server-supabase`** — Supabase Management API; key from `SUPABASE_ACCESS_TOKEN` (setx, no expiry set). Enables direct SQL execution + migrations without the Supabase dashboard.
+  Both servers use `cmd /c npx` wrapper (Windows shim requirement — CLAUDE.md).
 - **AWS**: account 000500193947 (tax reg. Skalus). Root MFA via passkey. IAM user `haxe-agents-bedrock`. Billing alert 50 USD/mo. Region eu-central-1.
-- **Supabase**: provisioned eu-central-1; schema migration 001 applied.
+- **Supabase**: project `hkeslnosxibeuesxndnz`, eu-west-1 (Ireland). Migrations 001–009 applied. Schema managed via Supabase MCP from the operator desktop.
 - **Secrets**: all in 1Password (Cyberfolks account / Solus / root / franciszek / n8n encryption key / UI creds — separately labeled); `.env` on VPS only, never committed. `N8N_ENCRYPTION_KEY` rotated after initial deploy. The **ClickUp webhook HMAC secret** lives in the n8n `crypto` credential "ClickUp Webhook HMAC".
 - **Next**: Phase 1 — ClickUp foundation (Agent System Space, custom fields, first personas).
 
@@ -873,9 +883,8 @@ aliases: three Anthropic direct (`haxe-haiku-4-5-direct`, `haxe-sonnet-4-6-direc
 `haxe-opus-4-5-bedrock`). `model_routing` table restructured to composite PK `(impact, personal_data)`:
 `personal_data=false` (default) → Anthropic direct; `personal_data=true` (GDPR) → Bedrock EU.
 `agent_runs.model_used` now stores the versioned model ID from the LiteLLM response body (e.g.,
-`claude-opus-4-8`), not the alias. `ANTHROPIC_API_KEY` must be set in VPS `.env` and the litellm
-container restarted before the direct-routing path is active. Migration 008 must be applied to
-Supabase before the updated `invoke-model.json` is deployed.
+`claude-opus-4-8`), not the alias. `ANTHROPIC_API_KEY` added to VPS `.env` and litellm container
+recreated 2026-06-08 — **direct routing is active**. Migration 008 applied 2026-06-08.
 
 **Thread-aware replies live (2026-06-08).** `Agent Spine (v1)` routes post-back through
 `Check Session` (Postgres). When an active `conversation_sessions` row exists for
