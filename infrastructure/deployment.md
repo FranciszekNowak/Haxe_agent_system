@@ -149,6 +149,55 @@ ssh franciszek@185.25.149.174 "cd /opt/haxe-agents && docker compose up -d litel
 
 ---
 
+## Docling extraction service (ADR-036)
+
+Added in migration 012. Converts documents and images to markdown for the multimodal input
+pipeline. Runs inside the `n8n-internal` network; n8n reaches it at `http://docling:5001`.
+
+### RAM requirement
+
+Docling's layout models need **≥ 4 GB free RAM** to load. The VPS has 8 GB total. If the
+container OOM-kills on start, check `docker stats` — the other containers (n8n + postgres +
+redis + litellm) use roughly 2–3 GB combined at idle. Docling gets the rest.
+
+### First deploy
+
+```bash
+# From local machine: push the updated docker-compose.yml
+scp n8n/docker-compose.yml franciszek@185.25.149.174:/opt/haxe-agents/docker-compose.yml
+
+# On VPS: start the service
+cd /opt/haxe-agents && docker compose up -d docling
+
+# Watch logs until models finish loading (~60–90 s)
+docker compose logs docling -f
+
+# Verify the endpoint is up
+curl -sf http://localhost:5001/health && echo "OK"
+
+# Smoke-test a real file (from the sample files in the repo)
+# Note: /v1/convert/file is the multipart endpoint; /v1/convert/source expects JSON
+curl -X POST http://localhost:5001/v1/convert/file \
+  -F "files=@test.docx" \
+  -H "Accept: application/json"
+```
+
+### Pin the image digest after first deploy (ADR-011)
+
+Once the container is running correctly:
+```bash
+docker inspect docling --format '{{.Image}}'
+```
+Copy the digest and replace the `image:` line in `n8n/docker-compose.yml` with a pinned
+digest reference (same pattern as the LiteLLM entry).
+
+### Healthcheck
+
+The service registers healthy once `GET /health` returns 200. The `start_period: 90s`
+gives it time to load layout models before Docker marks it unhealthy.
+
+---
+
 ## Applying migrations
 
 Migrations live in `supabase/migrations/` (append-only). Apply via Supabase MCP from the

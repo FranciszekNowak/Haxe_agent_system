@@ -47,6 +47,30 @@ model_list:
       model: bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0
       aws_region_name: os.environ/AWS_REGION_NAME
 
+  # ── Image generation (ADR-036) ───────────────────────────────────────────────
+  # Tiered by impact: low → Stability, medium → Vertex AI, high → DALL-E 3.
+  # No eu_only requirement — image payloads carry no personal data (spec 0.1).
+  # Aliases match model_routing.litellm_model seeds from migration 012.
+  # API keys injected from .env; see .env.example for required variable names.
+  # Replace model IDs if the listed versions become unavailable at build time.
+
+  - model_name: stability/stable-diffusion-3-5
+    litellm_params:
+      model: stability/stable-diffusion-3-5
+      api_key: os.environ/STABILITY_API_KEY
+
+  - model_name: vertex_ai/imagegeneration@006
+    litellm_params:
+      model: vertex_ai/imagegeneration@006
+      vertex_project: os.environ/VERTEX_PROJECT
+      vertex_location: os.environ/VERTEX_LOCATION
+      # vertex_credentials: os.environ/GOOGLE_APPLICATION_CREDENTIALS_JSON  # if using JSON key
+
+  - model_name: openai/dall-e-3
+    litellm_params:
+      model: openai/dall-e-3
+      api_key: os.environ/OPENAI_API_KEY
+
 litellm_settings:
   drop_params: true          # ignore provider-unsupported params instead of erroring
 

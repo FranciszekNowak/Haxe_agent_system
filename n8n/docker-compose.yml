@@ -109,6 +109,11 @@ services:
       AWS_REGION_NAME: ${AWS_REGION_NAME}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}   # direct API (non-GDPR tasks, ADR-030)
       TAVILY_API_KEY: ${TAVILY_API_KEY}         # web search backend (ADR-034)
+      # Image generation providers (ADR-036) — optional; step-down covers missing keys
+      STABILITY_API_KEY: ${STABILITY_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      VERTEX_PROJECT: ${VERTEX_PROJECT:-}
+      VERTEX_LOCATION: ${VERTEX_LOCATION:-}
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
     networks:
@@ -119,6 +124,25 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+
+  # Docling extraction service — converts documents (docx, xlsx, csv, pdf, pptx, images)
+  # to markdown + block list for the multimodal input pipeline (ADR-036).
+  # CPU-only mode; layout models need ≥ 4 GB RAM on the VPS.
+  # n8n reaches it at http://docling:5001 (internal). Loopback port for SSH-tunnel debugging.
+  docling:
+    image: quay.io/docling-project/docling-serve@sha256:c7ba482fdb3275deac4a8a2d6e4490a8e1ffdcdf20020aaad5d250e8cc114e4e  # pinned 2026-06-09 (ADR-011)
+    container_name: docling
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5001:5001"   # loopback only — never public
+    networks:
+      - n8n-internal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s   # layout models take ~60–90 s to load on first start
 
 volumes:
   n8n-postgres-data:
