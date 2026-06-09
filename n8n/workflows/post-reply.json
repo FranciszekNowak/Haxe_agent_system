@@ -1,0 +1,239 @@
+{
+  "name": "Post Reply (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 200],
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "completion" },
+            { "name": "model" },
+            { "name": "cost_pln" },
+            { "name": "clickup_task_id" },
+            { "name": "reviewer_user_id" },
+            { "name": "triggering_comment_id" },
+            { "name": "web_sources" }
+          ]
+        }
+      },
+      "notes": "Inputs: model output (completion, model, cost_pln) + routing fields (clickup_task_id, reviewer_user_id, triggering_comment_id, web_sources)."
+    },
+    {
+      "id": "build-comment",
+      "name": "Build Comment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 200],
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nconst md = (wc.completion || '').toString();\nconst reviewer = Number(wc.reviewer_user_id);\nconst model = wc.model || '';\nconst cost = wc.cost_pln;\n\nconst ops = [];\nif (reviewer) ops.push({ type: 'tag', user: { id: reviewer } });\nops.push({ text: '\\n' });\n\nconst LINK = /\\[([^\\]]+)\\]\\(([^)]+)\\)/;\nconst BOLD = /\\*\\*([^*]+)\\*\\*/;\nconst CODE = /`([^`]+)`/;\nconst ITAL = /\\*([^*]+)\\*|_([^_]+)_/;\n\nfunction inlineOps(t) {\n  const out = [];\n  let rest = String(t);\n  while (rest.length) {\n    let best = null, kind = null;\n    const cands = [[LINK,'link'],[BOLD,'bold'],[CODE,'code'],[ITAL,'ital']];\n    for (const c of cands) { const m = c[0].exec(rest); if (m && (best === null || m.index < best.index)) { best = m; kind = c[1]; } }\n    if (!best) { out.push({ text: rest }); break; }\n    if (best.index > 0) out.push({ text: rest.slice(0, best.index) });\n    if (kind === 'link') out.push({ text: best[1], attributes: { link: best[2] } });\n    else if (kind === 'bold') out.push({ text: best[1], attributes: { bold: true } });\n    else if (kind === 'code') out.push({ text: best[1], attributes: { code: true } });\n    else out.push({ text: best[1] || best[2], attributes: { italic: true } });\n    rest = rest.slice(best.index + best[0].length);\n  }\n  return out.length ? out : [{ text: '' }];\n}\nfunction emit(inline, attrs) { for (const o of inline) ops.push(o); ops.push(attrs ? { text: '\\n', attributes: attrs } : { text: '\\n' }); }\nfunction isRow(s){ const t=s.trim(); return t.length>1 && t.charAt(0)==='|' && t.charAt(t.length-1)==='|'; }\nfunction isSep(s){ const t=s.trim(); return /^[|\\s:-]+$/.test(t) && t.indexOf('-')>=0; }\nfunction cellsOf(s){ return s.trim().replace(/^\\|/,'').replace(/\\|$/,'').split('|').map(function(c){return c.trim();}); }\n\nconst L = md.replace(/\\r/g,'').split('\\n');\nlet i=0, gRow=0, inCode=false;\nwhile (i < L.length) {\n  const s = L[i];\n  if (s.trim().indexOf('```') === 0) { inCode = !inCode; i++; continue; }\n  if (inCode) { ops.push({ text: s }); ops.push({ text: '\\n', attributes: { 'code-block': 'plain' } }); i++; continue; }\n  if (isRow(s) && i+1 < L.length && isSep(L[i+1])) {\n    const rows=[]; let j=i;\n    while (j < L.length && isRow(L[j])) { rows.push(L[j]); j++; }\n    for (let r=0; r<rows.length; r++) {\n      if (r===1) continue;\n      gRow++;\n      const cs = cellsOf(rows[r]);\n      for (const c of cs) { const io = inlineOps(c); for (const o of io) ops.push(o); ops.push({ text: '\\n', attributes: { table: 'row-'+gRow } }); }\n    }\n    i=j; continue;\n  }\n  const t = s.replace(/^\\s+/,'');\n  let m;\n  if (t.charAt(0)==='#') { const h=t.match(/^(#{1,6})\\s+(.*)$/); if (h) { emit(inlineOps(h[2]), { header: Math.min(h[1].length,3) }); i++; continue; } }\n  if ((m = t.match(/^[-*+]\\s+(.*)$/))) { emit(inlineOps(m[1]), { list: 'bullet' }); i++; continue; }\n  if ((m = t.match(/^\\d+\\.\\s+(.*)$/))) { emit(inlineOps(m[1]), { list: 'ordered' }); i++; continue; }\n  if (t.charAt(0)==='>') { emit(inlineOps(t.replace(/^>\\s?/,'')), { blockquote: true }); i++; continue; }\n  if (/^([-*_])\\1{2,}$/.test(s.trim())) { i++; continue; }\n  if (s.trim()==='') { i++; continue; }\n  emit(inlineOps(s), null);\n  i++;\n}\n\nops.push({ text: '\\n—\\n' });\nops.push({ text: 'Przygotowane przez agenta AI (model: '+model+', koszt: '+cost+' PLN). Do weryfikacji — nie finalizuje zadania.', attributes: { italic: true } });\nops.push({ text: '\\n' });\nlet webSources = [];\ntry {\n  const raw = wc.web_sources;\n  webSources = Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : []);\n} catch(e) {}\nif (webSources.length) {\n  ops.push({ text: 'Źródła' });\n  ops.push({ text: '\\n', attributes: { header: 2 } });\n  for (const s of webSources) {\n    ops.push({ text: (s.title || s.url), attributes: { link: s.url } });\n    ops.push({ text: '\\n', attributes: { list: 'bullet' } });\n  }\n}\nreturn [{ json: { ops } }];"
+      },
+      "notes": "Converts model markdown -> ClickUp Quill-delta ops + @-mention + footer + web sources section. Reads all inputs from When Called trigger."
+    },
+    {
+      "id": "is-mention",
+      "name": "Is @mention?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [440, 200],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "conditions": [
+            { "id": "s1", "leftValue": "={{ $('When Called').first().json.triggering_comment_id }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "True (triggering_comment_id set) -> reply in-thread. False (autonomous trigger) -> new top-level comment."
+    },
+    {
+      "id": "post-reply",
+      "name": "Post Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 80],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/comment/{{ $('When Called').first().json.triggering_comment_id }}/reply",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ comment: $('Build Comment').first().json.ops, notify_all: false }) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
+      "onError": "continueErrorOutput",
+      "notes": "Reply path for @mention triggers. onError=continueErrorOutput -> Alert Reply Failed, then fallback to Post Draft Comment."
+    },
+    {
+      "id": "alert-reply-failed",
+      "name": "Alert Reply Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [880, 0],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "post-reply/thread-reply",
+            "message": "Nie udało się odpowiedzieć w wątku — fallback na nowy komentarz najwyższego poziomu.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; triggering_comment={{ $('When Called').first().json.triggering_comment_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "notes": "WARN when replying in-thread fails. Run continues via Post Draft Comment fallback."
+    },
+    {
+      "id": "post-draft-comment",
+      "name": "Post Draft Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 320],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}/comment",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ comment: $('Build Comment').first().json.ops, notify_all: false }) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
+      "onError": "continueErrorOutput",
+      "notes": "Posts agent output as a new top-level comment. Used for autonomous triggers or as Post Reply fallback."
+    },
+    {
+      "id": "alert-postback-failed",
+      "name": "Alert Post-back Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [880, 400],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "post-reply/post-back",
+            "message": "Nie udało się opublikować wersji roboczej (komentarza) na zadaniu CU.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; reviewer={{ $('When Called').first().json.reviewer_user_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "set-status-zakonczono",
+      "name": "Set Status Zakonczono",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}/field/30130652-01c2-451b-954a-c36a455790fe",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ value: '6fcac9a5-0a76-4f9e-a92a-a2a34c60d794' }) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
+      "onError": "continueErrorOutput",
+      "notes": "Sets [AI] Status agenta -> 'Zakończono' after draft comment is posted."
+    },
+    {
+      "id": "alert-status-failed",
+      "name": "Alert Status Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1320, 200],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "post-reply/status",
+            "message": "Nie udało się zaktualizować pola CU '[AI] Status agenta' na Zakończono.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "When Called": { "main": [[{ "node": "Build Comment", "type": "main", "index": 0 }]] },
+    "Build Comment": { "main": [[{ "node": "Is @mention?", "type": "main", "index": 0 }]] },
+    "Is @mention?": { "main": [[{ "node": "Post Reply", "type": "main", "index": 0 }], [{ "node": "Post Draft Comment", "type": "main", "index": 0 }]] },
+    "Post Reply": {
+      "main": [
+        [{ "node": "Set Status Zakonczono", "type": "main", "index": 0 }],
+        [{ "node": "Alert Reply Failed", "type": "main", "index": 0 }, { "node": "Post Draft Comment", "type": "main", "index": 0 }]
+      ]
+    },
+    "Post Draft Comment": {
+      "main": [
+        [{ "node": "Set Status Zakonczono", "type": "main", "index": 0 }],
+        [{ "node": "Alert Post-back Failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Set Status Zakonczono": { "main": [[], [{ "node": "Alert Status Failed", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "tags": []
+}

@@ -1,0 +1,236 @@
+{
+  "name": "Execute LLM Call (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "prompt" },
+            { "name": "impact" },
+            { "name": "personal_data" },
+            { "name": "task_type" },
+            { "name": "clickup_task_id" },
+            { "name": "triggered_by" },
+            { "name": "invocation_type" },
+            { "name": "caller_user_id" },
+            { "name": "process_type" },
+            { "name": "reviewer_user_id" },
+            { "name": "triggering_comment_id" },
+            { "name": "web_sources" }
+          ]
+        }
+      },
+      "notes": "Inputs: all Invoke Model fields + pass-through fields for Post Reply (reviewer_user_id, triggering_comment_id, web_sources)."
+    },
+    {
+      "id": "call-invoke-model",
+      "name": "Call Invoke Model",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [220, 300],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "XcOIVdZnVCCWNPeb", "mode": "list", "cachedResultName": "Invoke Model (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "prompt": "={{ $json.prompt }}",
+            "impact": "={{ $json.impact }}",
+            "personal_data": "={{ $json.personal_data }}",
+            "task_type": "={{ $json.task_type }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "prompt", "displayName": "prompt", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "impact", "displayName": "impact", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "personal_data", "displayName": "personal_data", "type": "boolean", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "task_type", "displayName": "task_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "clickup_task_id", "displayName": "clickup_task_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "triggered_by", "displayName": "triggered_by", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "caller_user_id", "displayName": "caller_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "process_type", "displayName": "process_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueErrorOutput",
+      "notes": "onError=continueErrorOutput so LLM failures route to local error path (Reset Status -> Alert) instead of propagating to errorWorkflow with no task context."
+    },
+    {
+      "id": "reset-status-on-failure",
+      "name": "Reset Status on Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 480],
+      "parameters": {
+        "method": "DELETE",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}/field/30130652-01c2-451b-954a-c36a455790fe",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
+      "onError": "continueErrorOutput",
+      "notes": "Clears [AI] Status agenta when Invoke Model fails — prevents task stuck at 'W trakcie'."
+    },
+    {
+      "id": "alert-invoke-failed",
+      "name": "Alert Invoke Model Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [660, 480],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "execute-llm/invoke-model",
+            "message": "Wywołanie modelu LLM nie powiodło się — agent nie ukończył zadania.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || JSON.stringify($json.error) || 'unknown' }}; jeśli 429/cooldown: zrestartuj LiteLLM: cd /opt/haxe-agents && docker compose restart litellm"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "notes": "CRITICAL alert when LLM call fails."
+    },
+    {
+      "id": "return-llm-result",
+      "name": "Return LLM Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 140],
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nconst mr = $('Call Invoke Model').first().json;\nreturn [{ json: {\n  completion: mr.completion || '',\n  model: mr.model || '',\n  cost_pln: mr.cost_pln,\n  clickup_task_id: wc.clickup_task_id,\n  reviewer_user_id: wc.reviewer_user_id,\n  triggering_comment_id: wc.triggering_comment_id || '',\n  web_sources: wc.web_sources || '[]'\n} }];"
+      },
+      "notes": "Terminal output node: bundles model response with pass-through fields for Post Reply. Fires in parallel with Sum Task Cost so cost-sync failures don't block the response."
+    },
+    {
+      "id": "sum-task-cost",
+      "name": "Sum Task Cost",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [440, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select coalesce(sum(cost_pln), 0) as total\nfrom agent_runs\nwhere clickup_task_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [ $('When Called').first().json.clickup_task_id ] }}"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "credentials": { "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" } },
+      "onError": "continueErrorOutput",
+      "notes": "Authoritative task cost = SUM(agent_runs.cost_pln) for this task. Sums all rows (gate + research + answer)."
+    },
+    {
+      "id": "update-cu-cost",
+      "name": "Update CU Cost Field",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}/field/ca7a3874-b83d-403c-8266-426935e38eae",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ value: Number($json.total) }) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
+      "onError": "continueErrorOutput",
+      "notes": "Writes running total to CU '[AI] Koszt akcji [PLN]'."
+    },
+    {
+      "id": "alert-cost-failed",
+      "name": "Alert Cost Sync Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [880, 380],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "execute-llm/cost-sync",
+            "message": "Nie udało się zsynchronizować kosztu zadania do pola CU '[AI] Koszt akcji [PLN]'.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "When Called": { "main": [[{ "node": "Call Invoke Model", "type": "main", "index": 0 }]] },
+    "Call Invoke Model": {
+      "main": [
+        [{ "node": "Return LLM Result", "type": "main", "index": 0 }, { "node": "Sum Task Cost", "type": "main", "index": 0 }],
+        [{ "node": "Reset Status on Failure", "type": "main", "index": 0 }]
+      ]
+    },
+    "Reset Status on Failure": {
+      "main": [
+        [{ "node": "Alert Invoke Model Failed", "type": "main", "index": 0 }],
+        [{ "node": "Alert Invoke Model Failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Sum Task Cost": {
+      "main": [
+        [{ "node": "Update CU Cost Field", "type": "main", "index": 0 }],
+        [{ "node": "Alert Cost Sync Failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update CU Cost Field": { "main": [[], [{ "node": "Alert Cost Sync Failed", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "tags": []
+}

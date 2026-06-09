@@ -1,0 +1,252 @@
+{
+  "name": "Agent Orchestrator (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "form-trigger",
+      "name": "Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [0, 224],
+      "parameters": {
+        "formTitle": "Agent Orchestrator",
+        "formDescription": "Enter a ClickUp task ID. Optionally a reviewer ClickUp user ID to @-direct the draft (blank = operator).",
+        "formFields": {
+          "values": [
+            { "fieldLabel": "taskId", "requiredField": true },
+            { "fieldLabel": "reviewer_user_id" }
+          ]
+        },
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "webhookId": "agent-spine-v1-webhook-001"
+    },
+    {
+      "id": "exec-trigger",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 480],
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "taskId" },
+            { "name": "reviewer_user_id" },
+            { "name": "caller_username" },
+            { "name": "triggered_by" },
+            { "name": "invocation_type" },
+            { "name": "triggering_comment_id" },
+            { "name": "triggering_comment_text" }
+          ]
+        }
+      },
+      "notes": "Production entry: called by CU Webhook Producer. Form Trigger stays as manual test harness."
+    },
+    {
+      "id": "call-assemble-context",
+      "name": "Call Assemble Context",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [260, 352],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "GGTBvFBgGSNbtUR6", "mode": "list", "cachedResultName": "Assemble Context and Build Prompt (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $json.taskId }}",
+            "reviewer_user_id": "={{ $json.reviewer_user_id || '' }}",
+            "caller_username": "={{ $json.caller_username || '' }}",
+            "triggered_by": "={{ $json.triggered_by || '' }}",
+            "invocation_type": "={{ $json.invocation_type || '' }}",
+            "triggering_comment_id": "={{ $json.triggering_comment_id || '' }}",
+            "triggering_comment_text": "={{ $json.triggering_comment_text || '' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "taskId", "displayName": "taskId", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "reviewer_user_id", "displayName": "reviewer_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "caller_username", "displayName": "caller_username", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "triggered_by", "displayName": "triggered_by", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "triggering_comment_id", "displayName": "triggering_comment_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "triggering_comment_text", "displayName": "triggering_comment_text", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "notes": "Calls SW3: context gather + PD check + workspace search + research decision + rules + prompt assembly. Returns full Build Prompt output."
+    },
+    {
+      "id": "status-inprogress",
+      "name": "Set Status W trakcie",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 160],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $json.clickup_task_id }}/field/30130652-01c2-451b-954a-c36a455790fe",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ value: '10290b3f-e47d-4157-a3d4-1bbd770918e8' }) }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
+      "onError": "continueErrorOutput",
+      "notes": "Sets [AI] Status agenta -> 'W trakcie'. Fires in parallel with Call Execute LLM from Call Assemble Context output — non-blocking side effect."
+    },
+    {
+      "id": "alert-status-fail",
+      "name": "Alert Status Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [720, 80],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-orchestrator/status",
+            "message": "Nie udało się zaktualizować pola CU '[AI] Status agenta' na W trakcie.",
+            "details": "=task={{ $('Call Assemble Context').first().json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "call-execute-llm",
+      "name": "Call Execute LLM",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [500, 352],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "9qdJA4xnAGbxqkt9", "mode": "list", "cachedResultName": "Execute LLM Call (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "prompt": "={{ $json.prompt }}",
+            "impact": "={{ $json.impact }}",
+            "personal_data": "={{ $json.personal_data }}",
+            "task_type": "={{ $json.task_type }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}",
+            "reviewer_user_id": "={{ $json.reviewer_user_id }}",
+            "triggering_comment_id": "={{ $json.triggering_comment_id }}",
+            "web_sources": "={{ $json.web_sources }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "prompt", "displayName": "prompt", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "impact", "displayName": "impact", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "personal_data", "displayName": "personal_data", "type": "boolean", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "task_type", "displayName": "task_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "clickup_task_id", "displayName": "clickup_task_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "triggered_by", "displayName": "triggered_by", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "caller_user_id", "displayName": "caller_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "process_type", "displayName": "process_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "reviewer_user_id", "displayName": "reviewer_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "triggering_comment_id", "displayName": "triggering_comment_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "web_sources", "displayName": "web_sources", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "notes": "Calls SW4: LLM invocation + status reset on failure + cost sync. Returns { completion, model, cost_pln, clickup_task_id, reviewer_user_id, triggering_comment_id, web_sources }."
+    },
+    {
+      "id": "if-llm-succeeded",
+      "name": "If LLM Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [720, 352],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "conditions": [
+            { "id": "s1", "leftValue": "={{ $json.completion }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "Guards Call Post Reply. False = LLM failed, error handled inside SW4, run ends cleanly."
+    },
+    {
+      "id": "call-post-reply",
+      "name": "Call Post Reply",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [940, 352],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "t17moGs7Vxo5ZcFv", "mode": "list", "cachedResultName": "Post Reply (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "completion": "={{ $json.completion }}",
+            "model": "={{ $json.model }}",
+            "cost_pln": "={{ $json.cost_pln }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "reviewer_user_id": "={{ $json.reviewer_user_id }}",
+            "triggering_comment_id": "={{ $json.triggering_comment_id }}",
+            "web_sources": "={{ $json.web_sources }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "completion", "displayName": "completion", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "model", "displayName": "model", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "cost_pln", "displayName": "cost_pln", "type": "number", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "clickup_task_id", "displayName": "clickup_task_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "reviewer_user_id", "displayName": "reviewer_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "triggering_comment_id", "displayName": "triggering_comment_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "web_sources", "displayName": "web_sources", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "notes": "Calls SW2: builds Quill-delta comment, routes @mention vs. top-level, posts to CU, sets Zakończono status."
+    }
+  ],
+  "connections": {
+    "Form Trigger": { "main": [[{ "node": "Call Assemble Context", "type": "main", "index": 0 }]] },
+    "When Called": { "main": [[{ "node": "Call Assemble Context", "type": "main", "index": 0 }]] },
+    "Call Assemble Context": { "main": [[{ "node": "Call Execute LLM", "type": "main", "index": 0 }, { "node": "Set Status W trakcie", "type": "main", "index": 0 }]] },
+    "Set Status W trakcie": { "main": [[], [{ "node": "Alert Status Failed", "type": "main", "index": 0 }]] },
+    "Call Execute LLM": { "main": [[{ "node": "If LLM Succeeded?", "type": "main", "index": 0 }]] },
+    "If LLM Succeeded?": { "main": [[{ "node": "Call Post Reply", "type": "main", "index": 0 }], []] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "tags": []
+}

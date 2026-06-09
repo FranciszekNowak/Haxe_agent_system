@@ -1,0 +1,319 @@
+{
+  "name": "Decide Research and Deliver (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "impact" },
+            { "name": "process_type" },
+            { "name": "clickup_task_id" },
+            { "name": "task_name" },
+            { "name": "task_description" },
+            { "name": "personal_data" },
+            { "name": "reviewer_user_id" },
+            { "name": "triggered_by" },
+            { "name": "invocation_type" },
+            { "name": "triggering_comment_text" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "build-gate-request",
+      "name": "Build Gate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "parameters": {
+        "jsCode": "const inp = $input.first().json;\nconst pd = inp.personal_data === true;\nconst reviewer = (inp.reviewer_user_id || '2521617').toString();\nconst tcomment = (inp.triggering_comment_text || '').toString();\nconst prompt = 'Czy to zadanie wymaga aktualnych informacji z internetu (ceny, biezace wydarzenia, kursy walut, specyfikacje produktow, swieze fakty spoza wiedzy modelu), aby je dobrze wykonac? Odpowiedz wylacznie jednym slowem: TAK lub NIE.\\n\\nZADANIE:\\n' + (inp.task_name || '') + '\\n' + (inp.task_description || '') + (tcomment ? ('\\n\\nWIADOMOSC UZYTKOWNIKA:\\n' + tcomment) : '');\nreturn [{ json: {\n  prompt: prompt,\n  model_override: pd ? 'haxe-haiku-4-5-bedrock' : 'haxe-haiku-4-5-direct',\n  personal_data: pd,\n  impact: inp.impact || '',\n  clickup_task_id: inp.clickup_task_id || '',\n  triggered_by: inp.triggered_by || 'explicit_command',\n  invocation_type: inp.invocation_type || 'explicit',\n  caller_user_id: reviewer,\n  process_type: inp.process_type || ''\n} }];"
+      },
+      "notes": "Builds the cheap Haiku TAK/NIE gate prompt from SW1 trigger inputs."
+    },
+    {
+      "id": "research-gate",
+      "name": "Research Gate",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [440, 300],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "XcOIVdZnVCCWNPeb", "mode": "list", "cachedResultName": "Invoke Model (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "prompt": "={{ $json.prompt }}",
+            "model_override": "={{ $json.model_override }}",
+            "personal_data": "={{ $json.personal_data }}",
+            "impact": "={{ $json.impact }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Cheap Haiku gate: decides if the task needs web research. onError=continueErrorOutput -> fail-open (NIE path)."
+    },
+    {
+      "id": "alert-gate-failed",
+      "name": "Alert Gate Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [440, 500],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "decide-research/research-gate",
+            "message": "Nie udało się ocenić potrzeby web researchu (brama Haiku) — pomijam research.",
+            "details": "=task={{ $('Build Gate Request').first().json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "if-needs-research",
+      "name": "If Needs Research?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [660, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "version": 2, "leftValue": "", "caseSensitive": false, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
+            { "id": "g1", "leftValue": "={{ ($json.completion || '').toUpperCase() }}", "rightValue": "TAK", "operator": { "type": "string", "operation": "contains" } }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "lookup-research-routing",
+      "name": "Lookup Research Routing",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [880, 200],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select litellm_model, temperature, max_tokens, price_in_usd_per_1k, price_out_usd_per_1k, impact\nfrom model_routing\nwhere impact in ($1, '__default__') and personal_data = $2 and active = true\norder by (impact = $1) desc\nlimit 1;",
+        "options": {
+          "queryReplacement": "={{ [ $('When Called').first().json.impact || '__default__', $('When Called').first().json.personal_data === true ] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" } },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "lookup-research-params",
+      "name": "Lookup Research Params",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1100, 200],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select max_research_rounds, tavily_max_results\nfrom research_parameters\nwhere impact in ($1, '__default__') and active = true\norder by (impact = $1) desc\nlimit 1;",
+        "options": {
+          "queryReplacement": "={{ [ $('When Called').first().json.impact || '__default__' ] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" } },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "resolve-research-inputs",
+      "name": "Resolve Research Inputs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 200],
+      "parameters": {
+        "jsCode": "const inp = $('When Called').first().json;\nconst pd = inp.personal_data === true;\nconst reviewer = (inp.reviewer_user_id || '2521617').toString();\nlet rr = null; try { const r = $('Lookup Research Routing').first().json; if (r && r.litellm_model) rr = r; } catch(e) {}\nconst litellm_model = rr ? rr.litellm_model : (pd ? 'haxe-sonnet-4-6-bedrock' : 'haxe-sonnet-4-6-direct');\nconst max_tokens = (rr && rr.max_tokens != null) ? Number(rr.max_tokens) : 4000;\nconst temperature = (rr && rr.temperature != null && rr.temperature !== '') ? Number(rr.temperature) : null;\nlet rp = null; try { const p = $('Lookup Research Params').first().json; if (p && p.max_research_rounds != null) rp = p; } catch(e) {}\nconst max_research_rounds = (rp && rp.max_research_rounds != null) ? Number(rp.max_research_rounds) : 3;\nconst tavily_max_results = (rp && rp.tavily_max_results != null) ? Number(rp.tavily_max_results) : 5;\nconst tcomment = (inp.triggering_comment_text || '').toString();\nconst userPrompt = 'Jestes asystentem researchu. Zbierz z internetu aktualne, zewnetrzne informacje potrzebne do wykonania ponizszego zadania (np. ceny, kursy, specyfikacje, biezace fakty). Wykonaj potrzebne wyszukiwania, a nastepnie zwroc ZWIEZLE ustalenia (fakty + liczby), bez wykonywania samego zadania. NIE umieszczaj w zapytaniach danych osobowych (nazwiska, e-maile, numery zamowien).\\n\\nZADANIE:\\n' + (inp.task_name || '') + '\\n' + (inp.task_description || '') + (tcomment ? ('\\n\\nWIADOMOSC UZYTKOWNIKA:\\n' + tcomment) : '');\nconst messages = JSON.stringify([{ role: 'user', content: userPrompt }]);\nreturn [{ json: {\n  litellm_model: litellm_model,\n  messages: messages,\n  max_tokens: max_tokens,\n  temperature: temperature,\n  depth: 0,\n  max_depth: max_research_rounds,\n  acc_in: 0, acc_out: 0, acc_usd: 0, acc_searches: 0,\n  sources: '[]',\n  tavily_max_results: tavily_max_results,\n  calls: '[]',\n  clickup_task_id: inp.clickup_task_id || '',\n  caller_user_id: reviewer,\n  process_type: inp.process_type || '',\n  triggered_by: inp.triggered_by || 'explicit_command',\n  invocation_type: inp.invocation_type || 'explicit',\n  impact: inp.impact || ''\n} }];"
+      },
+      "notes": "Resolves research model + depth/results from research_parameters and builds the research prompt. Reads inputs from SW1 trigger (When Called)."
+    },
+    {
+      "id": "call-research-the-web",
+      "name": "Call Research the web",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1540, 200],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "BdZ9Chhqs691Ljlk", "mode": "list", "cachedResultName": "Research the web (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "litellm_model": "={{ $json.litellm_model }}",
+            "messages": "={{ $json.messages }}",
+            "max_tokens": "={{ $json.max_tokens }}",
+            "temperature": "={{ $json.temperature }}",
+            "depth": "={{ $json.depth }}",
+            "max_depth": "={{ $json.max_depth }}",
+            "acc_in": "={{ $json.acc_in }}",
+            "acc_out": "={{ $json.acc_out }}",
+            "acc_usd": "={{ $json.acc_usd }}",
+            "acc_searches": "={{ $json.acc_searches }}",
+            "sources": "={{ $json.sources }}",
+            "tavily_max_results": "={{ $json.tavily_max_results }}",
+            "calls": "={{ $json.calls }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "impact": "={{ $json.impact }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Runs the agentic web-search loop. onError=continueErrorOutput -> task continues without findings on failure."
+    },
+    {
+      "id": "check-research-degradation",
+      "name": "Check Research Degradation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1540, 400],
+      "parameters": {
+        "conditions": {
+          "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
+            { "id": "rd1", "leftValue": "={{ $('Call Research the web').first().json.web_search_error }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "alert-research-degraded",
+      "name": "Alert Research Degraded",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1760, 400],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "decide-research/research",
+            "message": "Web research zdegradowany (np. wyczerpano rundy) — wyniki mogą być niepełne.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; code={{ $('Call Research the web').first().json.web_search_error_code }}; searches={{ $('Call Research the web').first().json.searches }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "alert-research-failed",
+      "name": "Alert Research Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1760, 200],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "decide-research/research",
+            "message": "Web research nie powiódł się — zadanie kontynuowane bez wyników z sieci.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "collect-research-results",
+      "name": "Collect Research Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 300],
+      "parameters": {
+        "jsCode": "let web_findings = '', web_sources = [];\ntry {\n  const rw = $('Call Research the web').first().json;\n  if (rw) {\n    web_findings = rw.completion || '';\n    web_sources = rw.sources || [];\n  }\n} catch(e) {}\nreturn [{ json: { web_findings, web_sources } }];"
+      },
+      "notes": "Terminal node: all branches (NIE, gate-fail, research-success, research-fail) converge here. Returns { web_findings, web_sources } for the caller."
+    }
+  ],
+  "connections": {
+    "When Called": { "main": [[{ "node": "Build Gate Request", "type": "main", "index": 0 }]] },
+    "Build Gate Request": { "main": [[{ "node": "Research Gate", "type": "main", "index": 0 }]] },
+    "Research Gate": { "main": [[{ "node": "If Needs Research?", "type": "main", "index": 0 }], [{ "node": "Alert Gate Failed", "type": "main", "index": 0 }]] },
+    "Alert Gate Failed": { "main": [[{ "node": "Collect Research Results", "type": "main", "index": 0 }]] },
+    "If Needs Research?": { "main": [[{ "node": "Lookup Research Routing", "type": "main", "index": 0 }], [{ "node": "Collect Research Results", "type": "main", "index": 0 }]] },
+    "Lookup Research Routing": { "main": [[{ "node": "Lookup Research Params", "type": "main", "index": 0 }]] },
+    "Lookup Research Params": { "main": [[{ "node": "Resolve Research Inputs", "type": "main", "index": 0 }]] },
+    "Resolve Research Inputs": { "main": [[{ "node": "Call Research the web", "type": "main", "index": 0 }]] },
+    "Call Research the web": {
+      "main": [
+        [{ "node": "Collect Research Results", "type": "main", "index": 0 }, { "node": "Check Research Degradation", "type": "main", "index": 0 }],
+        [{ "node": "Alert Research Failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Alert Research Failed": { "main": [[{ "node": "Collect Research Results", "type": "main", "index": 0 }]] },
+    "Check Research Degradation": { "main": [[{ "node": "Alert Research Degraded", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "tags": []
+}
