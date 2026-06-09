@@ -50,25 +50,13 @@ model_list:
 litellm_settings:
   drop_params: true          # ignore provider-unsupported params instead of erroring
 
-  # ── Web search (ADR-032) ────────────────────────────────────────────────────
-  # The agent's request carries a `web_search` tool. LiteLLM's interception
-  # callback detects the model's web_search tool-call, executes it server-side via
-  # Tavily (search_tools below), and feeds results back for a follow-up answer.
-  #
-  # UNIFORM across providers: both `-bedrock` (GDPR) and `-direct` routes are
-  # intercepted, so search behaviour, cost, citations and failure modes are
-  # identical on every route (we do NOT use Anthropic's native web search).
-  # GDPR posture is unchanged: inference for personal_data=true stays on Bedrock
-  # EU — only the model-generated query string reaches Tavily (US, under DPA).
-  # The model writes the query, so query hygiene (no personal data) is enforced
-  # softly via the Global Agent Rules doc, with the Tavily DPA as the backstop.
-  callbacks: ["websearch_interception"]
-  websearch_interception_params:
-    enabled_providers: ["bedrock", "anthropic"]   # intercept on both tiers
-    search_tool_name: "haxe-web-search"
-
-# Search backend for the interception callback above. api_key is injected from the
-# VPS .env (TAVILY_API_KEY) — committed config holds NO secret. See .env.example.
+# Web search backend (ADR-034). The agent owns a multi-round agentic loop in n8n
+# ("Model Turn (v1)") that executes each query via LiteLLM's
+# POST /v1/search/haxe-web-search (the search_tools entry below) -> Tavily, threading
+# tool results back over multiple rounds. We do NOT use LiteLLM's websearch_interception
+# callback — it was single-round and produced empty answers on multi-round research, so
+# it was removed (2026-06-09). Tavily api_key is injected from the VPS .env
+# (TAVILY_API_KEY); committed config holds NO secret. See .env.example.
 search_tools:
   - search_tool_name: haxe-web-search
     litellm_params:
