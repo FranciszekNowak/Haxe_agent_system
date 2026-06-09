@@ -68,6 +68,21 @@ Date
   add new ones.
 - SQL uses lowercase keywords, snake_case names.
 
+## n8n environment
+
+- **Code-node sandbox blocks crypto and `$env`.** This n8n instance blocks
+  `require('crypto')`, the global `crypto`, **and** `$env` inside Code nodes
+  (`N8N_BLOCK_ENV_ACCESS_IN_NODE`). Consequences: do HMAC/hashing with the
+  **native Crypto node** (not a Code node), and store secrets a Code node can't
+  reach as **n8n credentials** — the Crypto node's HMAC action reads its key from
+  a `crypto` credential (`hmacSecret`). Note `$vars` works in expressions but
+  `$env` does not.
+- **ClickUp webhook auth = HMAC-SHA256(secret, rawBody) hex** in the
+  `X-Signature` header. You must hash the **raw** request body, not a
+  re-stringified JSON (bytes differ → signature mismatch): set the Webhook node's
+  `rawBody: true`, which keeps the exact bytes in binary `data` while still
+  leaving `$json.body` parsed for downstream use.
+
 ## Definition of done
 
 Before reporting a feature or fix as complete, you must verify it actually works
@@ -117,6 +132,10 @@ maintainer act in an informed and timely way. Therefore:
   a WARN). The reactive layer cannot catch a job that simply never ran.
 - A degradation alert must **not** break the main path: fire it on a side branch / via
   `onError: continueErrorOutput`, and let the run still return its result.
+- **Alert-channel-inside-watched-scope = loop risk.** If a producer posts an
+  alert/WARN comment to a task that its own webhook watches, that comment re-fires
+  the webhook → another alert → infinite loop. Guard producers to drop their own
+  telemetry task (e.g. the Alerts task) *before* any side-effecting/alerting step.
 - When you build or change a feature, state in your summary which silent-failure modes
   you covered and how. If a failure mode is knowingly left uncovered, say so explicitly.
 
@@ -244,24 +263,3 @@ document. Mechanics learned applying one this session:
 
 Candidate for promotion to a permanent "Working with architecture docs"
 subsection once stable.
-
-### 2026-06-08 — n8n Code-node sandbox + webhook hardening gotchas
-
-- This n8n instance **blocks** `require('crypto')`, the global `crypto`, **and**
-  `$env` inside Code nodes (`N8N_BLOCK_ENV_ACCESS_IN_NODE`). Consequences: do
-  HMAC/hashing with the **native Crypto node** (not a Code node), and store
-  secrets a Code node can't reach as **n8n credentials** — the Crypto node's HMAC
-  action reads its key from a `crypto` credential (`hmacSecret`). Note `$vars`
-  works in expressions but `$env` does not.
-- ClickUp webhook authentication = **HMAC-SHA256(secret, rawBody) hex** in the
-  `X-Signature` header. You must hash the **raw** request body, not a
-  re-stringified JSON (bytes differ → signature mismatch): set the Webhook node's
-  `rawBody: true`, which keeps the exact bytes in binary `data` while still
-  leaving `$json.body` parsed for downstream use.
-- **Alert-channel-inside-watched-scope = loop risk.** If a producer posts an
-  alert/WARN comment to a task that its own webhook watches, that comment re-fires
-  the webhook → another alert → infinite loop. Guard producers to drop their own
-  telemetry task (e.g. the Alerts task) *before* any side-effecting/alerting step.
-
-Candidate for promotion: the sandbox constraints belong in a permanent "n8n
-environment" note; the webhook-loop lesson in a "reliability" note.
