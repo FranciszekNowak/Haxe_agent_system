@@ -4,6 +4,11 @@
   "active": true,
   "nodes": [
     {
+      "id": "exec-trigger",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 304],
       "parameters": {
         "workflowInputs": {
           "values": [
@@ -15,17 +20,18 @@
             { "name": "triggered_by" },
             { "name": "invocation_type" },
             { "name": "caller_user_id" },
-            { "name": "process_type" }
+            { "name": "process_type" },
+            { "name": "enable_web_search" }
           ]
         }
-      },
-      "id": "exec-trigger",
-      "name": "When Called",
-      "type": "n8n-nodes-base.executeWorkflowTrigger",
-      "typeVersion": 1.1,
-      "position": [0, 304]
+      }
     },
     {
+      "id": "lookup-routing",
+      "name": "Lookup Routing",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [220, 304],
       "parameters": {
         "operation": "executeQuery",
         "query": "select litellm_model, temperature, max_tokens, nudge,\n       price_in_usd_per_1k, price_out_usd_per_1k, impact\nfrom model_routing\nwhere impact in ($1, '__default__') and personal_data = $2 and active = true\norder by (impact = $1) desc\nlimit 1;",
@@ -33,32 +39,68 @@
           "queryReplacement": "={{ [ $json.impact || '__default__', $json.personal_data === true || $json.personal_data === 'true' ? true : false ] }}"
         }
       },
-      "id": "lookup-routing",
-      "name": "Lookup Routing",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
-      "position": [224, 304],
-      "retryOnFail": true,
-      "waitBetweenTries": 2000,
-      "maxTries": 2,
       "credentials": {
         "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
       },
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "maxTries": 2,
       "onError": "continueErrorOutput"
     },
     {
-      "parameters": {
-        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nif (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\nconst pd = (orig.personal_data === true || orig.personal_data === 'true') ? true : false;\n\nreturn [{ json: {\n  litellm_model: row.litellm_model,\n  // null = model doesn't support the parameter (e.g. claude-opus-4-8)\n  temperature: (row.temperature != null && row.temperature !== '') ? Number(row.temperature) : null,\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  impact,\n  personal_data: pd,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used\n} }];"
-      },
       "id": "resolve-routing",
       "name": "Resolve Routing",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [448, 304]
+      "position": [440, 304],
+      "parameters": {
+        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nif (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\nconst pd = (orig.personal_data === true || orig.personal_data === 'true') ? true : false;\nconst ews = (orig.enable_web_search === false || orig.enable_web_search === 'false') ? 'false' : 'true';\n\nreturn [{ json: {\n  litellm_model: row.litellm_model,\n  temperature: (row.temperature != null && row.temperature !== '') ? Number(row.temperature) : null,\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  impact,\n  personal_data: pd,\n  enable_web_search: ews,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used\n} }];"
+      }
     },
     {
+      "id": "lookup-research-params",
+      "name": "Lookup Research Params",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [640, 304],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "BdZ9Chhqs691Ljlk", "mode": "list", "cachedResultName": "Model Turn (v1)" },
+        "operation": "executeQuery",
+        "query": "select max_research_rounds, tavily_max_results\nfrom research_parameters\nwhere impact in ($1, '__default__') and active = true\norder by (impact = $1) desc\nlimit 1;",
+        "options": {
+          "queryReplacement": "={{ [ $json.impact || '__default__' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
+      },
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "maxTries": 2,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "merge-params",
+      "name": "Merge Params",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [840, 304],
+      "parameters": {
+        "jsCode": "const r = $('Resolve Routing').first().json;\nlet rp = null;\ntry { const row = $input.first().json; if (row && row.max_research_rounds != null) rp = row; } catch (e) {}\nconst max_research_rounds = (rp && rp.max_research_rounds != null) ? Number(rp.max_research_rounds) : 5;\nconst tavily_max_results = (rp && rp.tavily_max_results != null) ? Number(rp.tavily_max_results) : 5;\nreturn [{ json: Object.assign({}, r, { max_research_rounds: max_research_rounds, tavily_max_results: tavily_max_results }) }];"
+      }
+    },
+    {
+      "id": "call-model-turn",
+      "name": "Call Model Turn",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1040, 304],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "BdZ9Chhqs691Ljlk",
+          "mode": "list",
+          "cachedResultName": "Model Turn (v1)"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -67,12 +109,15 @@
             "max_tokens": "={{ $json.max_tokens }}",
             "temperature": "={{ $json.temperature }}",
             "depth": "={{ 0 }}",
-            "max_depth": "={{ 5 }}",
+            "max_depth": "={{ $json.max_research_rounds }}",
             "acc_in": "={{ 0 }}",
             "acc_out": "={{ 0 }}",
             "acc_usd": "={{ 0 }}",
             "acc_searches": "={{ 0 }}",
-            "sources": "[]"
+            "sources": "[]",
+            "tavily_max_results": "={{ $json.tavily_max_results }}",
+            "enable_web_search": "={{ $json.enable_web_search }}",
+            "calls": "[]"
           },
           "matchingColumns": [],
           "schema": [],
@@ -81,87 +126,100 @@
         },
         "options": {}
       },
-      "id": "call-model-turn",
-      "name": "Call Model Turn",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.3,
-      "position": [672, 304],
-      "notes": "ADR-034: drives the agentic web-search loop (Model Turn v1) — multi-round search+synthesis. Replaces the single /v1/messages call. Returns {completion, sources, input/output_tokens, usd_cost, web_search_used, web_search_error, rounds, searches}."
+      "notes": "ADR-034/035: drives the agentic web-search loop (Model Turn v1). max_depth/tavily_max_results from research_parameters (by impact). Returns {completion, sources, calls[], totals}."
     },
     {
+      "id": "get-fx",
+      "name": "Get FX Rate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1240, 304],
       "parameters": {
         "operation": "executeQuery",
         "query": "select rate from fx_rates where base='USD' and quote='PLN' order by rate_date desc limit 1;",
         "options": {}
       },
-      "id": "get-fx",
-      "name": "Get FX Rate",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
-      "position": [880, 304],
-      "retryOnFail": true,
-      "waitBetweenTries": 2000,
-      "maxTries": 2,
       "credentials": {
         "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
       },
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "maxTries": 2,
       "onError": "continueRegularOutput"
     },
     {
-      "parameters": {
-        "jsCode": "const routing = $('Resolve Routing').first().json;\nconst mt = $('Call Model Turn').first().json || {};\nconst completion = mt.completion || '';\nconst sources = Array.isArray(mt.sources) ? mt.sources : [];\nconst web_search_used = mt.web_search_used === true;\nconst web_search_error = mt.web_search_error === true;\nconst web_search_error_code = mt.web_search_error_code || '';\nconst input_tokens = (mt.input_tokens != null) ? Number(mt.input_tokens) : null;\nconst output_tokens = (mt.output_tokens != null) ? Number(mt.output_tokens) : null;\n\nlet fx = null;\ntry { const f = $('Get FX Rate').first().json.rate; if (f != null && f !== '') fx = Number(f); } catch (e) {}\n\nlet usd_cost = (mt.usd_cost != null && mt.usd_cost !== '') ? Number(mt.usd_cost) : null;\nlet cost_source = 'model_turn_headers';\nlet cost_missing = false;\nif (usd_cost == null || isNaN(usd_cost) || usd_cost === 0) {\n  cost_missing = true;\n  cost_source = 'fallback_table';\n  const pin = Number(routing.price_in_usd_per_1k || 0);\n  const pout = Number(routing.price_out_usd_per_1k || 0);\n  if (input_tokens != null && output_tokens != null && (pin || pout)) {\n    usd_cost = (input_tokens/1000)*pin + (output_tokens/1000)*pout;\n  } else { usd_cost = null; }\n}\nconst cost_pln = (usd_cost != null && fx != null) ? Number((usd_cost * fx).toFixed(6)) : null;\n\nconst alias = routing.litellm_model || '';\nconst provider = alias.includes('bedrock') ? 'litellm/bedrock-eu' : 'litellm/anthropic-direct';\n\nreturn [{ json: {\n  completion,\n  sources,\n  web_search_used,\n  web_search_error,\n  web_search_error_code,\n  rounds: (mt.rounds != null ? mt.rounds : null),\n  searches: (mt.searches != null ? mt.searches : null),\n  model_used: alias,\n  provider,\n  input_tokens, output_tokens,\n  usd_cost, fx_rate: fx, cost_pln,\n  cost_source, cost_missing,\n  routing_default_used: !!routing.routing_default_used,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
-      },
       "id": "compute-cost",
       "name": "Compute Cost",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1104, 304]
+      "position": [1440, 304],
+      "parameters": {
+        "jsCode": "const routing = $('Merge Params').first().json;\nconst mt = $('Call Model Turn').first().json || {};\nconst completion = mt.completion || '';\nconst sources = Array.isArray(mt.sources) ? mt.sources : [];\nconst calls = Array.isArray(mt.calls) ? mt.calls : [];\nconst web_search_used = mt.web_search_used === true;\nconst web_search_error = mt.web_search_error === true;\nconst web_search_error_code = mt.web_search_error_code || '';\nconst input_tokens = (mt.input_tokens != null) ? Number(mt.input_tokens) : null;\nconst output_tokens = (mt.output_tokens != null) ? Number(mt.output_tokens) : null;\n\nlet fx = null;\ntry { const f = $('Get FX Rate').first().json.rate; if (f != null && f !== '') fx = Number(f); } catch (e) {}\n\nlet usd_cost = (mt.usd_cost != null && mt.usd_cost !== '') ? Number(mt.usd_cost) : null;\nlet cost_source = 'model_turn_totals';\nlet cost_missing = false;\nif (usd_cost == null || isNaN(usd_cost) || usd_cost === 0) {\n  cost_missing = true;\n  cost_source = 'fallback_table';\n  const pin = Number(routing.price_in_usd_per_1k || 0);\n  const pout = Number(routing.price_out_usd_per_1k || 0);\n  if (input_tokens != null && output_tokens != null && (pin || pout)) {\n    usd_cost = (input_tokens/1000)*pin + (output_tokens/1000)*pout;\n  } else { usd_cost = null; }\n}\nconst cost_pln = (usd_cost != null && fx != null) ? Number((usd_cost * fx).toFixed(6)) : null;\n\nconst alias = routing.litellm_model || '';\nconst provider = alias.includes('bedrock') ? 'litellm/bedrock-eu' : 'litellm/anthropic-direct';\n\nreturn [{ json: {\n  completion,\n  sources,\n  calls,\n  web_search_used,\n  web_search_error,\n  web_search_error_code,\n  rounds: (mt.rounds != null ? mt.rounds : null),\n  searches: (mt.searches != null ? mt.searches : null),\n  model_used: alias,\n  provider,\n  input_tokens, output_tokens,\n  usd_cost, fx_rate: fx, cost_pln,\n  cost_source, cost_missing,\n  routing_default_used: !!routing.routing_default_used,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
+      }
     },
     {
+      "id": "emit-call-records",
+      "name": "Emit Call Records",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1640, 304],
       "parameters": {
-        "operation": "executeQuery",
-        "query": "insert into agent_runs\n  (clickup_task_id, caller_user_id, process_type, triggered_by, invocation_type, model_used, impact,\n   input_tokens, output_tokens, cost_pln, status)\nvalues ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'completed')\nreturning id;",
-        "options": {
-          "queryReplacement": "={{ [ $('Compute Cost').first().json.clickup_task_id || null, $('Compute Cost').first().json.caller_user_id || null, $('Compute Cost').first().json.process_type || null, $('Compute Cost').first().json.triggered_by || 'explicit_command', $('Compute Cost').first().json.invocation_type || 'explicit', $('Compute Cost').first().json.model_used, $('Compute Cost').first().json.impact || null, $('Compute Cost').first().json.input_tokens, $('Compute Cost').first().json.output_tokens, $('Compute Cost').first().json.cost_pln ] }}"
-        }
-      },
-      "id": "insert-run",
-      "name": "Insert agent_runs",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
-      "position": [1328, 304],
-      "retryOnFail": true,
-      "waitBetweenTries": 2000,
-      "maxTries": 2,
-      "credentials": {
-        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
-      },
-      "onError": "continueErrorOutput"
+        "jsCode": "const cc = $('Compute Cost').first().json;\nlet calls = Array.isArray(cc.calls) ? cc.calls : [];\nif (!calls.length) { calls = [{ model_used: cc.model_used, input_tokens: cc.input_tokens, output_tokens: cc.output_tokens, usd_cost: cc.usd_cost }]; }\nreturn calls.map(function (c) { return { json: {\n  clickup_task_id: cc.clickup_task_id || null,\n  caller_user_id: cc.caller_user_id || null,\n  process_type: cc.process_type || null,\n  triggered_by: cc.triggered_by || 'explicit_command',\n  invocation_type: cc.invocation_type || 'explicit',\n  impact: cc.impact || null,\n  model_used: c.model_used || null,\n  input_tokens: (c.input_tokens != null) ? c.input_tokens : null,\n  output_tokens: (c.output_tokens != null) ? c.output_tokens : null,\n  usd_cost: (c.usd_cost != null) ? c.usd_cost : null\n} }; });"
+      }
     },
     {
+      "id": "call-log-model-run",
+      "name": "Call Log Model Run",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1840, 304],
       "parameters": {
-        "assignments": {
-          "assignments": [
-            { "id": "b1", "name": "completion", "value": "={{ $('Compute Cost').first().json.completion }}", "type": "string" },
-            { "id": "b2", "name": "model", "value": "={{ $('Compute Cost').first().json.model_used }}", "type": "string" },
-            { "id": "b3", "name": "provider", "value": "={{ $('Compute Cost').first().json.provider }}", "type": "string" },
-            { "id": "b4", "name": "input_tokens", "value": "={{ $('Compute Cost').first().json.input_tokens }}", "type": "number" },
-            { "id": "b5", "name": "output_tokens", "value": "={{ $('Compute Cost').first().json.output_tokens }}", "type": "number" },
-            { "id": "b6", "name": "cost_pln", "value": "={{ $('Compute Cost').first().json.cost_pln }}", "type": "number" },
-            { "id": "b7", "name": "usd_cost", "value": "={{ $('Compute Cost').first().json.usd_cost }}", "type": "number" },
-            { "id": "b8", "name": "sources", "value": "={{ $('Compute Cost').first().json.sources }}", "type": "array" },
-            { "id": "b9", "name": "web_search_used", "value": "={{ $('Compute Cost').first().json.web_search_used }}", "type": "boolean" }
-          ]
+        "workflowId": {
+          "__rl": true,
+          "value": "ztSIUkp9ytbG1xpE",
+          "mode": "list",
+          "cachedResultName": "Log Model Run (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "model_used": "={{ $json.model_used }}",
+            "impact": "={{ $json.impact }}",
+            "input_tokens": "={{ $json.input_tokens }}",
+            "output_tokens": "={{ $json.output_tokens }}",
+            "usd_cost": "={{ $json.usd_cost }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
         },
         "options": {}
       },
-      "id": "shape-output",
-      "name": "Shape Output",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
-      "position": [1568, 208]
+      "onError": "continueRegularOutput",
+      "notes": "ADR-035: logs ONE agent_runs row per model/search call (the shared writer). Runs once per Emit Call Records item."
     },
     {
+      "id": "after-logging",
+      "name": "After Logging",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2040, 304],
+      "parameters": {
+        "jsCode": "return [{ json: $('Compute Cost').first().json }];"
+      }
+    },
+    {
+      "id": "check-degradation",
+      "name": "Check Degradation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [2240, 304],
       "parameters": {
         "conditions": {
           "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
@@ -173,16 +231,21 @@
           "combinator": "or"
         },
         "options": {}
-      },
-      "id": "check-degradation",
-      "name": "Check Degradation",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.3,
-      "position": [1328, 528]
+      }
     },
     {
+      "id": "alert-degradation",
+      "name": "Alert Degradation",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [2440, 200],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -203,124 +266,95 @@
         },
         "options": {}
       },
-      "id": "alert-degradation",
-      "name": "Alert Degradation",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.3,
-      "position": [1568, 528],
       "onError": "continueRegularOutput"
     },
     {
+      "id": "shape-output",
+      "name": "Shape Output",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [2640, 304],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
-        "workflowInputs": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "severity": "WARN",
-            "source": "invoke-model",
-            "message": "Nie udało się zapisać agent_runs (utrata obserwowalności; run zwrócony mimo to).",
-            "details": "=task={{ $('Compute Cost').first().json.clickup_task_id }}; model={{ $('Compute Cost').first().json.model_used }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
-          },
-          "matchingColumns": [],
-          "schema": [
-            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": true
+        "assignments": {
+          "assignments": [
+            { "id": "b1", "name": "completion", "value": "={{ $('Compute Cost').first().json.completion }}", "type": "string" },
+            { "id": "b2", "name": "model", "value": "={{ $('Compute Cost').first().json.model_used }}", "type": "string" },
+            { "id": "b3", "name": "provider", "value": "={{ $('Compute Cost').first().json.provider }}", "type": "string" },
+            { "id": "b4", "name": "input_tokens", "value": "={{ $('Compute Cost').first().json.input_tokens }}", "type": "number" },
+            { "id": "b5", "name": "output_tokens", "value": "={{ $('Compute Cost').first().json.output_tokens }}", "type": "number" },
+            { "id": "b6", "name": "cost_pln", "value": "={{ $('Compute Cost').first().json.cost_pln }}", "type": "number" },
+            { "id": "b7", "name": "usd_cost", "value": "={{ $('Compute Cost').first().json.usd_cost }}", "type": "number" },
+            { "id": "b8", "name": "sources", "value": "={{ $('Compute Cost').first().json.sources }}", "type": "array" },
+            { "id": "b9", "name": "web_search_used", "value": "={{ $('Compute Cost').first().json.web_search_used }}", "type": "boolean" }
+          ]
         },
         "options": {}
-      },
-      "id": "alert-insert-failed",
-      "name": "Alert Insert Failed",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.3,
-      "position": [1568, 368]
+      }
     },
     {
+      "id": "bedrock-model",
+      "name": "AWS Bedrock Chat Model (fallback)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
+      "typeVersion": 1.1,
+      "position": [1040, 768],
       "parameters": {
         "modelSource": "inferenceProfile",
         "model": "eu.anthropic.claude-sonnet-4-6",
         "options": {}
       },
-      "id": "bedrock-model",
-      "name": "AWS Bedrock Chat Model (fallback)",
-      "type": "@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
-      "typeVersion": 1.1,
-      "position": [672, 768],
       "credentials": {
         "aws": { "id": "8TDwsQAJFkSWUEJF", "name": "AWS (IAM) account" }
       },
       "disabled": true
     },
     {
+      "id": "llm-chain",
+      "name": "Basic LLM Chain (fallback)",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [1040, 624],
       "parameters": {
         "promptType": "define",
         "text": "={{ $json.prompt }}",
         "batching": {}
       },
-      "id": "llm-chain",
-      "name": "Basic LLM Chain (fallback)",
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "typeVersion": 1.9,
-      "position": [672, 624],
       "disabled": true
     }
   ],
   "connections": {
-    "When Called": {
-      "main": [[{ "node": "Lookup Routing", "type": "main", "index": 0 }]]
-    },
+    "When Called": { "main": [[{ "node": "Lookup Routing", "type": "main", "index": 0 }]] },
     "Lookup Routing": {
       "main": [
         [{ "node": "Resolve Routing", "type": "main", "index": 0 }],
         [{ "node": "Resolve Routing", "type": "main", "index": 0 }]
       ]
     },
-    "Resolve Routing": {
-      "main": [[{ "node": "Call Model Turn", "type": "main", "index": 0 }]]
-    },
-    "Call Model Turn": {
-      "main": [[{ "node": "Get FX Rate", "type": "main", "index": 0 }]]
-    },
-    "Get FX Rate": {
-      "main": [[{ "node": "Compute Cost", "type": "main", "index": 0 }]]
-    },
-    "Compute Cost": {
-      "main": [[{ "node": "Check Degradation", "type": "main", "index": 0 }]]
-    },
+    "Resolve Routing": { "main": [[{ "node": "Lookup Research Params", "type": "main", "index": 0 }]] },
+    "Lookup Research Params": { "main": [[{ "node": "Merge Params", "type": "main", "index": 0 }]] },
+    "Merge Params": { "main": [[{ "node": "Call Model Turn", "type": "main", "index": 0 }]] },
+    "Call Model Turn": { "main": [[{ "node": "Get FX Rate", "type": "main", "index": 0 }]] },
+    "Get FX Rate": { "main": [[{ "node": "Compute Cost", "type": "main", "index": 0 }]] },
+    "Compute Cost": { "main": [[{ "node": "Emit Call Records", "type": "main", "index": 0 }]] },
+    "Emit Call Records": { "main": [[{ "node": "Call Log Model Run", "type": "main", "index": 0 }]] },
+    "Call Log Model Run": { "main": [[{ "node": "After Logging", "type": "main", "index": 0 }]] },
+    "After Logging": { "main": [[{ "node": "Check Degradation", "type": "main", "index": 0 }]] },
     "Check Degradation": {
       "main": [
         [{ "node": "Alert Degradation", "type": "main", "index": 0 }],
-        [{ "node": "Insert agent_runs", "type": "main", "index": 0 }]
+        [{ "node": "Shape Output", "type": "main", "index": 0 }]
       ]
     },
-    "Alert Degradation": {
-      "main": [[{ "node": "Insert agent_runs", "type": "main", "index": 0 }]]
-    },
-    "Insert agent_runs": {
-      "main": [
-        [{ "node": "Shape Output", "type": "main", "index": 0 }],
-        [{ "node": "Alert Insert Failed", "type": "main", "index": 0 }]
-      ]
-    },
-    "Alert Insert Failed": {
-      "main": [[{ "node": "Shape Output", "type": "main", "index": 0 }]]
-    },
+    "Alert Degradation": { "main": [[{ "node": "Shape Output", "type": "main", "index": 0 }]] },
     "AWS Bedrock Chat Model (fallback)": {
       "ai_languageModel": [[{ "node": "Basic LLM Chain (fallback)", "type": "ai_languageModel", "index": 0 }]]
     }
   },
   "settings": {
     "executionOrder": "v1",
-    "binaryMode": "separate",
     "errorWorkflow": "81eplXMD1v5ONhzs"
   },
   "staticData": null,
   "meta": null,
   "pinData": {},
-  "versionId": "68916130-9975-440d-89ed-32061e423b84",
   "tags": []
 }

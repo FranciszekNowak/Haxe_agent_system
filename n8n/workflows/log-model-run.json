@@ -1,0 +1,146 @@
+{
+  "id": "ztSIUkp9ytbG1xpE",
+  "name": "Log Model Run (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "clickup_task_id" },
+            { "name": "caller_user_id" },
+            { "name": "process_type" },
+            { "name": "triggered_by" },
+            { "name": "invocation_type" },
+            { "name": "model_used" },
+            { "name": "impact" },
+            { "name": "input_tokens", "type": "number" },
+            { "name": "output_tokens", "type": "number" },
+            { "name": "usd_cost", "type": "number" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "get-fx",
+      "name": "Get FX Rate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [220, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select rate from fx_rates where base='USD' and quote='PLN' order by rate_date desc limit 1;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "executeOnce": true
+    },
+    {
+      "id": "compute-pln",
+      "name": "Compute PLN",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300],
+      "parameters": {
+        "jsCode": "const items = $('When Called').all();\nlet fx = null;\ntry { const f = $('Get FX Rate').first().json.rate; if (f != null && f !== '') fx = Number(f); } catch (e) {}\nreturn items.map(function (itm) {\n  const t = itm.json;\n  let usd = (t.usd_cost != null && t.usd_cost !== '') ? Number(t.usd_cost) : null;\n  let cost_missing = false;\n  if (usd == null || isNaN(usd)) { cost_missing = true; usd = null; }\n  const cost_pln = (usd != null && fx != null) ? Number((usd * fx).toFixed(6)) : null;\n  return { json: {\n    clickup_task_id: t.clickup_task_id || null,\n    caller_user_id: t.caller_user_id || null,\n    process_type: t.process_type || null,\n    triggered_by: t.triggered_by || 'explicit_command',\n    invocation_type: t.invocation_type || 'explicit',\n    model_used: t.model_used || null,\n    impact: (t.impact != null && t.impact !== '') ? t.impact : null,\n    input_tokens: (t.input_tokens != null && t.input_tokens !== '') ? Number(t.input_tokens) : null,\n    output_tokens: (t.output_tokens != null && t.output_tokens !== '') ? Number(t.output_tokens) : null,\n    usd_cost: usd,\n    fx_rate: fx,\n    cost_pln: cost_pln,\n    cost_missing: cost_missing\n  } };\n});"
+      }
+    },
+    {
+      "id": "insert-run",
+      "name": "Insert agent_runs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [660, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into agent_runs\n  (clickup_task_id, caller_user_id, process_type, triggered_by, invocation_type, model_used, impact,\n   input_tokens, output_tokens, cost_pln, status)\nvalues ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'completed')\nreturning id;",
+        "options": {
+          "queryReplacement": "={{ [ $json.clickup_task_id, $json.caller_user_id, $json.process_type, $json.triggered_by, $json.invocation_type, $json.model_used, $json.impact, $json.input_tokens, $json.output_tokens, $json.cost_pln ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "alert-insert-failed",
+      "name": "Alert Insert Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [880, 420],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "log-model-run",
+            "message": "Nie udało się zapisać przebiegu do agent_runs (utrata obserwowalności; przebieg dokończony mimo to).",
+            "details": "=task={{ $('Compute PLN').first().json.clickup_task_id }}; model={{ $('Compute PLN').first().json.model_used }}; impact={{ $('Compute PLN').first().json.impact }}; triggered_by={{ $('Compute PLN').first().json.triggered_by }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "shape-return",
+      "name": "Shape Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 300],
+      "parameters": {
+        "jsCode": "const rows = $input.all();\nlet logged = 0;\nfor (const r of rows) { if (r && r.json) logged++; }\nreturn [{ json: { logged: logged } }];"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": { "main": [[{ "node": "Get FX Rate", "type": "main", "index": 0 }]] },
+    "Get FX Rate": { "main": [[{ "node": "Compute PLN", "type": "main", "index": 0 }]] },
+    "Compute PLN": { "main": [[{ "node": "Insert agent_runs", "type": "main", "index": 0 }]] },
+    "Insert agent_runs": {
+      "main": [
+        [{ "node": "Shape Return", "type": "main", "index": 0 }],
+        [{ "node": "Alert Insert Failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Alert Insert Failed": { "main": [[{ "node": "Shape Return", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "tags": []
+}

@@ -62,7 +62,8 @@
             "triggered_by": "search_step",
             "invocation_type": "explicit",
             "caller_user_id": "={{ $('When Called').first().json.caller_user_id || '' }}",
-            "process_type": ""
+            "process_type": "",
+            "enable_web_search": "false"
           },
           "matchingColumns": [],
           "schema": [
@@ -74,7 +75,8 @@
             { "id": "triggered_by", "displayName": "triggered_by", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "caller_user_id", "displayName": "caller_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "process_type", "displayName": "process_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+            { "id": "process_type", "displayName": "process_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "enable_web_search", "displayName": "enable_web_search", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
           ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": false
@@ -354,7 +356,8 @@
             "triggered_by": "search_step",
             "invocation_type": "explicit",
             "caller_user_id": "={{ $('When Called').first().json.caller_user_id || '' }}",
-            "process_type": ""
+            "process_type": "",
+            "enable_web_search": "false"
           },
           "matchingColumns": [],
           "schema": [
@@ -366,7 +369,8 @@
             { "id": "triggered_by", "displayName": "triggered_by", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "caller_user_id", "displayName": "caller_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "process_type", "displayName": "process_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+            { "id": "process_type", "displayName": "process_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "enable_web_search", "displayName": "enable_web_search", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
           ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": false

@@ -22,7 +22,10 @@
             { "name": "acc_out", "type": "number" },
             { "name": "acc_usd", "type": "number" },
             { "name": "acc_searches", "type": "number" },
-            { "name": "sources" }
+            { "name": "sources" },
+            { "name": "tavily_max_results", "type": "number" },
+            { "name": "enable_web_search" },
+            { "name": "calls" }
           ]
         }
       }
@@ -34,7 +37,7 @@
       "typeVersion": 2,
       "position": [220, 300],
       "parameters": {
-        "jsCode": "const t = $json;\nlet messages = [];\ntry { messages = JSON.parse(t.messages || '[]'); } catch (e) {}\nconst tool = { name: 'web_search', description: 'Wyszukaj w internecie aktualne informacje (ceny, biezace wydarzenia, specyfikacje, swieze fakty). Uzyj, gdy potrzebujesz danych spoza swojej wiedzy. Wykonaj wszystkie potrzebne zapytania w jednej turze, a nastepnie odpowiedz.', input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Zapytanie do wyszukiwarki' } }, required: ['query'] } };\nconst body = { model: t.litellm_model, max_tokens: Number(t.max_tokens) || 4000, messages: messages, tools: [tool] };\nconst temp = t.temperature;\nif (temp !== null && temp !== '' && temp !== undefined) { body.temperature = Number(temp); }\nreturn [{ json: { body: body } }];"
+        "jsCode": "const t = $json;\nlet messages = [];\ntry { messages = JSON.parse(t.messages || '[]'); } catch (e) {}\nconst body = { model: t.litellm_model, max_tokens: Number(t.max_tokens) || 4000, messages: messages };\nconst ews = !(t.enable_web_search === false || t.enable_web_search === 'false');\nif (ews) {\n  body.tools = [{ name: 'web_search', description: 'Wyszukaj w internecie aktualne informacje (ceny, biezace wydarzenia, specyfikacje, swieze fakty). Uzyj, gdy potrzebujesz danych spoza swojej wiedzy. Wykonaj wszystkie potrzebne zapytania w jednej turze, a nastepnie odpowiedz.', input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Zapytanie do wyszukiwarki' } }, required: ['query'] } }];\n}\nconst temp = t.temperature;\nif (temp !== null && temp !== '' && temp !== undefined) { body.temperature = Number(temp); }\nreturn [{ json: { body: body } }];"
       }
     },
     {
@@ -49,13 +52,22 @@
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
-        "headerParameters": { "parameters": [{ "name": "anthropic-version", "value": "2023-06-01" }] },
+        "headerParameters": {
+          "parameters": [
+            { "name": "anthropic-version", "value": "2023-06-01" }
+          ]
+        },
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.body) }}",
-        "options": { "response": { "response": { "fullResponse": true, "responseFormat": "json" } }, "timeout": 180000 }
+        "options": {
+          "response": { "response": { "fullResponse": true, "responseFormat": "json" } },
+          "timeout": 180000
+        }
       },
-      "credentials": { "httpHeaderAuth": { "id": "396fqTZqWdFosVpT", "name": "LiteLLM master key" } },
+      "credentials": {
+        "httpHeaderAuth": { "id": "396fqTZqWdFosVpT", "name": "LiteLLM master key" }
+      },
       "retryOnFail": true,
       "maxTries": 2,
       "waitBetweenTries": 2000
@@ -67,7 +79,7 @@
       "typeVersion": 2,
       "position": [660, 300],
       "parameters": {
-        "jsCode": "const trig = $('When Called').first().json;\nconst resp = $('Call Messages').first().json || {};\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst inTok = Number(usage.input_tokens || 0);\nconst outTok = Number(usage.output_tokens || 0);\nconst ch = (headers['x-litellm-response-cost'] != null && headers['x-litellm-response-cost'] !== '') ? headers['x-litellm-response-cost'] : headers['x-litellm-response-cost-original'];\nconst usd = (ch != null && ch !== '') ? Number(ch) : 0;\nconst content = Array.isArray(body.content) ? body.content : [];\nlet text = '';\nconst queries = [];\nfor (const b of content) {\n  if (b && b.type === 'text' && b.text) { text += b.text; }\n  else if (b && b.type === 'tool_use' && b.name === 'web_search') { queries.push({ tool_use_id: b.id, query: (b.input && b.input.query) || '' }); }\n}\nconst depth = Number(trig.depth || 0);\nconst maxDepth = Number(trig.max_depth || 5);\nconst stop = body.stop_reason || '';\nconst acc_in = Number(trig.acc_in || 0) + inTok;\nconst acc_out = Number(trig.acc_out || 0) + outTok;\nconst acc_usd = Number(trig.acc_usd || 0) + usd;\nconst acc_searches = Number(trig.acc_searches || 0);\nlet prevSources = [];\ntry { prevSources = JSON.parse(trig.sources || '[]'); } catch (e) {}\nlet prevMessages = [];\ntry { prevMessages = JSON.parse(trig.messages || '[]'); } catch (e) {}\nconst needs_search = stop === 'tool_use' && queries.length > 0 && depth < maxDepth;\nconst capped = stop === 'tool_use' && queries.length > 0 && depth >= maxDepth;\nreturn [{ json: { needs_search: needs_search, capped: capped, text: text, stop: stop, queries: queries, assistant_content: content, depth: depth, maxDepth: maxDepth, acc_in: acc_in, acc_out: acc_out, acc_usd: acc_usd, acc_searches: acc_searches, prevSources: prevSources, prevMessages: prevMessages, litellm_model: trig.litellm_model, max_tokens: trig.max_tokens, temperature: trig.temperature } }];"
+        "jsCode": "const trig = $('When Called').first().json;\nconst resp = $('Call Messages').first().json || {};\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst inTok = Number(usage.input_tokens || 0);\nconst outTok = Number(usage.output_tokens || 0);\nconst ch = (headers['x-litellm-response-cost'] != null && headers['x-litellm-response-cost'] !== '') ? headers['x-litellm-response-cost'] : headers['x-litellm-response-cost-original'];\nconst usd = (ch != null && ch !== '') ? Number(ch) : 0;\nconst content = Array.isArray(body.content) ? body.content : [];\nlet text = '';\nconst queries = [];\nfor (const b of content) {\n  if (b && b.type === 'text' && b.text) { text += b.text; }\n  else if (b && b.type === 'tool_use' && b.name === 'web_search') { queries.push({ tool_use_id: b.id, query: (b.input && b.input.query) || '' }); }\n}\nconst depth = Number(trig.depth || 0);\nconst maxDepth = Number(trig.max_depth || 5);\nconst stop = body.stop_reason || '';\nconst acc_in = Number(trig.acc_in || 0) + inTok;\nconst acc_out = Number(trig.acc_out || 0) + outTok;\nconst acc_usd = Number(trig.acc_usd || 0) + usd;\nconst acc_searches = Number(trig.acc_searches || 0);\nlet prevSources = []; try { prevSources = JSON.parse(trig.sources || '[]'); } catch (e) {}\nlet prevMessages = []; try { prevMessages = JSON.parse(trig.messages || '[]'); } catch (e) {}\nlet prevCalls = []; try { prevCalls = JSON.parse(trig.calls || '[]'); } catch (e) {}\nprevCalls = prevCalls.concat([{ call_type: 'research_round', model_used: trig.litellm_model, input_tokens: inTok, output_tokens: outTok, usd_cost: usd }]);\nconst needs_search = stop === 'tool_use' && queries.length > 0 && depth < maxDepth;\nconst capped = stop === 'tool_use' && queries.length > 0 && depth >= maxDepth;\nreturn [{ json: { needs_search: needs_search, capped: capped, text: text, stop: stop, queries: queries, assistant_content: content, depth: depth, maxDepth: maxDepth, acc_in: acc_in, acc_out: acc_out, acc_usd: acc_usd, acc_searches: acc_searches, prevSources: prevSources, prevMessages: prevMessages, prevCalls: prevCalls, litellm_model: trig.litellm_model, max_tokens: trig.max_tokens, temperature: trig.temperature, tavily_max_results: trig.tavily_max_results, enable_web_search: trig.enable_web_search } }];"
       }
     },
     {
@@ -109,10 +121,15 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ query: $json.query, max_results: 5 }) }}",
-        "options": { "timeout": 60000 }
+        "jsonBody": "={{ JSON.stringify({ query: $json.query, max_results: ($('Parse Turn').first().json.tavily_max_results || 5) }) }}",
+        "options": {
+          "response": { "response": { "fullResponse": true, "responseFormat": "json" } },
+          "timeout": 60000
+        }
       },
-      "credentials": { "httpHeaderAuth": { "id": "396fqTZqWdFosVpT", "name": "LiteLLM master key" } },
+      "credentials": {
+        "httpHeaderAuth": { "id": "396fqTZqWdFosVpT", "name": "LiteLLM master key" }
+      },
       "retryOnFail": true,
       "maxTries": 2,
       "waitBetweenTries": 2000,
@@ -125,7 +142,7 @@
       "typeVersion": 2,
       "position": [1540, 180],
       "parameters": {
-        "jsCode": "const pt = $('Parse Turn').first().json;\nconst emits = $('Emit Queries').all();\nconst searches = $input.all();\nconst NL = String.fromCharCode(10);\nconst toolResults = [];\nconst newSources = (pt.prevSources || []).slice();\nconst seen = {};\nfor (const s of newSources) { if (s && s.url) seen[s.url] = true; }\nfor (let i = 0; i < emits.length; i++) {\n  const tuid = emits[i].json.tool_use_id;\n  let results = [];\n  try { results = (searches[i] && searches[i].json && searches[i].json.results) || []; } catch (e) {}\n  let txt = '';\n  for (const r of results) {\n    txt += '- ' + (r.title || '') + ' (' + (r.url || '') + ')' + NL + (r.snippet || '') + NL + NL;\n    if (r && r.url && !seen[r.url]) { seen[r.url] = true; newSources.push({ url: r.url, title: r.title || r.url }); }\n  }\n  if (!txt) { txt = 'Brak wynikow.'; }\n  toolResults.push({ type: 'tool_result', tool_use_id: tuid, content: txt });\n}\nconst messages2 = (pt.prevMessages || []).slice();\nmessages2.push({ role: 'assistant', content: pt.assistant_content });\nmessages2.push({ role: 'user', content: toolResults });\nreturn [{ json: { litellm_model: pt.litellm_model, messages: JSON.stringify(messages2), max_tokens: pt.max_tokens, temperature: pt.temperature, depth: (pt.depth || 0) + 1, max_depth: pt.maxDepth, acc_in: pt.acc_in, acc_out: pt.acc_out, acc_usd: pt.acc_usd, acc_searches: (pt.acc_searches || 0) + emits.length, sources: JSON.stringify(newSources) } }];"
+        "jsCode": "const pt = $('Parse Turn').first().json;\nconst emits = $('Emit Queries').all();\nconst searches = $input.all();\nconst NL = String.fromCharCode(10);\nconst toolResults = [];\nconst newSources = (pt.prevSources || []).slice();\nconst seen = {};\nfor (const s of newSources) { if (s && s.url) seen[s.url] = true; }\nconst searchCalls = [];\nlet searchUsd = 0;\nfor (let i = 0; i < emits.length; i++) {\n  const tuid = emits[i].json.tool_use_id;\n  let results = [];\n  let scost = 0;\n  try {\n    const it = (searches[i] && searches[i].json) ? searches[i].json : {};\n    const bodyR = it.body || it;\n    results = (bodyR && bodyR.results) || [];\n    const hh = it.headers || {};\n    const hc = (hh['x-litellm-response-cost'] != null && hh['x-litellm-response-cost'] !== '') ? hh['x-litellm-response-cost'] : hh['x-litellm-response-cost-original'];\n    if (hc != null && hc !== '') scost = Number(hc);\n  } catch (e) {}\n  let txt = '';\n  for (const r of results) {\n    txt += '- ' + (r.title || '') + ' (' + (r.url || '') + ')' + NL + (r.snippet || '') + NL + NL;\n    if (r && r.url && !seen[r.url]) { seen[r.url] = true; newSources.push({ url: r.url, title: r.title || r.url }); }\n  }\n  if (!txt) { txt = 'Brak wynikow.'; }\n  toolResults.push({ type: 'tool_result', tool_use_id: tuid, content: txt });\n  searchCalls.push({ call_type: 'web_search', model_used: 'tavily', input_tokens: 0, output_tokens: 0, usd_cost: scost });\n  searchUsd += scost;\n}\nconst messages2 = (pt.prevMessages || []).slice();\nmessages2.push({ role: 'assistant', content: pt.assistant_content });\nmessages2.push({ role: 'user', content: toolResults });\nconst newCalls = (pt.prevCalls || []).concat(searchCalls);\nreturn [{ json: { litellm_model: pt.litellm_model, messages: JSON.stringify(messages2), max_tokens: pt.max_tokens, temperature: pt.temperature, tavily_max_results: pt.tavily_max_results, enable_web_search: pt.enable_web_search, depth: (pt.depth || 0) + 1, max_depth: pt.maxDepth, acc_in: pt.acc_in, acc_out: pt.acc_out, acc_usd: (Number(pt.acc_usd || 0) + searchUsd), acc_searches: (pt.acc_searches || 0) + emits.length, sources: JSON.stringify(newSources), calls: JSON.stringify(newCalls) } }];"
       }
     },
     {
@@ -135,7 +152,12 @@
       "typeVersion": 1.3,
       "position": [1760, 180],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "BdZ9Chhqs691Ljlk", "mode": "list", "cachedResultName": "Model Turn (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "BdZ9Chhqs691Ljlk",
+          "mode": "list",
+          "cachedResultName": "Model Turn (v1)"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -149,7 +171,10 @@
             "acc_out": "={{ $json.acc_out }}",
             "acc_usd": "={{ $json.acc_usd }}",
             "acc_searches": "={{ $json.acc_searches }}",
-            "sources": "={{ $json.sources }}"
+            "sources": "={{ $json.sources }}",
+            "tavily_max_results": "={{ $json.tavily_max_results }}",
+            "enable_web_search": "={{ $json.enable_web_search }}",
+            "calls": "={{ $json.calls }}"
           },
           "matchingColumns": [],
           "schema": [],
@@ -166,7 +191,7 @@
       "typeVersion": 2,
       "position": [1100, 420],
       "parameters": {
-        "jsCode": "const j = $json;\nconst NL = String.fromCharCode(10);\nlet completion = j.text || '';\nlet web_search_error = false;\nlet web_search_error_code = '';\nconst srcs = j.prevSources || [];\nif (!completion) {\n  if (j.capped) { web_search_error = true; web_search_error_code = 'max_rounds_reached'; completion = 'Agent wykonal maksymalna liczbe rund wyszukiwania, ale nie sformulowal pelnej odpowiedzi. Zawez pytanie lub popros o ponowna probe.'; }\n  else if (j.acc_searches > 0 || srcs.length) { web_search_error = true; web_search_error_code = 'no_final_text'; completion = 'Wyszukiwanie zakonczone, ale model nie zwrocil odpowiedzi tekstowej.'; }\n  if (srcs.length) { completion += NL + NL + 'Znalezione zrodla:' + NL + srcs.map(function (s, i) { return (i + 1) + '. [' + (s.title || s.url) + '](' + s.url + ')'; }).join(NL); }\n}\nreturn [{ json: { completion: completion, sources: srcs, web_search_used: (j.acc_searches > 0) || (srcs.length > 0), web_search_error: web_search_error, web_search_error_code: web_search_error_code, input_tokens: j.acc_in, output_tokens: j.acc_out, usd_cost: j.acc_usd, searches: j.acc_searches, rounds: j.depth } }];"
+        "jsCode": "const j = $json;\nconst NL = String.fromCharCode(10);\nlet completion = j.text || '';\nlet web_search_error = false;\nlet web_search_error_code = '';\nconst srcs = j.prevSources || [];\nif (!completion) {\n  if (j.capped) { web_search_error = true; web_search_error_code = 'max_rounds_reached'; completion = 'Agent wykonal maksymalna liczbe rund wyszukiwania, ale nie sformulowal pelnej odpowiedzi. Zawez pytanie lub popros o ponowna probe.'; }\n  else if (j.acc_searches > 0 || srcs.length) { web_search_error = true; web_search_error_code = 'no_final_text'; completion = 'Wyszukiwanie zakonczone, ale model nie zwrocil odpowiedzi tekstowej.'; }\n  if (srcs.length) { completion += NL + NL + 'Znalezione zrodla:' + NL + srcs.map(function (s, i) { return (i + 1) + '. [' + (s.title || s.url) + '](' + s.url + ')'; }).join(NL); }\n}\nreturn [{ json: { completion: completion, sources: srcs, web_search_used: (j.acc_searches > 0) || (srcs.length > 0), web_search_error: web_search_error, web_search_error_code: web_search_error_code, input_tokens: j.acc_in, output_tokens: j.acc_out, usd_cost: j.acc_usd, searches: j.acc_searches, rounds: j.depth, calls: (j.prevCalls || []) } }];"
       }
     }
   ],
