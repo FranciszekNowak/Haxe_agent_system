@@ -120,6 +120,26 @@ Mitigations:
 Single-round searches and non-search calls are unaffected (they end with a text
 block and synthesize normally).
 
+> Update 2026-06-09 — RESOLVED via a self-owned agentic loop (Option A), not the
+> prompt nudge. We built **`Model Turn (v1)`** (n8n workflow `BdZ9Chhqs691Ljlk`): a
+> recursive sub-workflow that owns the multi-round loop — calls LiteLLM `/v1/messages`
+> with a **custom `web_search` tool** (a normal function tool, NOT the native
+> `web_search_*` type), and on `stop_reason: tool_use` executes each query via LiteLLM
+> `POST /v1/search/haxe-web-search` (Tavily; creds stay server-side), threads the
+> `tool_use`/`tool_result` turns back, and **recurses** to a depth cap of 5 —
+> accumulating tokens, searches, sources, and cost across rounds. `Invoke Model (v1)`
+> now delegates the model call to it (node `Call Model Turn`) and aggregates the
+> returned totals; `Compute Cost` consumes `{completion, sources, input/output_tokens,
+> usd_cost, web_search_used, web_search_error, rounds, searches}`. Verified live: a
+> multi-round product-research brief synthesized correctly (Opus-direct route, and a
+> haiku-bedrock route in isolation) — **no empty answers**. The custom tool does not
+> match LiteLLM's interception matcher, so the `websearch_interception` callback in
+> `litellm-config.yaml` is now **vestigial** (left in place, inert; safe to remove in a
+> future cleanup + redeploy). The empty-answer fallback now only fires on
+> `max_rounds_reached` (depth cap hit). This supersedes the single-round design above.
+> Trade-off accepted: multi-round runs take longer (a synchronous trigger can exceed an
+> nginx 60s proxy timeout — irrelevant to the production async @-mention webhook).
+
 Related: ADR-013/022 (the tool-less invocation seam this extends), ADR-024/030
 (LiteLLM gateway + provider routing this rides on), ADR-026 (capability containment —
 bounded exception, see its dated update), ADR-025 (alerting seam for the degradation

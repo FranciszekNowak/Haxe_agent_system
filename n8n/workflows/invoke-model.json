@@ -58,40 +58,35 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "http://litellm:4000/v1/messages",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ model: $json.litellm_model, max_tokens: $json.max_tokens, messages: [{ role: 'user', content: $json.prompt }], tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }] }, $json.temperature != null ? { temperature: $json.temperature } : {})) }}",
-        "options": {
-          "response": {
-            "response": {
-              "fullResponse": true,
-              "responseFormat": "json"
-            }
+        "workflowId": { "__rl": true, "value": "BdZ9Chhqs691Ljlk", "mode": "list", "cachedResultName": "Model Turn (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "litellm_model": "={{ $json.litellm_model }}",
+            "messages": "={{ JSON.stringify([{ role: 'user', content: $json.prompt }]) }}",
+            "max_tokens": "={{ $json.max_tokens }}",
+            "temperature": "={{ $json.temperature }}",
+            "depth": "={{ 0 }}",
+            "max_depth": "={{ 5 }}",
+            "acc_in": "={{ 0 }}",
+            "acc_out": "={{ 0 }}",
+            "acc_usd": "={{ 0 }}",
+            "acc_searches": "={{ 0 }}",
+            "sources": "[]"
           },
-          "timeout": 180000
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
         },
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "anthropic-version", "value": "2023-06-01" }
-          ]
-        }
+        "options": {}
       },
-      "id": "call-litellm",
-      "name": "Call LiteLLM",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "call-model-turn",
+      "name": "Call Model Turn",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
       "position": [672, 304],
-      "retryOnFail": true,
-      "waitBetweenTries": 2000,
-      "maxTries": 2,
-      "credentials": {
-        "httpHeaderAuth": { "id": "396fqTZqWdFosVpT", "name": "LiteLLM master key" }
-      }
+      "notes": "ADR-034: drives the agentic web-search loop (Model Turn v1) — multi-round search+synthesis. Replaces the single /v1/messages call. Returns {completion, sources, input/output_tokens, usd_cost, web_search_used, web_search_error, rounds, searches}."
     },
     {
       "parameters": {
@@ -114,7 +109,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const routing = $('Resolve Routing').first().json;\nconst resp = $('Call LiteLLM').first().json || {};\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.input_tokens != null) ? usage.input_tokens : null;\nconst output_tokens = (usage.output_tokens != null) ? usage.output_tokens : null;\n\n// Anthropic /v1/messages content blocks: concat text; collect web-search sources/errors.\nconst content = Array.isArray(body.content) ? body.content : [];\nlet completion = '';\nconst sources = [];\nlet web_search_used = false;\nlet web_search_error = false;\nlet web_search_error_code = '';\nfor (const b of content) {\n  if (!b || typeof b !== 'object') continue;\n  if (b.type === 'text' && b.text) {\n    completion += b.text;\n  } else if (b.type === 'web_search_tool_result') {\n    web_search_used = true;\n    const c = b.content;\n    if (c && !Array.isArray(c) && c.type === 'web_search_tool_result_error') {\n      web_search_error = true;\n      web_search_error_code = c.error_code || 'unknown';\n    } else if (Array.isArray(c)) {\n      for (const r of c) {\n        if (r && r.type === 'web_search_result' && r.url) {\n          sources.push({ url: r.url, title: r.title || r.url });\n        }\n      }\n    }\n  }\n}\nif (!completion) { try { completion = body.choices[0].message.content || ''; } catch (e) {} }\n\nlet fx = null;\ntry { const f = $('Get FX Rate').first().json.rate; if (f != null && f !== '') fx = Number(f); } catch (e) {}\n\nconst ch = (headers['x-litellm-response-cost'] != null && headers['x-litellm-response-cost'] !== '')\n  ? headers['x-litellm-response-cost']\n  : headers['x-litellm-response-cost-original'];\nlet usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\nlet cost_source = 'litellm_header';\nlet cost_missing = false;\nif (usd_cost == null || isNaN(usd_cost) || usd_cost === 0) {\n  cost_missing = true;\n  cost_source = 'fallback_table';\n  const pin = Number(routing.price_in_usd_per_1k || 0);\n  const pout = Number(routing.price_out_usd_per_1k || 0);\n  if (input_tokens != null && output_tokens != null && (pin || pout)) {\n    usd_cost = (input_tokens/1000)*pin + (output_tokens/1000)*pout;\n  } else {\n    usd_cost = null;\n  }\n}\nconst cost_pln = (usd_cost != null && fx != null) ? Number((usd_cost * fx).toFixed(6)) : null;\n\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : routing.litellm_model;\nconst alias = routing.litellm_model || '';\nconst provider = alias.includes('bedrock') ? 'litellm/bedrock-eu' : 'litellm/anthropic-direct';\n\nreturn [{ json: {\n  completion,\n  sources,\n  web_search_used,\n  web_search_error,\n  web_search_error_code,\n  model_used,\n  provider,\n  input_tokens, output_tokens,\n  usd_cost, fx_rate: fx, cost_pln,\n  cost_source, cost_missing,\n  routing_default_used: !!routing.routing_default_used,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
+        "jsCode": "const routing = $('Resolve Routing').first().json;\nconst mt = $('Call Model Turn').first().json || {};\nconst completion = mt.completion || '';\nconst sources = Array.isArray(mt.sources) ? mt.sources : [];\nconst web_search_used = mt.web_search_used === true;\nconst web_search_error = mt.web_search_error === true;\nconst web_search_error_code = mt.web_search_error_code || '';\nconst input_tokens = (mt.input_tokens != null) ? Number(mt.input_tokens) : null;\nconst output_tokens = (mt.output_tokens != null) ? Number(mt.output_tokens) : null;\n\nlet fx = null;\ntry { const f = $('Get FX Rate').first().json.rate; if (f != null && f !== '') fx = Number(f); } catch (e) {}\n\nlet usd_cost = (mt.usd_cost != null && mt.usd_cost !== '') ? Number(mt.usd_cost) : null;\nlet cost_source = 'model_turn_headers';\nlet cost_missing = false;\nif (usd_cost == null || isNaN(usd_cost) || usd_cost === 0) {\n  cost_missing = true;\n  cost_source = 'fallback_table';\n  const pin = Number(routing.price_in_usd_per_1k || 0);\n  const pout = Number(routing.price_out_usd_per_1k || 0);\n  if (input_tokens != null && output_tokens != null && (pin || pout)) {\n    usd_cost = (input_tokens/1000)*pin + (output_tokens/1000)*pout;\n  } else { usd_cost = null; }\n}\nconst cost_pln = (usd_cost != null && fx != null) ? Number((usd_cost * fx).toFixed(6)) : null;\n\nconst alias = routing.litellm_model || '';\nconst provider = alias.includes('bedrock') ? 'litellm/bedrock-eu' : 'litellm/anthropic-direct';\n\nreturn [{ json: {\n  completion,\n  sources,\n  web_search_used,\n  web_search_error,\n  web_search_error_code,\n  rounds: (mt.rounds != null ? mt.rounds : null),\n  searches: (mt.searches != null ? mt.searches : null),\n  model_used: alias,\n  provider,\n  input_tokens, output_tokens,\n  usd_cost, fx_rate: fx, cost_pln,\n  cost_source, cost_missing,\n  routing_default_used: !!routing.routing_default_used,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
       },
       "id": "compute-cost",
       "name": "Compute Cost",
@@ -169,31 +164,11 @@
     {
       "parameters": {
         "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict",
-            "version": 3
-          },
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
           "conditions": [
-            {
-              "id": "d1",
-              "leftValue": "={{ $json.routing_default_used }}",
-              "rightValue": true,
-              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
-            },
-            {
-              "id": "d2",
-              "leftValue": "={{ $json.cost_missing }}",
-              "rightValue": true,
-              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
-            },
-            {
-              "id": "d3",
-              "leftValue": "={{ $json.web_search_error }}",
-              "rightValue": true,
-              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
-            }
+            { "id": "d1", "leftValue": "={{ $json.routing_default_used }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } },
+            { "id": "d2", "leftValue": "={{ $json.cost_missing }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } },
+            { "id": "d3", "leftValue": "={{ $json.web_search_error }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
           ],
           "combinator": "or"
         },
@@ -305,9 +280,9 @@
       ]
     },
     "Resolve Routing": {
-      "main": [[{ "node": "Call LiteLLM", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Call Model Turn", "type": "main", "index": 0 }]]
     },
-    "Call LiteLLM": {
+    "Call Model Turn": {
       "main": [[{ "node": "Get FX Rate", "type": "main", "index": 0 }]]
     },
     "Get FX Rate": {
@@ -346,6 +321,6 @@
   "staticData": null,
   "meta": null,
   "pinData": {},
-  "versionId": "70f5ee65-c323-41da-bafa-d7efa94651ed",
+  "versionId": "68916130-9975-440d-89ed-32061e423b84",
   "tags": []
 }
