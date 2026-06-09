@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v19
-Last updated: 2026-06-08
-Supersedes: v18
+Version: v20
+Last updated: 2026-06-09
+Supersedes: v19
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -354,8 +354,8 @@ current.md is updated via targeted diffs, not full-file rewrites, to avoid silen
 ## 11. Build phases
 
 - **Phase 0** — infrastructure (git, AWS, 1Password, Supabase, VPS, Docker stack, Nginx + TLS). **COMPLETE** (infra hardened, password auth disabled, both machines keyed).
-- **Phase 1** — ClickUp foundation. **IN PROGRESS** — research complete (NPD process mapped; observations doc), core model + KM-maintenance confirmed. Pending: custom fields (`Czy dla AI` / `Ważność` / `Typ procesu` — user-created, Polish, global); GLOBAL agent-rules doc; per-person agent-preferences docs.
-- **Phase 2** — the spine. **IN PROGRESS (core path done)** — read→route→infer→post-back is built and verified end-to-end (`Agent Spine (v1)` composing `Context Gather (v1)` → `Invoke Model (v1)` with importance→model routing; rendered draft comment that @-mentions the reviewer; rules-doc loading; status field), and **automatic @-mention triggering** is live via `CU Webhook Producer (v1)` (ADR-029). See §15. Automatic mentions are signature-verified (ADR-029 update). Thread-aware replies via `conversation_sessions` (Inc 3) and `PD Verifier (v1)` seam + `Search (v1)` + Layer B caller-scoped reads (Inc 4, ADR-031) are also live. Remaining: selective `linked_doc_leaves`, autonomous (status/due-date) triggers.
+- **Phase 1** — ClickUp foundation. **IN PROGRESS** — see *Phase 1 status* below. The agent CU account, the six `[AI]` custom fields, and the global agent-rules + operator-preferences docs are live; research is complete (NPD process mapped; observations doc) and the core model + KM-maintenance design confirmed. Remaining: full Agent System Space build-out (process templates with checklist-in-description + doc leaves) and the rest of the team's preference docs.
+- **Phase 2** — the spine. **IN PROGRESS (core path COMPLETE)** — the generic read→route→infer→post-back pipeline (`Agent Spine (v1)`), signature-verified @-mention triggering (`CU Webhook Producer (v1)`, ADR-029), thread-aware replies via `conversation_sessions`, and the `PD Verifier (v1)` seam + `Search (v1)` + Layer-B caller-scoped reads (ADR-031) are all live and verified end-to-end. See *Phase 2 status* below and §15. Remaining: selective `linked_doc_leaves`; autonomous status/due-date triggers (Phase 3).
 - **Phase 3** — email + due-date triggering + queue tuning.
 - **Phase 4** — learning loop (proposers).
 - **Phase 5** — team rollout.
@@ -369,7 +369,7 @@ Target: 7–9 weeks to v1.
 - **VPS**: Cyberfolks vroot_SPRINT, AlmaLinux 10, 185.25.149.174 (KVM, 4 vCPU / 8 GB / 100 GB, hostname vps57524999).
 - **Access**: key-based SSH (ed25519). Separate keypair per machine — home and office desktops each have their own key installed for `franciszek` (private keys passphrase-free, for non-interactive automation). Non-root sudo user `franciszek` (wheel + docker + NOPASSWD sudoers); root reserved for exceptions. firewalld: ssh/http/https open. See ADR-010.
 - **Password auth: DISABLED.** Both workstations (home + office) have key-based SSH access; with both keyed, password authentication was turned off (`PasswordAuthentication no`) as the final hardening step. Access is now key-only.
-- **Docker stack**: `/opt/haxe-agents/`, four containers on private bridge network `n8n-internal`, queue mode. Image versions pinned. See ADR-011.
+- **Docker stack**: `/opt/haxe-agents/`, five containers on private bridge network `n8n-internal`, queue mode. Image versions pinned. See ADR-011.
   - `n8n-postgres` (postgres:16) — n8n's internal DB; named volume; healthcheck-gated.
   - `n8n-redis` (redis:7-alpine) — queue backing; AOF persistence enabled; named volume.
   - `n8n-main` (n8nio/n8n:2.22.5) — UI, webhooks, scheduler; binds to 127.0.0.1:5678 only.
@@ -503,6 +503,69 @@ GIT REPO (no secrets ever):
    • namespaces → each container sees its own filesystem/network/process world
    • volumes    → deliberate holes connecting a container path to persistent host storage
    • cgroups    → resource ceilings per container
+
+---
+
+## Phase 1 status (ClickUp foundation — IN PROGRESS)
+
+The ClickUp substrate the generic pipeline reads from. State as of 2026-06-09:
+
+- **Agent CU account — DONE.** `agent@haxe.com` is a ClickUp **Member** (only Members can mint
+  the personal API token the pipeline needs); its token drives all ClickUp I/O and reads CU
+  Docs via the Docs v3 API. Caller-scoping is enforced in software (Layer A prompt + Layer B
+  Space-membership in `Search (v1)`), not by the account. See §13.3, ADR-004, ADR-026.
+- **Workspace custom fields — DONE** (verified 2026-06-03). Six live `[AI] …` fields drive
+  agent control: `Czy zadanie dla AI` (autonomous gate), `Wpływ zadania na wynik firmy`
+  (5-level impact → model tier + queue priority), `Finalny, zaakceptowany efekt`
+  (approval/quality signal), `Status agenta` (reset/lifecycle), `Typ procesu`, `Koszt akcji
+  [PLN]`. Full set + values in §13.2.
+- **GLOBAL agent-rules doc — DONE (working version).** Lives in CU Docs (`q7wz-16892`); loaded
+  on every run so output follows firm rules + brand non-negotiables (core-model step 3). The
+  content keeps evolving; the loading seam is live.
+- **Per-person agent-preferences docs — PARTIAL.** The operator's prefs doc exists and is
+  loaded live alongside the rules doc; docs for the rest of the team are authored as they
+  onboard (Phase 5).
+- **Agent System Space scaffolding — PARTIAL.** The alerting channel (Alerts task `869dj2z2c`)
+  and a test surface (`Lista testy AI`, task `869dhad2q`) are live and exercised end-to-end.
+  The full Space content in §13.1 — process templates with checklist-in-description +
+  paste-ready doc leaves (starting with the mapped NPD process), the proposer/email persona
+  docs, the Formatter Skill doc, and the landing-zone tasks (Process Improvements, Agent
+  Errors, GM Weekly Reports) — is built out incrementally as each capability lands.
+
+Research is complete (NPD process mapped; observations doc) and the core model + KM-maintenance
+design confirmed (see *Core model* and *KM maintenance*). Remaining to close Phase 1: author
+the canonical NPD process template in CU (checklist-in-description + doc leaves) so the pipeline
+exercises a real structured process beyond the test list.
+
+## Phase 2 status (the agent spine — core path COMPLETE)
+
+The generic read→route→infer→post-back pipeline plus automatic @-mention triggering — built and
+verified end-to-end on `869dhad2q`. Per-workflow detail, n8n IDs, and node names are in §15.
+State as of 2026-06-09:
+
+- **Core pipeline — DONE.** `Agent Spine (v1)` composes `Context Gather (v1)` → `PD Verifier
+  (v1)` (stub) → `Search (v1)` → `Build Prompt` → `Invoke Model (v1)` → thread-aware draft
+  post-back (~26 nodes).
+- **Model layer — DONE.** Self-hosted LiteLLM gateway, data-driven routing on `(impact,
+  personal_data)` — `false` → Anthropic direct, `true` → Bedrock EU (ADR-030) — exact USD ×
+  daily NBP FX → `cost_pln`, logged to `agent_runs` and summed into `[AI] Koszt akcji [PLN]`.
+- **Output — DONE.** Draft comment @-mentions the reviewer and renders full markdown (headings,
+  lists, code, tables) via a deterministic markdown→Quill-Delta converter; soft
+  Wyniki/Pytania/Decyzje/Sugestie structure. **Never finalizes** (no agent-done status, no
+  `Finalny…` write); `[AI] Status agenta` flips W trakcie → Zakończono around the run.
+- **Automatic triggering — DONE (@-mention).** `CU Webhook Producer (v1)` receives
+  workspace-wide `taskCommentPosted`, **verifies the `X-Signature` HMAC**, detects the agent
+  tag from the payload (zero extra API calls for non-mentions), and calls the spine with
+  `explicit_mention`. Agent→agent chaining allowed, bounded by an 8-runs-per-10-min circuit
+  breaker; caller/reviewer = the mentioner.
+- **Conversation continuity — DONE.** Thread-aware replies via `conversation_sessions`.
+- **Monitoring — DONE.** Reactive (`Error Handler (v1)` as `errorWorkflow` → CRITICAL) +
+  proactive WARNs (routing-default, cost-missing, insert-failed, FX-freshness, bad-signature,
+  loop-breaker) via `Post Alert (v1)`. Failure paths fault-injected and proven (ADR-025).
+
+Remaining in Phase 2: selective `linked_doc_leaves` (only the current step's leaf). Deferred:
+autonomous status/field-change + daily due-date triggers (Phase 3); the ADR-026 identity split
+(read-only telemetry vs. edit-capable token).
 
 ---
 
@@ -683,248 +746,264 @@ n8n cron workflow every 5 min queries Redis queue depth. Alerts to Agent Errors 
 
 ## 15. n8n workflows
 
-Six workflows plus an error handler:
+The system is one generic pipeline (the **Agent Spine**, see *Core model*) plus supporting
+crons and a global error handler. This section is the canonical state of what is built in
+n8n. Names ending in `(v1)` are live n8n workflows (IDs given); they are **composed**, not
+monolithic. Everything below was verified live on the `Lista testy AI` test task `869dhad2q`
+unless noted. The build control plane is Claude Code → n8n MCP (ADR-018).
 
-1. **Main Orchestrator** (worker-consumed) — the core AI execution engine. Receives a queued job; resolves caller scope; checks `Czy dla AI` (autonomous) or skips check (explicit); checks `Status agenta`; runs idempotency check; selects model from Ważność; calls Bedrock with single comprehensive prompt + cached session context; applies deterministic Formatter; updates `conversation_session`; posts result to CU task as comment with cost/model/trigger metadata; logs to `agent_runs`.
+### 15.1 Workflow set and build state
 
-2. **CU Webhook Producer** — receives ClickUp webhooks, classifies invocation type (`autonomous` / `explicit` / `conversation_reply`), determines priority from Ważność (+1 boost for explicit), enqueues to Redis, returns 200 OK immediately (<200 ms).
+The original design named the core engine a single **"Main Orchestrator"** worker workflow.
+In build it is realized as the composed **`Agent Spine (v1)`** (a chain of focused
+sub-workflows), which is the canonical form going forward.
 
-3. **Daily Due-Date Producer** — cron at 00:00. Queries CU for tasks due today or yesterday with `Czy dla AI = Tak` and status ≠ closed. For each: checks `agent_runs` idempotency (completed run in last 24h?), determines caller (assignee → creator → skip + log), enqueues with staggered 5 s delays. Logs batch summary to GM Reports. By 8 AM all overnight drafts are ready.
+| Workflow | Role | State |
+|---|---|---|
+| **`Agent Spine (v1)`** (was "Main Orchestrator") | Generic read→route→infer→post-back engine | **LIVE** |
+| **`Context Gather (v1)`** | Assemble labelled task context (task + ancestor chain + fields) | **LIVE** |
+| **`Invoke Model (v1)`** | Centralized model-call seam: route → LiteLLM → exact PLN cost → log | **LIVE** |
+| **`Search (v1)`** | Comment + external-artifact retrieval, Layer-B scoped | **LIVE** |
+| **`PD Verifier (v1)`** | Sensitivity-classifier seam (stub → Phase 3 classifier) | **LIVE (stub)** |
+| **`CU Webhook Producer (v1)`** | Comment-webhook trigger → verify → detect mention → call spine | **LIVE (@-mention)** |
+| **`Post Alert (v1)`** | Centralized alert seam → ClickUp Alerts task | **LIVE** |
+| **`Error Handler (v1)`** | Global `errorWorkflow`: throws → CRITICAL + status rollback | **LIVE** |
+| **`FX Rates Daily (v1)`** + **`FX Freshness Monitor (v1)`** | Daily NBP USD/PLN upsert + staleness WARN | **LIVE** |
+| Daily Due-Date Producer | 00:00 cron: enqueue due-today/yesterday `Czy dla AI=Tak` tasks | **Planned (Phase 3)** |
+| Gmail Email Workflow | Incoming mail → Gmail draft; sent-folder post-send analysis | **Planned (Phase 3)** |
+| Weekly Org Proposer | Mon 09:00 cron: synthesize evaluations → org proposals | **Planned (Phase 4)** |
+| Session Cleanup | Hourly cron: expire idle `conversation_sessions` | **Planned** |
 
-4. **Gmail Email Workflow** — watches for incoming email; enqueues email orchestration job (priority 5). Worker reads email, calls Claude with caller-scoped context, creates Gmail Draft. Sent folder watcher (every 15 min) enqueues post-send analysis at priority 10.
+### 15.2 `Agent Spine (v1)` — the generic engine
 
-5. **Weekly Org Proposer** — cron Monday 09:00, priority 10. Runs after morning rush. Synthesises recent `agent_run_evaluations` across all processes; posts structured proposals to Process Improvements task.
+`n8n/workflows/agent-spine.json`, n8n id `a8XKaijkMFNBpRBa`, **26 nodes**. Entry is either a
+Form Trigger (`taskId`, manual testing) or a `When Called` Execute-Workflow trigger (from the
+webhook producer). The chain implements the five Core-model steps:
 
-6. **Session Cleanup** — cron hourly. Expires `conversation_sessions` inactive for > 24h.
+`Context Gather (v1)` → `PD Verifier (v1)` → `Search (v1)` → `Build Prompt` → `Invoke Model
+(v1)` → `Check Session` → post draft comment (thread-aware) → `Upsert Session` → status flip
+→ cost-field write.
 
-**Error Handler** — n8n Error Trigger + dead letter subscriber. Captures failures with full context (workflow, trigger source, retry history, final error), posts to Agent Errors task, updates `agent_run` status to `error`, rolls back any mid-update session state. Slack alert on critical failures (queue backed up, Redis down).
+- **`Build Prompt`** (Code, stub assembler) composes one prompt string from, in order: the
+  **GLOBAL agent-rules doc + the caller's personal agent-preferences doc** (CU Docs v3,
+  `q7wz-16892`; core-model step 3, so output follows firm rules + person style); the
+  **triggering comment** ("Wiadomość wywołująca tę akcję", placed *before* task context so the
+  agent acts on what was written, not a cold re-run of the task description); the **`Search
+  (v1)`** context (comments + external artifacts); then the **task context** (task + ancestor
+  chain). It emits a soft output structure — **Wyniki / Pytania / Decyzje / Sugestie**
+  (§13.1) — as guidance, not a hard template.
+- **Status lifecycle:** `[AI] Status agenta` flips **W trakcie → Zakończono** around the run.
+  The spine **never finalizes** — it never sets a done status on the task itself nor writes
+  `[AI] Finalny, zaakceptowany efekt`.
+- **Cost field:** writes `[AI] Koszt akcji [PLN]` = `SUM(agent_runs.cost_pln)` for the task
+  (idempotent, drift-free). ⚠ This uses the edit-capable agent **Member** token via a fixed
+  deterministic node (never an LLM-exposed capability, per ADR-026) — flagged for the ADR-026
+  identity split.
+- **Reliability:** post-back, cost-sync, and session-upsert failures fire a WARN on a side
+  branch and **do not abort the run** (the completion is still returned). `Error Handler (v1)`
+  is set as the workflow's `errorWorkflow`.
 
-**Build status (2026-06-03):** none of the six production workflows are built yet,
-but the read→route→infer spine exists end-to-end as three tested, composable pieces
-— the context-assembly front end, the centralized model-invocation seam (with
-importance→model routing live), and an `Agent Spine` that wires them — agent Doc
-access is proven, and Bedrock inference from n8n is proven. The build control plane is operational
-(Claude Code → n8n MCP; see ADR-018). `Context Gather (v1)`
-(`n8n/workflows/context-gather.json`, n8n id `qgM37HdQj78Rn090`) reads a ClickUp
-task and assembles the labelled context object (`current_task`, ordered
-`ancestor_chain`, stub `linked_doc_leaves`, `truncated_at_depth`) — a Form Trigger
-(`taskId`) → a bounded unroll of native ClickUp `Task→Get` fetches gated by IF nodes
-→ a pure Code shaping node. Verified live on `Lista testy AI`: a 3-level subtask
-returned an ordered ancestor chain, a root task returned `[]`, markdown descriptions
-flow through (`includeMarkdownDescription`). Read-only; left inactive between tests.
-See ADR-020 for the shape and ADR-019 for the node/credential discipline
-(authenticated I/O in credential-aware nodes; Code nodes only shape data).
+See ADR-027 (post-back) and ADR-015 (generic pipeline).
 
-Two front-end dependencies were verified live (2026-06-03) with throwaway n8n
-harnesses (`Doc Access Test`, `Invoke Model smoke test`):
-- **Agent Doc access — resolved.** The agent `clickUpApi` token reads ClickUp Docs
-  via the **Docs v3 API** (`GET /api/v3/workspaces/{ws}/docs/{doc_id}/pages`, 200,
-  full content) — config docs and leaf docs alike. Embedded doc links in a task's
-  `markdown_description` arrive as parseable `[Label](…/docs/{doc_id}/{page_id})`
-  URLs, so `linked_doc_leaves` resolves by: regex-extract IDs from
-  `markdown_description` → Docs v3 GET → flatten. The earlier "no access" was a
-  task-node link-rendering / pre-grant artifact. See ADR-004 (2026-06-03 update).
-- **Bedrock inference — resolved.** A Claude completion was returned from n8n via
-  the native AWS Bedrock node and the EU inference profile
-  `eu.anthropic.claude-sonnet-4-6`. The generic AWS credential + HTTP Request path
-  cannot sign Bedrock; see ADR-021.
+### 15.3 `Context Gather (v1)`
 
-The centralized **`Invoke Model (v1)`** sub-workflow (`n8n/workflows/invoke-model.json`,
-n8n id `XcOIVdZnVCCWNPeb`) is built and tested — the ADR-013 invocation seam:
-Execute Workflow Trigger (typed contract `prompt`/`importance`/`sensitivity`/`task_type`)
-→ a `Select Model` Code node (the discrete selection step, now holding the routing
-table) → `Basic LLM Chain` driven by the native AWS Bedrock node whose profile,
-`temperature`, and `maxTokensToSample` are all set by expression from the selection
-step → a `Shape Output` Set node returning `{ completion, model, provider }`. See
-ADR-022 for the shape.
+`n8n/workflows/context-gather.json`, n8n id `qgM37HdQj78Rn090`. Callable via Form Trigger
+(`taskId`) or an Execute-Workflow trigger. Reads a ClickUp task and assembles a labelled
+context object: `current_task`, ordered `ancestor_chain`, stub `linked_doc_leaves`,
+`truncated_at_depth`. Shape = a bounded unroll of native ClickUp `Task→Get` fetches gated by
+IF nodes → a pure Code shaping node (authenticated I/O in credential-aware nodes; Code only
+shapes data — ADR-019). It also resolves the **impact** custom field to its label and returns
+the task **assignee/creator** (data-ready for the autonomous caller = assignee→creator→skip
+rule). Verified: a 3–4-level subtask returns an ordered ancestor chain; a root task returns
+`[]`; `markdown_description` flows through (`includeMarkdownDescription`). Read-only. See
+ADR-020 (shape).
 
-The **importance → model routing** is implemented (ADR-023), resolving the
-importance axis of the previously-pending mapping: `Niski`→Haiku 4.5,
-`Średni`→Sonnet 4.6, `Wysoki`→Opus 4.5, `Krytycznie ważne`→Opus 4.5 at temp 0.2 /
-16k tokens with a prepended deliberation nudge; `n/d`/empty/unknown→Sonnet
-(ADR-013 fail-safe). All profiles are EU-resident (GDPR) and were verified
-invokable live (2026-06-03). **Caveat:** Opus 4.6/4.7/4.8 exist in eu-central-1 but
-are not granted to the account, so Opus tiers use 4.5 until access is requested on
-the Bedrock Model-access page (then bump one constant). "Max effort" is approximated
-via temperature + max-tokens + the nudge — the native node exposes no
-reasoning-budget parameter. The **sensitivity** axis remains deferred (no classifier
-yet). Verified per-tier via a throwaway harness (`Niski`→Haiku, `Krytycznie
-ważne`→Opus+nudge); harness since deleted.
+**Agent Doc access (resolved, ADR-004 2026-06-03 update):** the agent `clickUpApi` token reads
+CU Docs via the **Docs v3 API** (`GET /api/v3/workspaces/{ws}/docs/{doc_id}/pages`, full
+content) — config docs and leaf docs alike. Embedded doc links arrive in a task's
+`markdown_description` as parseable `[Label](…/docs/{doc_id}/{page_id})` URLs, so
+`linked_doc_leaves` resolves by regex-extract → Docs v3 GET → flatten (the earlier "no access"
+was a task-node link-rendering / pre-grant artifact).
 
-These two pieces are composed by **`Agent Spine (v1)`** (`n8n/workflows/agent-spine.json`,
-n8n id `a8XKaijkMFNBpRBa`): Form Trigger (`taskId`) → `Context Gather (v1)` (now also
-callable via an Execute Workflow Trigger; it additionally resolves the importance
-custom field to its label) → a `Build Prompt` Code node (stub assembler: context →
-one prompt string) → `Invoke Model (v1)`. Verified live end-to-end on `Lista testy
-AI` task `869dhad2q`: context + 4-level ancestor chain gathered, importance unset →
-Sonnet fail-safe, a high-quality Polish work product returned. All workflows left
-inactive between tests. (Observation: ClickUp task descriptions in the test data
-repeat the same guideline block several times, bloating the prompt — a KM
-data-quality signal for the future gap-detection layer, not a pipeline defect.)
+### 15.4 `Invoke Model (v1)` — routing + exact cost
 
-**Infrastructure for the LiteLLM re-platform is LIVE (2026-06-03; ADR-024/025).** The
-model-call layer is being moved onto a self-hosted LiteLLM gateway + Supabase routing
-+ exact cost. Done and verified this session:
-- **Supabase Postgres credential** works (n8n cred id `EjK3iACTbSNRDhVz`; SSL=require +
-  Ignore-SSL-Issues). **Migrations 002 (`model_routing`, seeded) + 003 (`fx_rates`) applied.**
-- **LiteLLM gateway deployed** (`litellm` container, `127.0.0.1:4000`, v1.87.0 pinned by
-  digest). Smoke-tested through all three aliases (`haxe-haiku`/`sonnet`/`opus`): each
-  returns a completion with **exact `usage`** and an **`x-litellm-response-cost`** USD
-  header. Cost model = that USD figure × the daily NBP USD/PLN rate (→ `fx_rates`).
-- **Monitoring core LIVE** (ADR-025): `Post Alert (v1)` (id `YSCdHlmdf3p9XEUx`) →
-  ClickUp Alerts task `869dj2z2c`; global `Error Handler (v1)` (id `81eplXMD1v5ONhzs`)
-  set as `errorWorkflow` on Invoke Model / Agent Spine / Context Gather. Proven by a
-  real failure raising a CRITICAL alert.
+`n8n/workflows/invoke-model.json`, n8n id `XcOIVdZnVCCWNPeb`. The ADR-013 model-call seam,
+running on the self-hosted **LiteLLM gateway** (`litellm` container, `127.0.0.1:4000`, v1.87.0
+pinned by digest; ADR-024/030). Typed Execute-Workflow contract (`prompt` / `impact` /
+`personal_data` / `task_type`). Node chain:
 
-**Phase C — COMPLETE (2026-06-08; ADR-024/025/026).** The spine now runs fully on the
-LiteLLM gateway + Supabase routing + exact PLN cost, with proactive monitoring:
-- **FX cron** `FX Rates Daily (v1)` (id `b7A3y6bXwOj1G3XR`, active): Schedule 06:00 +
-  manual harness → NBP `rates/a/usd` → upsert `fx_rates`. Seeded (USD/PLN 3.6392,
-  2026-06-05). **FX freshness monitor** `FX Freshness Monitor (v1)` (id `XTP16Hb5aMe2Mp5Z`,
-  active): daily check → WARN if latest rate >4 days old (tolerates NBP weekend/holiday
-  gaps; verified quiet at age 3).
-- **`Invoke Model (v1)` rewired** (id `XcOIVdZnVCCWNPeb`): `Lookup Routing` (Supabase
-  `model_routing`, `__default__` fail-safe, DB-error tolerant) → `Resolve Routing`
-  (in-code Sonnet last-resort + nudge prepend) → `Call LiteLLM` (HTTP, header-auth
-  credential, full response) → `Get FX Rate` → `Compute Cost` → `Insert agent_runs` →
-  `Shape Output` (single terminal). Native Bedrock node + chain retained **disabled** as
-  fallback. Renames `importance→impact`, `sensitivity→personal_data` (bool, fail-safe
-  true) across Invoke Model / Context Gather output / Build Prompt / Agent Spine.
-- **Cost:** `x-litellm-response-cost` USD header × latest `fx_rates.rate` = `cost_pln`;
-  fallback to `model_routing` USD prices → `cost_missing` WARN. Logged to `agent_runs`
-  (live cols: `model_used`, `importance`, `input/output_tokens`, `cost_pln`, …; no
-  `provider` col; `triggered_by` NOT NULL → test path logs `explicit_command`/`explicit`).
-- **CU cost field** (Agent Spine): `[AI] Koszt akcji [PLN]` = `SUM(agent_runs.cost_pln)`
-  for the task (idempotent, drift-free). ⚠ Uses the edit-capable agent Member token —
-  flagged for the ADR-026 identity split.
-- **Proactive alerts** (ADR-025) all via `Post Alert`: routing-default-used, cost-missing,
-  agent_runs-insert-failed (non-blocking side branches), FX-freshness, cost-sync-failed.
-- **Verified end-to-end** on test task `869dhad2q`: Sonnet (default), 4640/1197 tokens,
-  usd 0.0350625 × 3.6392 = `cost_pln` 0.127599, `agent_runs` row written, CU field set;
-  routing matrix correct for all five tiers (haiku/sonnet/opus + critical nudge/16k).
+`Lookup Routing` (Supabase `model_routing`, composite PK `(impact, personal_data)`,
+`__default__` fail-safe row, DB-error tolerant) → `Resolve Routing` (in-code Sonnet last-resort
++ deliberation-nudge prepend) → `Call LiteLLM` (HTTP, header-auth credential, full response) →
+`Get FX Rate` → `Compute Cost` → `Insert agent_runs` → `Shape Output` (single terminal,
+returns `{ completion, model, provider }`). The native AWS Bedrock node + `Basic LLM Chain` are
+**retained disabled** as a fallback path (a generic AWS credential + HTTP Request cannot sign
+Bedrock — only the native node can; ADR-021).
 
-**Failure paths fault-injected & proven (2026-06-08):** LiteLLM unreachable → CRITICAL via
-Error Handler; routing-default-used (real tier downgraded) → WARN + run completes;
-cost-missing → fallback cost + WARN; agent_runs-insert-failed → WARN + completion still
-returned. All non-blocking.
+- **Provider routing (ADR-030):** `personal_data=false` (default) → **Anthropic direct**;
+  `personal_data=true` (GDPR) → **Bedrock EU**. LiteLLM holds six versioned aliases — three
+  direct (`haxe-haiku-4-5-direct`, `haxe-sonnet-4-6-direct`, `haxe-opus-4-8-direct`) and three
+  Bedrock (`haxe-haiku-4-5-bedrock`, `haxe-sonnet-4-6-bedrock`, `haxe-opus-4-5-bedrock`).
+  `agent_runs.model_used` stores the **versioned model ID from the LiteLLM response body** (e.g.
+  `claude-opus-4-8`), not the alias. `ANTHROPIC_API_KEY` is in the VPS `.env` (passthrough via
+  `docker-compose.yml`); migration 008 applied 2026-06-08.
+- **Impact → tier (ADR-023):** `Niski`→Haiku 4.5, `Średni`→Sonnet 4.6, `Wysoki`→Opus,
+  `Krytycznie ważne`→Opus at temp 0.2 / 16k tokens with a prepended deliberation nudge;
+  `n/d`/empty/unknown→Sonnet (fail-safe). "Max effort" is approximated via temperature +
+  max-tokens + the nudge (the native node exposes no reasoning-budget parameter). **Caveat:**
+  newer Opus (4.6/4.7/4.8) is granted on Anthropic direct (`opus-4-8`) but **not** on the
+  Bedrock account, so the Bedrock Opus tier uses 4.5 until access is requested on the Bedrock
+  Model-access page (then bump one constant). All profiles are EU-resident.
+- **Cost:** `x-litellm-response-cost` USD header × latest `fx_rates.rate` (daily NBP USD/PLN) =
+  `cost_pln`; if the header is missing, fall back to `model_routing` USD prices and fire a
+  `cost-missing` WARN. Token counts come exact from the gateway. Logged to `agent_runs` (live
+  cols: `model_used`, `impact`, `input/output_tokens`, `cost_pln`, …; no `provider` col;
+  `triggered_by` NOT NULL). Fail-safe: DB-down → `haxe-sonnet-4-6-direct` + WARN.
 
-`N8N_EDITOR_BASE_URL` and `WEBHOOK_URL` (both `https://agents.haxe.ai`) are now wired into
-the VPS `n8n-main`/`n8n-worker` containers (compose passthrough added + recreated
-2026-06-08) — alert execution links are clickable and n8n generates correct webhook/form
-URLs. Remaining backlog: tidy test-noise alert comments on `869dj2z2c` (no delete-comment
-API available).
+See ADR-022 (shape), ADR-023 (routing), ADR-024 (LiteLLM/cost), ADR-030 (multi-provider).
 
-**Post-back DONE (2026-06-08; ADR-027).** Core-model step 5 is live: `Agent Spine` now
-posts the model output as a ClickUp **draft comment** on the task (`Post Draft Comment`
-node), assigned to the reviewer to notify them, with a "do weryfikacji — nie finalizuje
-zadania" footer; never sets status or `[AI] Finalny…`. Reviewer = manual triggerer
-(operator default / optional `reviewer_user_id` form field); the automatic path's
-assignee→creator rule is data-ready (`Context Gather` now returns assignee/creator) and
-applies in Increment 2. `Build Prompt` emits a soft output structure (Wyniki / Pytania /
-Decyzje / Sugestie, §13.1). Verified live on `869dhad2q` (structured Polish draft posted +
-assigned, nothing finalized). Non-blocking: post-back failure → WARN, run still returns.
+### 15.5 `Search (v1)` + `PD Verifier (v1)`
 
-**Comment rendering + rules + status (2026-06-08; ADR-027 update, ADR-028).** The draft
-comment now **@-mentions** the reviewer (real ClickUp tag) and **renders full formatting** —
-headings, bold/italic/code, bullet/numbered lists, links, code blocks, blockquotes, and
-**tables** — via a deterministic markdown→ClickUp-Quill-Delta converter (`Build Comment`).
-The prompt now loads the **GLOBAL agent-rules doc + the caller's personal prefs doc** (Docs
-v3, `q7wz-16892`; core-model step 3), so output follows firm rules + person style. `[AI]
-Status agenta` flips **W trakcie → Zakończono** around the run. RLS is on (ADR-028). All
-verified live on `869dhad2q`.
+Two sub-workflows sit between Context Gather and Build Prompt (ADR-031).
 
-**CU @-mention webhook trigger DONE (2026-06-08; ADR-029).** Automatic runs are live: a new
-`CU Webhook Producer (v1)` workflow (id `eS66Sk6fweQ0EOPa`) receives ClickUp
-`taskCommentPosted` **workspace-wide** (team-level webhook, no list/space/folder filter —
-employees can mention the agent from any task), `responseMode: onReceived` → instant 200.
-`Detect Mention` reads the just-posted comment **from the webhook payload**
-(`body.history_items[].comment`) and matches a tag of Agent Haxe (`99811284`) — no `Get Comments`
-API call; caller/reviewer = the **mentioner**. It calls the spine via a new
-`When Called` trigger with `triggered_by=explicit_mention`. Verified live on `869dhad2q`
-(mention → spine run 104 → rules loaded → rendered draft @-mentioning the mentioner).
-**Agent→agent chaining** is enabled (the `author != agent` skip was removed) and bounded by a
-**circuit breaker**: `Recent Runs` counts `agent_runs` for the task in the last 10 min and
-`Under Limit?` blocks (+WARN via `Alert Loop Breaker`) at ≥ 8, preventing runaway self-mention
-loops.
+- **`PD Verifier (v1)`** (id `hzwmak7UBpuHaiTO`) — stub returning `personal_data: false`. The
+  seam for the Phase 3 sensitivity classifier (regex rules + optional Haiku call); replacing
+  the stub requires no changes to Agent Spine or Search.
+- **`Search (v1)`** (id `eL3fJuRMpzVRuVUT`, 22 nodes) — always fetches the last **30 task
+  comments**; if the triggering comment references external artifacts, extracts search queries
+  via a Haiku sub-call (`triggered_by=search_step`, logged as an `agent_runs` sub-row), searches
+  ClickUp tasks + docs, enforces **Layer B** fail-closed (`GET /space/{id}/member` per candidate
+  space; caller not a member → excluded), reads up to **5** accessible artifacts, and condenses
+  if > ~4000 tokens (second Haiku sub-run). Returns `task_comments`, `additional_context`,
+  `sources_used`, `sources_filtered_out`; `Build Prompt` injects these before the task context.
+  Requires migration `009` (`search_step` added to `agent_runs.triggered_by` CHECK) — apply
+  before Search processes a triggering comment with external references.
 
-**Webhook signature verification DONE (2026-06-08; ADR-029 update).** The producer now verifies
-ClickUp's `X-Signature`: webhook `rawBody:true` → native `Verify Signature` Crypto node computes
-`HMAC-SHA256(secret, rawBody)` → `Signature Valid?` (pass → proceed; fail → `Alert Bad Signature`
-WARN, no run). The secret lives in a **`crypto` credential** ("ClickUp Webhook HMAC",
-`NY5wM3VKKC1jZtQY`) — encrypted in n8n's DB, never in the repo (this instance blocks
-`require('crypto')` and `$env` in Code nodes, so credential storage is the only repo-safe option).
-A **`Not Telemetry Task?`** guard drops webhooks for the Alerts task (`869dj2z2c`) *before* the
-signature path — required because a bad-signature WARN comment on that (watched) task would
-otherwise re-fire the webhook into an infinite loop (observed and fixed). The credential's
-`hmacSecret` is **set to the real ClickUp webhook secret and verified live** (2026-06-08): a
-genuine ClickUp-signed delivery (producer exec 264) passed the signature gate end-to-end while a
-forged/unsigned POST was rejected with a WARN. Rotation: if ClickUp's webhook secret is ever
-regenerated, update the same `crypto` credential's `hmacSecret` (no redeploy). Webhook health read
-`failing/6` transiently (residual from the deactivation window during the build); it self-heals as
-2xx deliveries resume and is far below ClickUp's ~100-consecutive-failure auto-delete threshold.
+### 15.6 Post-back — draft comment, rendering, thread-aware replies
 
-**Workspace-wide + overflow control (2026-06-08; ADR-029 update).** The webhook was recreated at
-**team level** (no list filter) so mentions work from any task; the secret was rotated in the same
-`crypto` credential and the old list-scoped webhook deleted (verified: only the team-level webhook
-remains; a real signed delivery passes the gate). Because a workspace-wide webhook fires on *every*
-comment, mention detection now reads the tag directly from the webhook payload — a non-mention
-comment is dropped in-memory with **zero ClickUp API calls** (`Get Comments` removed; a plain
-comment runs the producer in ~12 ms). This does **not** limit the autonomous `Czy dla AI = Tak`
-path: that is a separate trigger (daily due-date cron + Phase-3 status/field-change webhooks gated
-by `Czy dla AI`), never mention-gated. Guardrail for future events: route by event/field first,
-then apply the right gate per route — never a single global "must be a mention" filter.
-*Note:* the agent's ClickUp account is a **member** (role 3) — required because only Members can
-generate the personal API token the pipeline needs (decided 2026-06-02, ADR-004); caller-scoping is
-enforced in software, not by the account. A member reads all public spaces, which also suits
-workspace-wide mentions; private spaces the agent isn't a member of won't deliver/read (a mention
-there triggers but Context Gather 403s → WARN).
+Core-model step 5 (ADR-027 + update, ADR-028). The spine posts the model output as a ClickUp
+**draft comment** that **@-mentions the reviewer** (real ClickUp tag) and **renders full
+markdown** — headings, bold/italic/code, bullet/numbered lists, links, code blocks,
+blockquotes, and **tables** — via a deterministic markdown→ClickUp-Quill-Delta converter
+(`Build Comment`). A "do weryfikacji — nie finalizuje zadania" footer marks it non-final; the
+post never sets status or `[AI] Finalny…`.
 
-**Triggering comment in prompt (2026-06-08).** `Detect Mention` now extracts
-`triggering_comment_id` and `triggering_comment_text` from the webhook payload alongside
-author info. Both are passed through to `Agent Spine` and included in `Build Prompt` as a
-"Wiadomość wywołująca tę akcję" section placed before task context. The agent now acts on
-what was written in the triggering comment rather than re-executing the task description from
-scratch. `personal_data` was also fixed from a hardcoded `true` to `false` (the correct default
-until the PD Verifier seam is built).
+- **Reviewer** = the **mentioner** (webhook path) / the manual triggerer (operator default,
+  optional `reviewer_user_id` form field). The automatic assignee→creator rule is data-ready
+  (Context Gather returns assignee/creator) and applies when the autonomous triggers land.
+- **Thread-aware (`conversation_sessions`):** `Check Session` (Postgres) looks up an active row
+  for `(clickup_task_id, caller_user_id)`. If found, the reply nests in the thread via `POST
+  /api/v2/comment/{comment_root_id}/reply` (on failure → new top-level comment + WARN); if not,
+  a new top-level comment is posted and its returned ID anchors the thread as `comment_root_id`
+  (`Upsert Session New`). Both paths upsert via `ON CONFLICT (clickup_task_id, comment_root_id,
+  caller_user_id) WHERE is_active = true`; upsert failure → WARN side branch, run continues.
 
-**Multi-provider routing live (2026-06-08; ADR-030).** LiteLLM config now has six versioned
-aliases: three Anthropic direct (`haxe-haiku-4-5-direct`, `haxe-sonnet-4-6-direct`,
-`haxe-opus-4-8-direct`) and three Bedrock EU (`haxe-haiku-4-5-bedrock`, `haxe-sonnet-4-6-bedrock`,
-`haxe-opus-4-5-bedrock`). `model_routing` table restructured to composite PK `(impact, personal_data)`:
-`personal_data=false` (default) → Anthropic direct; `personal_data=true` (GDPR) → Bedrock EU.
-`agent_runs.model_used` now stores the versioned model ID from the LiteLLM response body (e.g.,
-`claude-opus-4-8`), not the alias. `ANTHROPIC_API_KEY` added to VPS `.env` and litellm container
-recreated 2026-06-08 — **direct routing is active**. Migration 008 applied 2026-06-08.
+### 15.7 `CU Webhook Producer (v1)` — automatic triggering
 
-**Thread-aware replies live (2026-06-08).** `Agent Spine (v1)` routes post-back through
-`Check Session` (Postgres). When an active `conversation_sessions` row exists for
-`(clickup_task_id, caller_user_id)`, the reply is posted via
-`POST /api/v2/comment/{comment_root_id}/reply` (nested in the existing thread); on failure
-falls back to a new top-level comment + WARN. When no session exists, a new top-level
-comment is posted and its returned ID anchors the thread as `comment_root_id` via
-`Upsert Session New`. Both paths upsert `conversation_sessions` via
-`ON CONFLICT (clickup_task_id, comment_root_id, caller_user_id) WHERE is_active = true`.
-Upsert failure routes to a WARN side branch and does not abort the run. Spine now 26 nodes.
+n8n id `eS66Sk6fweQ0EOPa` (ADR-029 + updates). A **workspace-wide** (team-level, no
+list/space/folder filter — employees can mention the agent from any task) `taskCommentPosted`
+webhook, `responseMode: onReceived` → instant 200. Flow:
 
-**PD Verifier seam + Search (v1) + Layer B live (2026-06-08; ADR-031).** Two new
-sub-workflows added between Context Gather and Build Prompt. `PD Verifier (v1)` (id
-`hzwmak7UBpuHaiTO`) is a stub returning `personal_data: false`; it is the seam for
-the Phase 3 sensitivity classifier — replacing the stub requires no changes to Agent
-Spine or Search. `Search (v1)` (id `eL3fJuRMpzVRuVUT`, 22 nodes): always fetches last
-30 task comments; if the triggering comment references external artifacts, extracts search
-queries via a Haiku sub-call (`triggered_by=search_step`, logged as an `agent_runs`
-sub-row), searches ClickUp tasks + docs, enforces **Layer B** fail-closed
-(`GET /space/{id}/member` per candidate space; caller not a member → excluded), reads
-up to 5 accessible artifacts, condenses if > ~4000 tokens (second Haiku sub-run). Returns
-`task_comments`, `additional_context`, `sources_used`, `sources_filtered_out`. `Build
-Prompt` injects these before the task context. Migration `009` adds `search_step` to
-`agent_runs.triggered_by` CHECK — **apply before Search processes a triggering comment
-with external references.**
+`Not Telemetry Task?` guard → signature verification → `Detect Mention` → call spine
+(`triggered_by=explicit_mention`).
 
-Remaining: `linked_doc_leaves` resolution (Docs v3, selectively — only the current step's
-leaf, to avoid context pollution); autonomous **status/field-change + daily due-date**
-triggers (Phase 3); the ADR-026 identity split (read-only telemetry vs. edit-capable
-agent token).
+- **`Not Telemetry Task?`** drops webhooks for the Alerts task `869dj2z2c` *before* anything
+  else — a WARN comment on that watched task would otherwise re-fire the webhook into an
+  infinite loop (observed and fixed).
+- **Signature verification:** webhook `rawBody:true` → native `Verify Signature` Crypto node
+  computes `HMAC-SHA256(secret, rawBody)` → `Signature Valid?` (pass → proceed; fail → `Alert
+  Bad Signature` WARN, no run). The secret lives in an n8n **`crypto` credential** ("ClickUp
+  Webhook HMAC", id `NY5wM3VKKC1jZtQY`) — encrypted in n8n's DB, never in the repo (this
+  instance blocks `require('crypto')` and `$env` in Code nodes, so a credential is the only
+  repo-safe option). **Rotation:** if ClickUp regenerates the webhook secret, update the same
+  credential's `hmacSecret` (no redeploy). Proven live: a genuine ClickUp-signed delivery passed
+  the gate; a forged/unsigned POST was rejected with a WARN.
+- **`Detect Mention`** reads the just-posted comment **from the webhook payload**
+  (`body.history_items[].comment`) and matches the **Agent Haxe** tag (`99811284`). Because the
+  webhook fires on *every* comment, a non-mention comment is dropped in-memory with **zero
+  ClickUp API calls** (~12 ms; no `Get Comments`). It also extracts `triggering_comment_id` +
+  `triggering_comment_text`, passed through to the spine and into `Build Prompt`. Caller/reviewer
+  = the **mentioner**.
+- **Agent→agent chaining** is enabled (the `author != agent` skip was removed), bounded by a
+  **circuit breaker**: `Recent Runs` counts `agent_runs` for the task in the last 10 min;
+  `Under Limit?` blocks (+WARN via `Alert Loop Breaker`) at ≥ 8, preventing runaway self-mention
+  loops.
+- This path does **not** gate the autonomous `Czy dla AI = Tak` flow — that is a separate
+  trigger (daily due-date cron + Phase-3 status/field-change webhooks), never mention-gated.
+  Future guardrail: route by event/field first, then apply the right gate per route — never a
+  single global "must be a mention" filter.
+- **Private-space note:** the agent is a Member (reads all public spaces, suiting workspace-wide
+  mentions); a mention in a private space the agent isn't a member of triggers but Context Gather
+  403s → WARN.
+
+The producer returns 200 immediately and invokes the spine via the `When Called` trigger
+(synchronous); the explicit Redis producer/worker enqueue split (§14) lands with the Phase-3
+autonomous producers.
+
+### 15.8 Monitoring, alerting & FX (ADR-025)
+
+- **`Post Alert (v1)`** (id `YSCdHlmdf3p9XEUx`) → ClickUp **Alerts task `869dj2z2c`** — the
+  single seam every alert routes through (severity / source / message / details).
+- **`Error Handler (v1)`** (id `81eplXMD1v5ONhzs`) — set as `errorWorkflow` on Invoke Model /
+  Agent Spine / Context Gather (and the producer); throws surface as **CRITICAL** with status
+  rollback. Proven by a real failure raising a CRITICAL alert.
+- **Proactive WARNs** (non-blocking side branches), all via `Post Alert`: routing-default-used,
+  cost-missing, agent_runs-insert-failed, cost-sync-failed, FX-freshness, bad-signature,
+  loop-breaker.
+- **FX:** `FX Rates Daily (v1)` (id `b7A3y6bXwOj1G3XR`, active) — Schedule 06:00 + manual
+  harness → NBP `rates/a/usd` → upsert `fx_rates` (seeded USD/PLN 3.6392, 2026-06-05). `FX
+  Freshness Monitor (v1)` (id `XTP16Hb5aMe2Mp5Z`, active) — daily WARN if the latest rate is
+  > 4 days old (tolerates NBP weekend/holiday gaps; verified quiet at age 3).
+- **Infra glue:** Supabase Postgres credential `EjK3iACTbSNRDhVz` (SSL=require +
+  Ignore-SSL-Issues); migrations 002 (`model_routing`, seeded) + 003 (`fx_rates`) applied.
+  `N8N_EDITOR_BASE_URL` and `WEBHOOK_URL` (both `https://agents.haxe.ai`) are wired into the VPS
+  containers, so alert execution links are clickable and webhook/form URLs generate correctly.
+
+### 15.9 Verification & fault injection
+
+- **End-to-end (2026-06-08), test task `869dhad2q`:** mention → spine run → rules + prefs loaded
+  → Sonnet (default, `personal_data=false`) → 4640/1197 tokens → usd 0.0350625 × 3.6392 =
+  `cost_pln` **0.127599** → `agent_runs` row written → `[AI] Koszt akcji [PLN]` set → rendered
+  Polish draft posted and @-mentioning the mentioner; nothing finalized. Routing matrix correct
+  for all five impact tiers (haiku / sonnet / opus + critical nudge/16k).
+- **Failure paths fault-injected & proven:** LiteLLM unreachable → CRITICAL via Error Handler;
+  routing-default-used (real tier downgraded) → WARN + run completes; cost-missing → fallback
+  cost + WARN; agent_runs-insert-failed → WARN + completion still returned. All non-blocking.
+- **KM data-quality observation:** test-task descriptions repeat the same guideline block several
+  times, bloating the prompt — a signal for the future gap-detection layer, not a pipeline
+  defect.
+- **Backlog:** tidy test-noise alert comments on `869dj2z2c` (no delete-comment API available).
+
+### 15.10 Planned-workflow design (not yet built)
+
+The canonical design intent for the workflows still to build:
+
+- **Daily Due-Date Producer** — cron 00:00. Queries CU for tasks due today/yesterday with `Czy
+  dla AI = Tak` and status ≠ closed. Per task: `agent_runs` idempotency (completed run in last
+  24h?), caller = assignee → creator → skip + log, enqueue with staggered ~5 s delays; batch
+  summary to GM Reports. Target: overnight drafts ready by 8 AM.
+- **Gmail Email Workflow** — watches incoming mail → enqueues email-orchestration job
+  (priority 5); worker reads the mail, calls Claude with caller-scoped context, creates a Gmail
+  **draft**. Sent-folder watcher (every 15 min) enqueues post-send analysis at priority 10.
+- **Weekly Org Proposer** — cron Monday 09:00, priority 10 (after the morning rush). Synthesizes
+  recent `agent_run_evaluations` across processes → posts structured proposals to the Process
+  Improvements task.
+- **Session Cleanup** — hourly cron; expires `conversation_sessions` idle > 24 h.
+- **Queue note:** producers will enqueue to Redis and return 200 OK in < 200 ms, priority from
+  impact (+1 boost for explicit). The current webhook path calls the spine synchronously; the
+  Redis producer/worker split per §14 is inserted as the autonomous producers land in Phase 3.
+
+### 15.11 Remaining in / beyond Phase 2
+
+- **In Phase 2:** selective `linked_doc_leaves` resolution (Docs v3) — only the **current step's
+  leaf**, to avoid context pollution.
+- **Phase 3:** autonomous **status/field-change webhooks + the daily due-date producer** (both
+  gated by `Czy dla AI = Tak`); the **Gmail Email Workflow**; the sensitivity classifier behind
+  `PD Verifier (v1)`.
+- **Phase 4:** the **Weekly Org Proposer** and the learning-loop proposers generally.
+- **`Session Cleanup`** hourly cron.
+- **ADR-026 identity split:** a read-only telemetry identity vs. the edit-capable agent token
+  (the `[AI] Koszt akcji` write currently uses the Member token).
 
 ---
 
