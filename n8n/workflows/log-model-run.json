@@ -21,7 +21,9 @@
             { "name": "impact" },
             { "name": "input_tokens", "type": "number" },
             { "name": "output_tokens", "type": "number" },
-            { "name": "usd_cost", "type": "number" }
+            { "name": "usd_cost", "type": "number" },
+            { "name": "price_in_usd_per_1k", "type": "number" },
+            { "name": "price_out_usd_per_1k", "type": "number" }
           ]
         }
       }
@@ -53,7 +55,7 @@
       "typeVersion": 2,
       "position": [440, 300],
       "parameters": {
-        "jsCode": "const items = $('When Called').all();\nlet fx = null;\ntry { const f = $('Get FX Rate').first().json.rate; if (f != null && f !== '') fx = Number(f); } catch (e) {}\nreturn items.map(function (itm) {\n  const t = itm.json;\n  let usd = (t.usd_cost != null && t.usd_cost !== '') ? Number(t.usd_cost) : null;\n  let cost_missing = false;\n  if (usd == null || isNaN(usd)) { cost_missing = true; usd = null; }\n  const cost_pln = (usd != null && fx != null) ? Number((usd * fx).toFixed(6)) : null;\n  return { json: {\n    clickup_task_id: t.clickup_task_id || null,\n    caller_user_id: t.caller_user_id || null,\n    process_type: t.process_type || null,\n    triggered_by: t.triggered_by || 'explicit_command',\n    invocation_type: t.invocation_type || 'explicit',\n    model_used: t.model_used || null,\n    impact: (t.impact != null && t.impact !== '') ? t.impact : null,\n    input_tokens: (t.input_tokens != null && t.input_tokens !== '') ? Number(t.input_tokens) : null,\n    output_tokens: (t.output_tokens != null && t.output_tokens !== '') ? Number(t.output_tokens) : null,\n    usd_cost: usd,\n    fx_rate: fx,\n    cost_pln: cost_pln,\n    cost_missing: cost_missing\n  } };\n});"
+        "jsCode": "const items = $('When Called').all();\nlet fx = null;\ntry { const f = $('Get FX Rate').first().json.rate; if (f != null && f !== '') fx = Number(f); } catch (e) {}\nreturn items.map(function (itm) {\n  const t = itm.json;\n  const itok = (t.input_tokens != null && t.input_tokens !== '') ? Number(t.input_tokens) : null;\n  const otok = (t.output_tokens != null && t.output_tokens !== '') ? Number(t.output_tokens) : null;\n  let usd = (t.usd_cost != null && t.usd_cost !== '') ? Number(t.usd_cost) : null;\n  if (usd == null || isNaN(usd)) {\n    // fallback: token x table price (prices passed by the caller, e.g. Invoke Model)\n    const pin = (t.price_in_usd_per_1k != null && t.price_in_usd_per_1k !== '') ? Number(t.price_in_usd_per_1k) : 0;\n    const pout = (t.price_out_usd_per_1k != null && t.price_out_usd_per_1k !== '') ? Number(t.price_out_usd_per_1k) : 0;\n    if (itok != null && otok != null && (pin || pout)) { usd = (itok/1000)*pin + (otok/1000)*pout; }\n    else { usd = null; }\n  }\n  if (usd != null && isNaN(usd)) usd = null;\n  const cost_pln = (usd != null && fx != null) ? Number((usd * fx).toFixed(6)) : null;\n  const cost_missing = (cost_pln == null);\n  return { json: {\n    clickup_task_id: t.clickup_task_id || null,\n    caller_user_id: t.caller_user_id || null,\n    process_type: t.process_type || null,\n    triggered_by: t.triggered_by || 'explicit_command',\n    invocation_type: t.invocation_type || 'explicit',\n    model_used: t.model_used || null,\n    impact: (t.impact != null && t.impact !== '') ? t.impact : null,\n    input_tokens: itok,\n    output_tokens: otok,\n    usd_cost: usd,\n    fx_rate: fx,\n    cost_pln: cost_pln,\n    cost_missing: cost_missing\n  } };\n});"
       }
     },
     {
@@ -119,7 +121,7 @@
       "typeVersion": 2,
       "position": [1100, 300],
       "parameters": {
-        "jsCode": "const rows = $input.all();\nlet logged = 0;\nfor (const r of rows) { if (r && r.json) logged++; }\nreturn [{ json: { logged: logged } }];"
+        "jsCode": "let computed = [];\ntry { computed = $('Compute PLN').all(); } catch (e) {}\nlet logged = 0, cost_pln_total = 0, any = false, cost_missing = false;\nfor (const r of computed) {\n  const j = (r && r.json) || {};\n  logged++;\n  if (j.cost_pln != null && !isNaN(Number(j.cost_pln))) { cost_pln_total += Number(j.cost_pln); any = true; }\n  if (j.cost_missing === true) cost_missing = true;\n}\nreturn [{ json: { logged: logged, cost_pln_total: any ? Number(cost_pln_total.toFixed(6)) : null, cost_missing: cost_missing } }];"
       }
     }
   ],

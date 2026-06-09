@@ -263,3 +263,13 @@ document. Mechanics learned applying one this session:
 
 Candidate for promotion to a permanent "Working with architecture docs"
 subsection once stable.
+
+### 2026-06-09 — ClickUp `comment.parent` is the task id for top-level comments
+
+To reply in-thread, POST to `/api/v2/comment/{h.comment.id}/reply` — use the
+comment's own `id`, **never** `h.comment.parent`. For a top-level comment ClickUp
+populates `parent` with the **task id**, so replying to it targets a task, not a
+comment, and the call fails ("The service was not able to process your request").
+This silently broke in-thread replies in the CU Webhook Producer's `Detect Mention`
+node (it preferred `h.comment.parent`); fix was to read `h.comment.id` first
+(ADR-035). Verify with the producer's webhook payload, not assumptions.
