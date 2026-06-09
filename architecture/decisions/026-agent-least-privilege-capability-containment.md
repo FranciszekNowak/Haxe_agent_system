@@ -75,3 +75,12 @@ and decided against, 2026-06-08).
 Related: ADR-004 (caller-scoped permissions; the Member-vs-guest token constraint),
 ADR-019 (credential-aware nodes; Code nodes only shape data), ADR-024 (the cost-field
 write being constrained), ADR-013 (centralized, tool-less invocation seam).
+
+> Update 2026-06-09 (bounded exception — supersedes the literal "model stays
+> tool-less" claim): ADR-034 gives the model exactly one tool — `web_search` — so
+> "the LLM holds no tools" is no longer literally true. The *guarantee this ADR
+> protects still holds*: web search is **read-only**, executed by deterministic infra
+> (LiteLLM interception → Tavily), returns only public information, and exposes **no
+> write/edit/delete and no Haxe/ClickUp state** to the model. The default for any
+> agent-driven path remains read + draft-comment only; the only tool ever exposed is a
+> read-only external search. Any *write* tool would still require a new ADR.

@@ -48,7 +48,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nif (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\nconst pd = (orig.personal_data === true || orig.personal_data === 'true') ? true : false;\n// null = model doesn't support the parameter (e.g. claude-opus-4-8)\nconst temperature = (row.temperature != null && row.temperature !== '') ? Number(row.temperature) : null;\n\nreturn [{ json: {\n  litellm_model: row.litellm_model,\n  temperature,\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  impact,\n  personal_data: pd,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used\n} }];"
+        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nif (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\nconst pd = (orig.personal_data === true || orig.personal_data === 'true') ? true : false;\n\nreturn [{ json: {\n  litellm_model: row.litellm_model,\n  // null = model doesn't support the parameter (e.g. claude-opus-4-8)\n  temperature: (row.temperature != null && row.temperature !== '') ? Number(row.temperature) : null,\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  impact,\n  personal_data: pd,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used\n} }];"
       },
       "id": "resolve-routing",
       "name": "Resolve Routing",
@@ -59,12 +59,12 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://litellm:4000/v1/chat/completions",
+        "url": "http://litellm:4000/v1/messages",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ model: $json.litellm_model, messages: [{ role: 'user', content: $json.prompt }], max_tokens: $json.max_tokens }, $json.temperature != null ? { temperature: $json.temperature } : {})) }}",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ model: $json.litellm_model, max_tokens: $json.max_tokens, messages: [{ role: 'user', content: $json.prompt }], tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }] }, $json.temperature != null ? { temperature: $json.temperature } : {})) }}",
         "options": {
           "response": {
             "response": {
@@ -72,7 +72,13 @@
               "responseFormat": "json"
             }
           },
-          "timeout": 120000
+          "timeout": 180000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "anthropic-version", "value": "2023-06-01" }
+          ]
         }
       },
       "id": "call-litellm",
@@ -108,7 +114,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const routing = $('Resolve Routing').first().json;\nconst resp = $('Call LiteLLM').first().json || {};\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\n\nlet fx = null;\ntry { const f = $('Get FX Rate').first().json.rate; if (f != null && f !== '') fx = Number(f); } catch (e) {}\n\nconst ch = headers['x-litellm-response-cost'];\nlet usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\nlet cost_source = 'litellm_header';\nlet cost_missing = false;\nif (usd_cost == null || isNaN(usd_cost) || usd_cost === 0) {\n  cost_missing = true;\n  cost_source = 'fallback_table';\n  const pin = Number(routing.price_in_usd_per_1k || 0);\n  const pout = Number(routing.price_out_usd_per_1k || 0);\n  if (input_tokens != null && output_tokens != null && (pin || pout)) {\n    usd_cost = (input_tokens/1000)*pin + (output_tokens/1000)*pout;\n  } else {\n    usd_cost = null;\n  }\n}\nconst cost_pln = (usd_cost != null && fx != null) ? Number((usd_cost * fx).toFixed(6)) : null;\n\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : routing.litellm_model;\nconst alias = routing.litellm_model || '';\nconst provider = alias.includes('bedrock') ? 'litellm/bedrock-eu' : 'litellm/anthropic-direct';\n\nreturn [{ json: {\n  completion,\n  model_used,\n  provider,\n  input_tokens, output_tokens,\n  usd_cost, fx_rate: fx, cost_pln,\n  cost_source, cost_missing,\n  routing_default_used: !!routing.routing_default_used,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
+        "jsCode": "const routing = $('Resolve Routing').first().json;\nconst resp = $('Call LiteLLM').first().json || {};\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.input_tokens != null) ? usage.input_tokens : null;\nconst output_tokens = (usage.output_tokens != null) ? usage.output_tokens : null;\n\n// Anthropic /v1/messages content blocks: concat text; collect web-search sources/errors.\nconst content = Array.isArray(body.content) ? body.content : [];\nlet completion = '';\nconst sources = [];\nlet web_search_used = false;\nlet web_search_error = false;\nlet web_search_error_code = '';\nfor (const b of content) {\n  if (!b || typeof b !== 'object') continue;\n  if (b.type === 'text' && b.text) {\n    completion += b.text;\n  } else if (b.type === 'web_search_tool_result') {\n    web_search_used = true;\n    const c = b.content;\n    if (c && !Array.isArray(c) && c.type === 'web_search_tool_result_error') {\n      web_search_error = true;\n      web_search_error_code = c.error_code || 'unknown';\n    } else if (Array.isArray(c)) {\n      for (const r of c) {\n        if (r && r.type === 'web_search_result' && r.url) {\n          sources.push({ url: r.url, title: r.title || r.url });\n        }\n      }\n    }\n  }\n}\nif (!completion) { try { completion = body.choices[0].message.content || ''; } catch (e) {} }\n\nlet fx = null;\ntry { const f = $('Get FX Rate').first().json.rate; if (f != null && f !== '') fx = Number(f); } catch (e) {}\n\nconst ch = (headers['x-litellm-response-cost'] != null && headers['x-litellm-response-cost'] !== '')\n  ? headers['x-litellm-response-cost']\n  : headers['x-litellm-response-cost-original'];\nlet usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\nlet cost_source = 'litellm_header';\nlet cost_missing = false;\nif (usd_cost == null || isNaN(usd_cost) || usd_cost === 0) {\n  cost_missing = true;\n  cost_source = 'fallback_table';\n  const pin = Number(routing.price_in_usd_per_1k || 0);\n  const pout = Number(routing.price_out_usd_per_1k || 0);\n  if (input_tokens != null && output_tokens != null && (pin || pout)) {\n    usd_cost = (input_tokens/1000)*pin + (output_tokens/1000)*pout;\n  } else {\n    usd_cost = null;\n  }\n}\nconst cost_pln = (usd_cost != null && fx != null) ? Number((usd_cost * fx).toFixed(6)) : null;\n\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : routing.litellm_model;\nconst alias = routing.litellm_model || '';\nconst provider = alias.includes('bedrock') ? 'litellm/bedrock-eu' : 'litellm/anthropic-direct';\n\nreturn [{ json: {\n  completion,\n  sources,\n  web_search_used,\n  web_search_error,\n  web_search_error_code,\n  model_used,\n  provider,\n  input_tokens, output_tokens,\n  usd_cost, fx_rate: fx, cost_pln,\n  cost_source, cost_missing,\n  routing_default_used: !!routing.routing_default_used,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
       },
       "id": "compute-cost",
       "name": "Compute Cost",
@@ -147,7 +153,9 @@
             { "id": "b4", "name": "input_tokens", "value": "={{ $('Compute Cost').first().json.input_tokens }}", "type": "number" },
             { "id": "b5", "name": "output_tokens", "value": "={{ $('Compute Cost').first().json.output_tokens }}", "type": "number" },
             { "id": "b6", "name": "cost_pln", "value": "={{ $('Compute Cost').first().json.cost_pln }}", "type": "number" },
-            { "id": "b7", "name": "usd_cost", "value": "={{ $('Compute Cost').first().json.usd_cost }}", "type": "number" }
+            { "id": "b7", "name": "usd_cost", "value": "={{ $('Compute Cost').first().json.usd_cost }}", "type": "number" },
+            { "id": "b8", "name": "sources", "value": "={{ $('Compute Cost').first().json.sources }}", "type": "array" },
+            { "id": "b9", "name": "web_search_used", "value": "={{ $('Compute Cost').first().json.web_search_used }}", "type": "boolean" }
           ]
         },
         "options": {}
@@ -179,6 +187,12 @@
               "leftValue": "={{ $json.cost_missing }}",
               "rightValue": true,
               "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            },
+            {
+              "id": "d3",
+              "leftValue": "={{ $json.web_search_error }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
             }
           ],
           "combinator": "or"
@@ -199,8 +213,8 @@
           "value": {
             "severity": "WARN",
             "source": "invoke-model",
-            "message": "Degradacja w Invoke Model: routing fail-safe i/lub brak danych o koszcie.",
-            "details": "=routing_default_used={{ $json.routing_default_used }}; cost_missing={{ $json.cost_missing }}; cost_source={{ $json.cost_source }}; impact={{ $json.impact }}; model={{ $json.model_used }}; task={{ $json.clickup_task_id }}"
+            "message": "Degradacja w Invoke Model: routing fail-safe, brak danych o koszcie i/lub błąd web search.",
+            "details": "=routing_default_used={{ $json.routing_default_used }}; cost_missing={{ $json.cost_missing }}; cost_source={{ $json.cost_source }}; web_search_error={{ $json.web_search_error }}; web_search_error_code={{ $json.web_search_error_code }}; web_search_used={{ $json.web_search_used }}; impact={{ $json.impact }}; model={{ $json.model_used }}; task={{ $json.clickup_task_id }}"
           },
           "matchingColumns": [],
           "schema": [
@@ -332,6 +346,6 @@
   "staticData": null,
   "meta": null,
   "pinData": {},
-  "versionId": "0f182a68-4376-44fd-b78c-6a84eb477a66",
+  "versionId": "70f5ee65-c323-41da-bafa-d7efa94651ed",
   "tags": []
 }
