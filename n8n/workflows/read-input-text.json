@@ -9,10 +9,10 @@
       "typeVersion": 2.5,
       "position": [0, 120],
       "webhookId": "20d9155d-fa03-494a-a7b5-8c1856d0af91",
-      "notes": "Standalone test harness (ADR-020): paste a ClickUp task id; fetches its attachments and runs the reader. When Called is the real entry from input-router (Block 4).",
+      "notes": "Standalone test harness (ADR-020) ONLY: paste a task id; Get Task fetches ALL attachments and feeds them unfiltered to the reader. Classification (which attachments are text-family) is the input-router's job (Block 4, spec 2.3), NOT the reader's - so in standalone testing attach only text files.",
       "parameters": {
         "formTitle": "Read Input Text Test",
-        "formDescription": "Enter a ClickUp task id to extract its text attachments.",
+        "formDescription": "Enter a ClickUp task id to extract its attachments as text.",
         "formFields": { "values": [{ "fieldLabel": "taskId", "requiredField": true }] },
         "responseMode": "lastNode",
         "options": {}
@@ -24,10 +24,10 @@
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
       "position": [0, 340],
-      "notes": "Sub-workflow entry (called by input-router, Block 4). In: { clickup_task_id }. Out: { blocks, clickup_task_id }. Self-fetches + self-filters attachments to the text family (xlsx/docx/csv/txt). Empty case (no text files) returns no items.",
+      "notes": "Production entry (called by input-router, Block 4). In: { clickup_task_id, attachments:[{att_id,title,url,ext,mime,order}] } - a PRE-CLASSIFIED, ordered text-family list (router owns the MIME/ext switch + global order, spec 2.3). Out: { blocks, clickup_task_id, warnings }. PURE function: no side-effects - the router fires `warnings` via Post Alert (single alerting choke-point).",
       "parameters": {
         "inputSource": "workflowInputs",
-        "workflowInputs": { "values": [{ "name": "clickup_task_id", "type": "string" }] }
+        "workflowInputs": { "values": [{ "name": "clickup_task_id", "type": "string" }, { "name": "attachments", "type": "array" }] }
       }
     },
     {
@@ -35,8 +35,8 @@
       "name": "Get Task",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [240, 230],
-      "notes": "Authoritative attachment list + signed download URLs (ADR-019 credential-aware fetch). Returns full raw task incl attachments[] (the n8n ClickUp 'get' node omits attachments). A hard fetch failure throws -> global Error Handler (v1) CRITICAL (there is nothing to extract).",
+      "position": [240, 120],
+      "notes": "TEST-HARNESS BRANCH ONLY (Form path). Authoritative attachment list via HTTP (ADR-019; the n8n ClickUp 'get' node omits attachments[]). The production When Called path skips this - the router already fetched + classified.",
       "parameters": {
         "url": "=https://api.clickup.com/api/v2/task/{{ $json.taskId || $json.clickup_task_id }}",
         "authentication": "predefinedCredentialType",
@@ -46,15 +46,15 @@
       "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } }
     },
     {
-      "id": "r-filter-text",
-      "name": "Filter Text Attachments",
+      "id": "r-explode",
+      "name": "Explode Attachments",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [460, 230],
-      "notes": "Pure shaping: keep xlsx/docx/csv/txt by extension or mimetype, preserve order, one item per attachment. No matches -> 0 items (reader returns nothing; caller treats as no text blocks).",
+      "notes": "Pure NORMALIZER (no classification): explode the attachments array into one item per attachment, normalizing both shapes - router-shaped {att_id,url,ext,mime,order} and raw ClickUp {id,url_w_query,extension,mimetype}. Preserves the router's order; falls back to index for the test path.",
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const task = $json;\nconst taskId = task.id || $json.taskId || $json.clickup_task_id || null;\nconst TEXT_EXT = ['xlsx','docx','csv','txt'];\nconst TEXT_MIME = [\n  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',\n  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',\n  'text/csv',\n  'text/plain'\n];\nconst atts = Array.isArray(task.attachments) ? task.attachments : [];\nconst kept = [];\nlet order = 0;\nfor (const a of atts) {\n  const title = a.title || '';\n  const ext = String(a.extension || title.split('.').pop() || '').toLowerCase();\n  const mime = String(a.mimetype || '').toLowerCase();\n  if (TEXT_EXT.includes(ext) || TEXT_MIME.includes(mime)) {\n    kept.push({ json: {\n      clickup_task_id: taskId,\n      att_id: a.id || null,\n      title: title || ('attachment.' + ext),\n      ext,\n      mime,\n      url: a.url_w_query || a.url || '',\n      order: order++\n    }});\n  }\n}\nreturn kept;"
+        "jsCode": "const src = $input.first().json;\nconst taskId = src.id || src.clickup_task_id || src.taskId || null;\nconst atts = Array.isArray(src.attachments) ? src.attachments : [];\nconst out = [];\nlet i = 0;\nfor (const a of atts) {\n  const title = a.title || '';\n  const ext = String(a.ext || a.extension || title.split('.').pop() || '').toLowerCase();\n  out.push({ json: {\n    clickup_task_id: taskId,\n    att_id: a.att_id || a.id || null,\n    title: title || ('attachment.' + ext),\n    ext,\n    mime: String(a.mime || a.mimetype || '').toLowerCase(),\n    url: a.url || a.url_w_query || '',\n    order: (a.order !== undefined && a.order !== null ? a.order : i)\n  }});\n  i++;\n}\nreturn out;"
       }
     },
     {
@@ -67,7 +67,7 @@
       "retryOnFail": true,
       "maxTries": 2,
       "waitBetweenTries": 2000,
-      "notes": "Download bytes to a binary property (kept separate from JSON - no base64 in the flow). ClickUp url_w_query is pre-signed, so no auth header. continueRegularOutput: a fetch failure stays inline (no binary) so Docling/Build Block degrade it to [BRAK] + WARN.",
+      "notes": "Download bytes to a binary property (kept separate from JSON - no base64 in the flow). ClickUp url_w_query is pre-signed, so no auth header. continueRegularOutput: a fetch failure stays inline (no binary) so Docling/Build Block degrade it to [BRAK] + warning.",
       "parameters": {
         "url": "={{ $json.url }}",
         "authentication": "none",
@@ -106,11 +106,11 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [1120, 230],
-      "notes": "Per-item: success -> { type:text, order, md }; any failure (fetch error, Docling error, or 200/status=failure/empty md) -> [BRAK: extraction_failed <file>] + needs_alert. Flags has_embedded on placeholder markers. Single output -> Aggregate has exactly one input (runs once over all items).",
+      "notes": "Per-item: success -> { type:text, order, md }; any failure (fetch error, Docling error, or 200/status=failure/empty md) -> [BRAK: extraction_failed <file>] + needs_alert. Flags has_embedded on placeholder markers. Tags drive the `warnings` list Aggregate hands to the router.",
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "let meta;\ntry { meta = $('Filter Text Attachments').item.json; } catch (e) { meta = {}; }\nif (!meta || meta.order === undefined) { meta = { order: 0, title: (meta && meta.title) || 'unknown', clickup_task_id: (meta && meta.clickup_task_id) || null }; }\nconst doc = ($json && $json.document) || {};\nconst md = doc.md_content || '';\nconst ok = !!md;\nlet err = '';\nif (!ok) {\n  if ($json && $json.error) { err = $json.error.message || (typeof $json.error === 'string' ? $json.error : JSON.stringify($json.error)); }\n  else if ($json && $json.status && $json.status !== 'success') { err = 'docling status=' + $json.status; }\n  else { err = 'no md_content'; }\n}\nconst block = ok\n  ? { type: 'text', order: meta.order, md }\n  : { type: 'text', order: meta.order, md: '[BRAK: extraction_failed ' + meta.title + ']' };\nreturn { json: {\n  block,\n  clickup_task_id: meta.clickup_task_id,\n  title: meta.title,\n  needs_alert: !ok,\n  has_embedded: ok && (md.includes('<!-- image -->') || md.includes('<!-- missing-image -->')),\n  err: err || ''\n} };"
+        "jsCode": "let meta;\ntry { meta = $('Explode Attachments').item.json; } catch (e) { meta = {}; }\nif (!meta || meta.order === undefined) { meta = { order: 0, title: (meta && meta.title) || 'unknown', clickup_task_id: (meta && meta.clickup_task_id) || null }; }\nconst doc = ($json && $json.document) || {};\nconst md = doc.md_content || '';\nconst ok = !!md;\nlet err = '';\nif (!ok) {\n  if ($json && $json.error) { err = $json.error.message || (typeof $json.error === 'string' ? $json.error : JSON.stringify($json.error)); }\n  else if ($json && $json.status && $json.status !== 'success') { err = 'docling status=' + $json.status; }\n  else { err = 'no md_content'; }\n}\nconst block = ok\n  ? { type: 'text', order: meta.order, md }\n  : { type: 'text', order: meta.order, md: '[BRAK: extraction_failed ' + meta.title + ']' };\nreturn { json: {\n  block,\n  clickup_task_id: meta.clickup_task_id,\n  title: meta.title,\n  needs_alert: !ok,\n  has_embedded: ok && (md.includes('<!-- image -->') || md.includes('<!-- missing-image -->')),\n  err: err || ''\n} };"
       }
     },
     {
@@ -119,111 +119,21 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [1340, 230],
-      "notes": "Sole terminal (single input from Build Block -> runs once over all items): collect every .block, sort by order, return { blocks, clickup_task_id }.",
+      "notes": "SOLE TERMINAL (single linear input from Build Block -> runs once over all items). Returns { blocks (sorted by order), clickup_task_id, warnings:[{source,title,err}] }. The router (Block 4) fires `warnings` via Post Alert (v1): multimodal/extraction-failed for [BRAK] files, multimodal/embedded-image-skipped for dropped in-doc images. Branch-free reader => n8n returns THIS node deterministically.",
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const items = $input.all();\nconst blocks = items\n  .map(i => i.json && i.json.block)\n  .filter(Boolean)\n  .sort((a, b) => (a.order || 0) - (b.order || 0));\nlet taskId = null;\ntry { taskId = $('When Called').first().json.clickup_task_id; } catch (e) {}\nif (!taskId) { try { taskId = $('Form Trigger').first().json.taskId; } catch (e) {} }\nif (!taskId) { const f = items.find(i => i.json && i.json.clickup_task_id); taskId = f ? f.json.clickup_task_id : null; }\nreturn [{ json: { blocks, clickup_task_id: taskId } }];"
-      }
-    },
-    {
-      "id": "r-alert-failed-if",
-      "name": "Needs Failure Alert?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [1340, 60],
-      "parameters": {
-        "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
-          "combinator": "and",
-          "conditions": [{ "id": "c-fail", "leftValue": "={{ $json.needs_alert ? 'y' : 'n' }}", "rightValue": "y", "operator": { "type": "string", "operation": "equals" } }]
-        }
-      }
-    },
-    {
-      "id": "r-alert-failed",
-      "name": "Alert Extraction Failed",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.2,
-      "position": [1560, 60],
-      "notes": "Per-file WARN through the Post Alert (v1) seam (ADR-025). Closes the Block-1-deferred 'Docling down at request time' silent gap. Dead-end side branch (does not feed Aggregate).",
-      "parameters": {
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
-        "workflowInputs": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "severity": "WARN",
-            "source": "multimodal/extraction-failed",
-            "message": "Docling nie wyodrębnił treści załącznika; wstawiono znacznik [BRAK] i kontynuowano.",
-            "details": "=task={{ $json.clickup_task_id }}; file={{ $json.title }}; error={{ $json.err || 'unknown' }}"
-          },
-          "schema": [
-            { "id": "severity", "displayName": "severity", "required": false, "type": "string", "display": true },
-            { "id": "source", "displayName": "source", "required": false, "type": "string", "display": true },
-            { "id": "message", "displayName": "message", "required": false, "type": "string", "display": true },
-            { "id": "details", "displayName": "details", "required": false, "type": "string", "display": true }
-          ],
-          "matchingColumns": [],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": true
-        },
-        "options": {}
-      }
-    },
-    {
-      "id": "r-alert-embedded-if",
-      "name": "Has Embedded Images?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [1340, 400],
-      "parameters": {
-        "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
-          "combinator": "and",
-          "conditions": [{ "id": "c-emb", "leftValue": "={{ $json.has_embedded ? 'y' : 'n' }}", "rightValue": "y", "operator": { "type": "string", "operation": "equals" } }]
-        }
-      }
-    },
-    {
-      "id": "r-alert-embedded",
-      "name": "Alert Embedded Skipped",
-      "type": "n8n-nodes-base.executeWorkflow",
-      "typeVersion": 1.2,
-      "position": [1560, 400],
-      "notes": "Side-branch WARN (degradation, not failure): embedded in-doc images dropped until Block 10 hosting. Dead-end side branch (does not feed Aggregate).",
-      "parameters": {
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
-        "workflowInputs": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "severity": "WARN",
-            "source": "multimodal/embedded-image-skipped",
-            "message": "Pominięto obraz osadzony w dokumencie (hosting obrazów wejściowych zostanie dodany w Bloku 10).",
-            "details": "=task={{ $json.clickup_task_id }}; file={{ $json.title }}"
-          },
-          "schema": [
-            { "id": "severity", "displayName": "severity", "required": false, "type": "string", "display": true },
-            { "id": "source", "displayName": "source", "required": false, "type": "string", "display": true },
-            { "id": "message", "displayName": "message", "required": false, "type": "string", "display": true },
-            { "id": "details", "displayName": "details", "required": false, "type": "string", "display": true }
-          ],
-          "matchingColumns": [],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": true
-        },
-        "options": {}
+        "jsCode": "const rows = $input.all().map(i => i.json).filter(j => j && j.block);\nconst blocks = rows.map(j => j.block).sort((a, b) => (a.order || 0) - (b.order || 0));\nconst warnings = [];\nfor (const j of rows) {\n  if (j.needs_alert) warnings.push({ source: 'multimodal/extraction-failed', title: j.title, err: j.err || 'unknown' });\n  else if (j.has_embedded) warnings.push({ source: 'multimodal/embedded-image-skipped', title: j.title });\n}\nlet taskId = null;\ntry { taskId = $('When Called').first().json.clickup_task_id; } catch (e) {}\nif (!taskId) { try { taskId = $('Form Trigger').first().json.taskId; } catch (e) {} }\nif (!taskId) { const f = rows.find(j => j.clickup_task_id); taskId = f ? f.clickup_task_id : null; }\nreturn [{ json: { blocks, clickup_task_id: taskId, warnings } }];"
       }
     }
   ],
   "connections": {
     "Form Trigger": { "main": [[{ "node": "Get Task", "type": "main", "index": 0 }]] },
-    "When Called": { "main": [[{ "node": "Get Task", "type": "main", "index": 0 }]] },
-    "Get Task": { "main": [[{ "node": "Filter Text Attachments", "type": "main", "index": 0 }]] },
-    "Filter Text Attachments": { "main": [[{ "node": "Fetch Attachment Binary", "type": "main", "index": 0 }]] },
+    "When Called": { "main": [[{ "node": "Explode Attachments", "type": "main", "index": 0 }]] },
+    "Get Task": { "main": [[{ "node": "Explode Attachments", "type": "main", "index": 0 }]] },
+    "Explode Attachments": { "main": [[{ "node": "Fetch Attachment Binary", "type": "main", "index": 0 }]] },
     "Fetch Attachment Binary": { "main": [[{ "node": "Docling Convert", "type": "main", "index": 0 }]] },
     "Docling Convert": { "main": [[{ "node": "Build Block", "type": "main", "index": 0 }]] },
-    "Build Block": { "main": [[{ "node": "Aggregate Blocks", "type": "main", "index": 0 }, { "node": "Needs Failure Alert?", "type": "main", "index": 0 }, { "node": "Has Embedded Images?", "type": "main", "index": 0 }]] },
-    "Needs Failure Alert?": { "main": [[{ "node": "Alert Extraction Failed", "type": "main", "index": 0 }], []] },
-    "Has Embedded Images?": { "main": [[{ "node": "Alert Embedded Skipped", "type": "main", "index": 0 }], []] }
+    "Build Block": { "main": [[{ "node": "Aggregate Blocks", "type": "main", "index": 0 }]] }
   },
   "settings": { "executionOrder": "v1", "errorWorkflow": "81eplXMD1v5ONhzs" }
 }

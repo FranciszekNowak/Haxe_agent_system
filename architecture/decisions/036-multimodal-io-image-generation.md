@@ -210,41 +210,55 @@ C owns every ClickUp side-effect: comment post, cost field write, status flip, t
   WARN). A proactive Docling freshness / dead-man's-switch cron only becomes meaningful once a reader
   depends on it; deferred to Block 2. Until then, a Docling outage degrades the (not-yet-wired) input
   path **silently** — acceptable only because no live workflow reads it yet.
-- **Block 2 (`Read Input Text (v1)`, id `zgGpONulGMohQQqI`) — 2026-06-10.** First input reader is
-  LIVE and verified end-to-end (n8n MCP build, ADR-018). It turns a task's text-family attachments
-  (`xlsx`/`docx`/`csv`/`txt`) into ordered input **text blocks** via Docling. **Contract refinement vs the
-  plan:** the reader takes only `{ clickup_task_id }` and **self-fetches + self-filters** the task's
-  attachments (rather than receiving an attachment array across the boundary) — unifies the `When Called`
-  and Form-Trigger test paths and keeps the workflow boundary reference-only, mirroring `Context Gather`'s
-  fetch-by-id shape. Output: `{ blocks:[{type:'text',order,md}], clickup_task_id }`.
-  **Build mechanics confirmed live (exec 833 on test task `869dhad2q`):**
-  (a) the n8n **ClickUp `get` node omits `attachments[]`**, so `Get Task` is an HTTP Request with the
-  `clickUpApi` credential against `/api/v2/task/{id}` (ADR-019); (b) attachment bytes download from the
-  pre-signed `url_w_query` with `authentication:none` into a **binary property** (`responseFormat:file` →
-  n8n `filesystem-v2` store) — never base64 in the JSON flow; (c) `Docling Convert` is a multipart POST
-  (`files` field) carrying **`image_export_mode=placeholder`** — verified: csv → clean markdown
-  **pipe-table**, txt → clean text, ~no payload bloat. **Gotcha for Block 3 / all readers:** Docling
-  returns **HTTP 200 with `status:"failure"` + `md_content:null`** for a corrupt file (it does *not* HTTP-
-  error), so success is gated on **`document.md_content` presence**, not the status code. (Heavy-format
-  `.docx`/`.xlsx` extraction fidelity was already proven directly in Block 1; Block 2's live test used
-  small `sample.csv`/`sample.txt` + a corrupt `broken.docx` to exercise the reader wiring + failure path.)
-  **n8n topology gotcha (fixed):** a `Code (run once for all items)` aggregator with **multiple incoming
-  connections** runs **once per arriving branch**, silently dropping items — the first build lost the
-  `[BRAK]` marker this way. Fixed by collapsing success+failure into one per-item `Build Block` so the
-  `Aggregate` node has exactly **one** input; Fetch/Docling use `onError:continueRegularOutput` (errors
-  stay inline → `[BRAK]`), alerts fire on dead-end side branches.
-  **Silent-failure coverage (reliability mandate).** _Covered:_ (1) Docling unreachable / non-200 /
-  `status!=success` / empty `md_content` → `[BRAK: extraction_failed <file>]` block **+ `WARN
-  multimodal/extraction-failed`** via `Post Alert (v1)`, run continues — this **retroactively closes the
-  Block-1-deferred "Docling down at request time" silent gap** (verified: corrupt file → one WARN on
-  `869dj2z2c`, two good files still extracted, all three blocks returned in order); (2) attachment binary
-  fetch failure → same `[BRAK]` + WARN path; (3) embedded in-doc images dropped (degradation) → non-
-  blocking `WARN multimodal/embedded-image-skipped` side branch; (4) a hard `Get Task` failure throws →
-  global `Error Handler (v1)` CRITICAL (verified: exec 826 empty-id → CRITICAL — reactive layer wired).
-  _Knowingly DEFERRED (operator decision):_ the **proactive Docling health / dead-man's-switch cron** —
-  Block 2 covers request-time failure only; real input-**image** blocks + page-render hosting (Block 3 /
-  Block 10); the PD image stance (Block 6). The reader writes **no `agent_runs` row** (pure extractor, no
-  model call — ADR-035 owner unchanged).
+- **Block 2 (`Read Input Text (v1)`, id `zgGpONulGMohQQqI`) — 2026-06-10.** First input reader is LIVE and
+  verified end-to-end (n8n MCP build, ADR-018). It turns text-family attachments
+  (`xlsx`/`docx`/`csv`/`txt`) into ordered input **text blocks** via Docling. **It is a PURE, branch-free
+  function** — `When Called` in: `{ clickup_task_id, attachments:[{att_id,title,url,ext,mime,order}] }`;
+  out: `{ blocks:[{type:'text',order,md}], clickup_task_id, warnings:[{source,title,err}] }`.
+  **Division of responsibility (decided with the operator, aligns with spec §2.3):** the **input-router
+  (Block 4) owns classification, global ordering, AND alert-firing**; the reader is a dumb processor that
+  receives a pre-classified, ordered text-family list, extracts each, and *reports* problems as structured
+  `warnings` for the router to fire through `Post Alert (v1)` (single alerting choke-point). This replaces
+  the earlier self-filtering + in-reader-WARN design (which duplicated the router's MIME/ext switch and
+  split the ordering logic). A `Get Task` HTTP node remains **only on the Form-Trigger test branch** for
+  standalone runs.
+  **Build mechanics confirmed live (exec 851, router-shaped call on `869dhad2q`):**
+  (a) the n8n **ClickUp `get` node omits `attachments[]`**, so the test-harness fetch is an HTTP Request
+  with the `clickUpApi` credential against `/api/v2/task/{id}` (ADR-019); (b) attachment bytes download
+  from the pre-signed `url`/`url_w_query` with `authentication:none` into a **binary property**
+  (`responseFormat:file` → n8n `filesystem-v2` store) — never base64 in the JSON flow; (c) `Docling
+  Convert` is a multipart POST (`files` field) carrying **`image_export_mode=placeholder`** — verified:
+  csv → clean markdown **pipe-table**, txt → clean text, ~no payload bloat; (d) a deliberately **scrambled
+  input array sorted back to the router's `order`** → reader honors global order, not arrival order.
+  (Heavy-format `.docx`/`.xlsx` Docling fidelity was already proven directly in Block 1; Block 2's live
+  test used small `sample.csv`/`sample.txt` + a corrupt `broken.docx`.)
+  **Two n8n gotchas found + fixed (durable — relevant to every sub-workflow):**
+  (1) Docling returns **HTTP 200 with `status:"failure"` + `md_content:null`** for a corrupt file (it does
+  *not* HTTP-error), so success is gated on **`document.md_content` presence**, not the status code.
+  (2) **An `executeWorkflow` sub-workflow's return value is whichever node n8n deems "last"** — with any
+  branching (IFs / side-effect nodes) it is NON-deterministic and was observed to return an IF branch's
+  output, *not* the intended aggregator, regardless of connection order or node-array order. **The robust
+  fix is a single, branch-free linear terminal**: collapsing the reader to `… → Build Block → Aggregate`
+  with no side branches makes n8n return `Aggregate` deterministically. (This is the deeper reason the
+  reader is a pure function and alerting moved to the router.) An earlier multi-input `Aggregate` also hit
+  the classic *"run-once-for-all-items with N input connections runs once per branch, dropping items"* trap.
+  **Silent-failure coverage (reliability mandate).** The reader **detects** every degradation and tags it
+  into `warnings`: (1) Docling unreachable / non-200 / `status!=success` / empty `md_content` → `[BRAK:
+  extraction_failed <file>]` block + a `multimodal/extraction-failed` warning, run continues (verified:
+  corrupt file → block returned + one warning surfaced); (2) attachment binary fetch failure → same
+  `[BRAK]` + warning; (3) embedded in-doc images dropped → `multimodal/embedded-image-skipped` warning;
+  (4) a hard `Get Task` failure (test branch) throws → global `Error Handler (v1)` CRITICAL. **The actual
+  `Post Alert (v1)` firing of `warnings` is a hard requirement on the input-router (Block 4)** and is the
+  single point where these reach the Alerts channel. This is safe because the reader is in **no live path
+  until the router + Stage-A wiring exist (Blocks 4–5)** — nothing calls it in production yet.
+  _Knowingly DEFERRED:_ proactive Docling health / dead-man's-switch cron (operator decision — request-time
+  detection only); real input-**image** blocks + page-render hosting (Block 3 / Block 10); the PD image
+  stance (Block 6). The reader writes **no `agent_runs` row** (pure extractor, no model call — ADR-035
+  owner unchanged).
+  > **Block 4 (input-router) requirements crystallized here:** owns (a) MIME/ext classification → dispatch
+  > to `read-input-text` (text family) vs `read-input-visual` (pdf/pptx/images); (b) canonical global
+  > `order` assignment across all attachments; (c) firing each reader's returned `warnings` through
+  > `Post Alert (v1)`; (d) a WARN for unsupported attachment types it drops.
 - Phase 2–5: consequences recorded when each phase is verified end-to-end.
 
 ---
