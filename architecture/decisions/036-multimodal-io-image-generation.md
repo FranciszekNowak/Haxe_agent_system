@@ -187,6 +187,21 @@ C owns every ClickUp side-effect: comment post, cost field write, status flip, t
 
 - Phase 1 (schema): migration 012 applied; Docling service added to compose; image model
   seeds require LiteLLM availability check before Phase 2 begins.
+- **Block 1 (Docling LIVE) — 2026-06-10.** Docling verified running on the VPS: image
+  `quay.io/docling-project/docling-serve@sha256:c7ba482f…`, and the running container's resolved
+  digest **matches** the pin in `n8n/docker-compose.yml` (no drift). `GET /health` → 200; ~1.9 GB
+  RSS idle with ≥4 GB free, no OOM. API confirmed against the container's own OpenAPI:
+  `POST /v1/convert/file` (multipart field `files`), markdown returned at `document.md_content`
+  (also `html_content`/`text_content`/`json_content`/`doctags_content`; async + chunking endpoints
+  exist but are unused). Smoke-tested on the committed fixtures — `HBG Sharp.docx` (clean structured
+  md), `2026-06-10 Wzorcowa specyfikacja.xlsx` (**260 pipe-table rows → table structure survives**),
+  and `Karta Techniczna…HX705.pdf` (graphic one-pager; clean product text in `placeholder` mode).
+  **Gotcha for the readers (Blocks 2–3):** Docling's default `image_export_mode=embedded` inlines
+  page images as base64 data URIs — one PDF ballooned to 242 KB vs **1.3 KB** of clean text with
+  `image_export_mode=placeholder`. Readers MUST pass `image_export_mode=placeholder` or LLM payloads
+  / token cost silently explode. Also corrected the spine doc-drift in `current.md` (§11/§15 still
+  described a monolithic 26-node `agent-spine.json`; reality is the decomposed `Agent Orchestrator
+  (v1)` → Stage A/B/C, id `a8XKaijkMFNBpRBa` now the thin orchestrator).
 - Phase 2–5: consequences recorded when each phase is verified end-to-end.
 
 ---
@@ -194,3 +209,4 @@ C owns every ClickUp side-effect: comment post, cost field write, status flip, t
 ## Date
 
 2026-06-09 (Phase 1 schema decisions)
+2026-06-10 (Block 1 — Docling verified live; spine doc-drift corrected)

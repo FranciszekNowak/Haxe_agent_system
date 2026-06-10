@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v20
-Last updated: 2026-06-09
-Supersedes: v19
+Version: v21
+Last updated: 2026-06-10
+Supersedes: v20
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -355,7 +355,7 @@ current.md is updated via targeted diffs, not full-file rewrites, to avoid silen
 
 - **Phase 0** — infrastructure (git, AWS, 1Password, Supabase, VPS, Docker stack, Nginx + TLS). **COMPLETE** (infra hardened, password auth disabled, both machines keyed).
 - **Phase 1** — ClickUp foundation. **IN PROGRESS** — see *Phase 1 status* below. The agent CU account, the six `[AI]` custom fields, and the global agent-rules + operator-preferences docs are live; research is complete (NPD process mapped; observations doc) and the core model + KM-maintenance design confirmed. Remaining: full Agent System Space build-out (process templates with checklist-in-description + doc leaves) and the rest of the team's preference docs.
-- **Phase 2** — the spine. **IN PROGRESS (core path COMPLETE)** — the generic read→route→infer→post-back pipeline (`Agent Spine (v1)`), signature-verified @-mention triggering (`CU Webhook Producer (v1)`, ADR-029), thread-aware replies via `conversation_sessions`, and the `PD Verifier (v1)` seam + `Search (v1)` + Layer-B caller-scoped reads (ADR-031) are all live and verified end-to-end. See *Phase 2 status* below and §15. Remaining: selective `linked_doc_leaves`; autonomous status/due-date triggers (Phase 3).
+- **Phase 2** — the spine. **IN PROGRESS (core path COMPLETE)** — the generic read→route→infer→post-back pipeline (thin `Agent Orchestrator (v1)` → Stage A `Assemble Context and Build Prompt` → B `Execute LLM Call` → C `Post Reply`; ADR-036), signature-verified @-mention triggering (`CU Webhook Producer (v1)`, ADR-029), thread-aware replies via `conversation_sessions`, and the `PD Verifier (v1)` seam + `Search (v1)` + Layer-B caller-scoped reads (ADR-031) are all live and verified end-to-end. See *Phase 2 status* below and §15. Remaining: selective `linked_doc_leaves`; autonomous status/due-date triggers (Phase 3).
 - **Phase 3** — email + due-date triggering + queue tuning.
 - **Phase 4** — learning loop (proposers).
 - **Phase 5** — team rollout.
@@ -369,7 +369,7 @@ Target: 7–9 weeks to v1.
 - **VPS**: Cyberfolks vroot_SPRINT, AlmaLinux 10, 185.25.149.174 (KVM, 4 vCPU / 8 GB / 100 GB, hostname vps57524999).
 - **Access**: key-based SSH (ed25519). Separate keypair per machine — home and office desktops each have their own key installed for `franciszek` (private keys passphrase-free, for non-interactive automation). Non-root sudo user `franciszek` (wheel + docker + NOPASSWD sudoers); root reserved for exceptions. firewalld: ssh/http/https open. See ADR-010.
 - **Password auth: DISABLED.** Both workstations (home + office) have key-based SSH access; with both keyed, password authentication was turned off (`PasswordAuthentication no`) as the final hardening step. Access is now key-only.
-- **Docker stack**: `/opt/haxe-agents/`, five containers on private bridge network `n8n-internal`, queue mode. Image versions pinned. See ADR-011.
+- **Docker stack**: `/opt/haxe-agents/`, six containers on private bridge network `n8n-internal`, queue mode. Image versions pinned. See ADR-011.
   - `n8n-postgres` (postgres:16) — n8n's internal DB; named volume; healthcheck-gated.
   - `n8n-redis` (redis:7-alpine) — queue backing; AOF persistence enabled; named volume.
   - `n8n-main` (n8nio/n8n:2.22.5) — UI, webhooks, scheduler; binds to 127.0.0.1:5678 only.
@@ -381,6 +381,15 @@ Target: 7–9 weeks to v1.
     passed through via `docker-compose.yml`; confirmed working 2026-06-08. Config in committed
     `n8n/litellm-config.yaml`; credentials in `.env` (never committed). Native Bedrock node retained in n8n
     **disabled** as fallback.
+  - `docling` (`quay.io/docling-project/docling-serve`, digest-pinned `sha256:c7ba482f…`) — **deployed +
+    active** (ADR-036). Internal-only document extractor (127.0.0.1:5001, loopback). The single extractor for
+    the multimodal input pipeline: converts docx/xlsx/csv/txt/pdf/pptx + images (OCR) → markdown with
+    layout/tables via `POST /v1/convert/file`; `GET /health`. n8n reaches it at `http://docling:5001`. No
+    provider fallback — a file that defeats it surfaces as `[BRAK: extraction_failed <file>]` + WARN, run
+    continues. **Verified live 2026-06-10** on the HBG Sharp.docx / Karta Techniczna HX705.pdf / Wzorcowa
+    specyfikacja.xlsx fixtures (markdown at `document.md_content`; xlsx → 260 pipe-table rows). ⚠ Default
+    `image_export_mode=embedded` inlines page images as base64 (one PDF → 242 KB vs 1.3 KB in `placeholder`
+    mode); the readers (Blocks 2–3) must pass `image_export_mode=placeholder`.
     > **Config drift incident (2026-06-08):** The VPS `docker-compose.yml` predated ADR-030 and lacked the
     > `ANTHROPIC_API_KEY` passthrough. LiteLLM's router surfaced the resulting 401 as a 429 cooldown, causing
     > ~8 h of misdiagnosis. Fixed by redeploying `docker-compose.yml` via scp. See ADR-033 for the deploy
@@ -541,11 +550,16 @@ exercises a real structured process beyond the test list.
 
 The generic read→route→infer→post-back pipeline plus automatic @-mention triggering — built and
 verified end-to-end on `869dhad2q`. Per-workflow detail, n8n IDs, and node names are in §15.
-State as of 2026-06-09:
+State as of 2026-06-10:
 
-- **Core pipeline — DONE.** `Agent Spine (v1)` composes `Context Gather (v1)` → `PD Verifier
-  (v1)` (stub) → `Search (v1)` → `Build Prompt` → `Invoke Model (v1)` → thread-aware draft
-  post-back (~26 nodes).
+- **Core pipeline — DONE (decomposed).** A thin `Agent Orchestrator (v1)` (id `a8XKaijkMFNBpRBa`,
+  8 nodes) sets status then calls three stage subworkflows in sequence — **A** `Assemble Context and
+  Build Prompt (v1)` → **B** `Execute LLM Call (v1)` → **C** `Post Reply (v1)` — each with its own
+  execution log and a shared **Reset Status + Alert** on any stage failure (ADR-032/036). Stage A
+  composes `Context Gather (v1)` → `PD Verifier (v1)` (stub) → `Search (v1)` → `Build Prompt`; B runs
+  `Invoke Model (v1)`; C posts the thread-aware draft and owns the ClickUp side-effects. (The earlier
+  monolithic 26-node `agent-spine.json` was decomposed in place — `a8XKaijkMFNBpRBa` is now the
+  orchestrator.)
 - **Model layer — DONE.** Self-hosted LiteLLM gateway, data-driven routing on `(impact,
   personal_data)` — `false` → Anthropic direct, `true` → Bedrock EU (ADR-030) — exact USD ×
   daily NBP FX → `cost_pln`, logged to `agent_runs` and summed into `[AI] Koszt akcji [PLN]`.
@@ -754,13 +768,19 @@ unless noted. The build control plane is Claude Code → n8n MCP (ADR-018).
 
 ### 15.1 Workflow set and build state
 
-The original design named the core engine a single **"Main Orchestrator"** worker workflow.
-In build it is realized as the composed **`Agent Spine (v1)`** (a chain of focused
-sub-workflows), which is the canonical form going forward.
+The original design named the core engine a single **"Main Orchestrator"** worker workflow. It is
+now realized as a **thin `Agent Orchestrator (v1)`** that calls three stage subworkflows in
+sequence — **A `Assemble Context and Build Prompt (v1)` → B `Execute LLM Call (v1)` → C `Post Reply
+(v1)`** — each with its own execution log and a shared status-reset + alert on failure. This
+decomposition (commit `ff14622`, ADR-036) replaced the earlier monolithic `Agent Spine (v1)` and is
+the canonical form going forward.
 
 | Workflow | Role | State |
 |---|---|---|
-| **`Agent Spine (v1)`** (was "Main Orchestrator") | Generic read→route→infer→post-back engine | **LIVE** |
+| **`Agent Orchestrator (v1)`** (was "Agent Spine"/"Main Orchestrator", id `a8XKaijkMFNBpRBa`) | Thin orchestrator: set status → A → B → C + shared Reset+Alert | **LIVE** |
+| **`Assemble Context and Build Prompt (v1)`** (Stage A) | Context Gather + PD Verifier + Search + Build Prompt | **LIVE** |
+| **`Execute LLM Call (v1)`** (Stage B) | Invoke Model → drafted reply + cost | **LIVE** |
+| **`Post Reply (v1)`** (Stage C) | Post draft comment, cost field, status flip (owns CU side-effects) | **LIVE** |
 | **`Context Gather (v1)`** | Assemble labelled task context (task + ancestor chain + fields) | **LIVE** |
 | **`Invoke Model (v1)`** | Centralized model-call seam: route → LiteLLM → exact PLN cost → log | **LIVE** |
 | **`Search (v1)`** | Comment + external-artifact retrieval, Layer-B scoped | **LIVE** |
@@ -774,15 +794,24 @@ sub-workflows), which is the canonical form going forward.
 | Weekly Org Proposer | Mon 09:00 cron: synthesize evaluations → org proposals | **Planned (Phase 4)** |
 | Session Cleanup | Hourly cron: expire idle `conversation_sessions` | **Planned** |
 
-### 15.2 `Agent Spine (v1)` — the generic engine
+### 15.2 `Agent Orchestrator (v1)` + Stages A/B/C — the generic engine
 
-`n8n/workflows/agent-spine.json`, n8n id `a8XKaijkMFNBpRBa`, **26 nodes**. Entry is either a
-Form Trigger (`taskId`, manual testing) or a `When Called` Execute-Workflow trigger (from the
-webhook producer). The chain implements the five Core-model steps:
+`n8n/workflows/agent-orchestrator.json`, n8n id `a8XKaijkMFNBpRBa`, **8 nodes** (thin). Entry is
+either a Form Trigger (`taskId`, manual testing) or a `When Called` Execute-Workflow trigger (from
+the webhook producer). It sets status **W trakcie**, then calls three stage subworkflows in
+sequence — each a Call-Workflow node with its own execution log; any stage's `onError` routes to one
+shared **Reset Status + Alert** path (ADR-032), replacing the earlier per-node alert sprawl. The
+five Core-model steps are distributed across the stages:
 
-`Context Gather (v1)` → `PD Verifier (v1)` → `Search (v1)` → `Build Prompt` → `Invoke Model
-(v1)` → `Check Session` → post draft comment (thread-aware) → `Upsert Session` → status flip
-→ cost-field write.
+- **Stage A — `Assemble Context and Build Prompt (v1)`** (`n8n/workflows/assemble-context-and-build-prompt.json`,
+  id `GGTBvFBgGSNbtUR6`, 10 nodes): `Context Gather (v1)` → `PD Verifier (v1)` → `Search (v1)` →
+  `Build Prompt`. Returns the prompt payload + assembled context.
+- **Stage B — `Execute LLM Call (v1)`** (`n8n/workflows/execute-llm-call.json`, id `9qdJA4xnAGbxqkt9`,
+  8 nodes): `Invoke Model (v1)` → drafted reply + cost.
+- **Stage C — `Post Reply (v1)`** (`n8n/workflows/post-reply.json`, id `t17moGs7Vxo5ZcFv`, 9 nodes):
+  posts the thread-aware draft comment, writes the cost field, flips status **W trakcie → Zakończono**.
+  C owns every ClickUp side-effect (comment, cost, status, and — once multimodal lands, ADR-036 —
+  image upload + temp cleanup).
 
 - **`Build Prompt`** (Code, stub assembler) composes one prompt string from, in order: the
   **GLOBAL agent-rules doc + the caller's personal agent-preferences doc** (CU Docs v3,
@@ -792,8 +821,9 @@ webhook producer). The chain implements the five Core-model steps:
   (v1)`** context (comments + external artifacts); then the **task context** (task + ancestor
   chain). It emits a soft output structure — **Wyniki / Pytania / Decyzje / Sugestie**
   (§13.1) — as guidance, not a hard template.
-- **Status lifecycle:** `[AI] Status agenta` flips **W trakcie → Zakończono** around the run.
-  The spine **never finalizes** — it never sets a done status on the task itself nor writes
+- **Status lifecycle:** `[AI] Status agenta` flips **W trakcie → Zakończono** around the run
+  (set in the orchestrator / Stage C). The pipeline **never finalizes** — it never sets a done
+  status on the task itself nor writes
   `[AI] Finalny, zaakceptowany efekt`.
 - **Cost field:** writes `[AI] Koszt akcji [PLN]` = `SUM(agent_runs.cost_pln)` for the task
   (idempotent, drift-free). ⚠ This uses the edit-capable agent **Member** token via a fixed
@@ -801,7 +831,7 @@ webhook producer). The chain implements the five Core-model steps:
   identity split.
 - **Reliability:** post-back, cost-sync, and session-upsert failures fire a WARN on a side
   branch and **do not abort the run** (the completion is still returned). `Error Handler (v1)`
-  is set as the workflow's `errorWorkflow`.
+  is set as the `errorWorkflow` on the orchestrator and each stage subworkflow.
 
 See ADR-027 (post-back) and ADR-015 (generic pipeline).
 

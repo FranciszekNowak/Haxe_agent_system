@@ -176,10 +176,16 @@ docker compose logs docling -f
 curl -sf http://localhost:5001/health && echo "OK"
 
 # Smoke-test a real file (from the sample files in the repo)
-# Note: /v1/convert/file is the multipart endpoint; /v1/convert/source expects JSON
+# Note: /v1/convert/file is the multipart endpoint (field name "files"); /v1/convert/source expects JSON.
+# image_export_mode=placeholder is REQUIRED for the readers — the default ("embedded") inlines page
+# images as base64 data URIs and bloats the payload (one PDF: 242 KB vs ~1.3 KB clean text).
 curl -X POST http://localhost:5001/v1/convert/file \
   -F "files=@test.docx" \
+  -F "to_formats=md" \
+  -F "image_export_mode=placeholder" \
   -H "Accept: application/json"
+# Response JSON: { status, errors[], processing_time, document:{ md_content, html_content,
+# text_content, json_content, doctags_content } }. Readers read document.md_content.
 ```
 
 ### Pin the image digest after first deploy (ADR-011)
@@ -195,6 +201,15 @@ digest reference (same pattern as the LiteLLM entry).
 
 The service registers healthy once `GET /health` returns 200. The `start_period: 90s`
 gives it time to load layout models before Docker marks it unhealthy.
+
+### Status: verified live (2026-06-10, Block 1)
+
+Running and `healthy`; the container's resolved digest matches the pin in `n8n/docker-compose.yml`
+(`sha256:c7ba482f…`) — no drift. `GET /health` → 200; ~1.9 GB RSS idle with ≥4 GB free, no OOM.
+Convert verified on the committed fixtures: `HBG Sharp.docx`, `Karta Techniczna…HX705.pdf`, and
+`Wzorcowa specyfikacja.xlsx` (260 pipe-table rows → tables survive). Endpoint surface (from the
+container's own OpenAPI at `/openapi.json`): `/health`, `/ready`, `/v1/convert/file`
+(+ `/async`), `/v1/convert/source`, `/v1/chunk/*`, `/v1/result/{task_id}`, `/version`.
 
 ---
 
