@@ -97,6 +97,19 @@ Date
   re-stringified JSON (bytes differ → signature mismatch): set the Webhook node's
   `rawBody: true`, which keeps the exact bytes in binary `data` while still
   leaving `$json.body` parsed for downstream use.
+- **Sub-workflow return value is the "last" node — keep the return path
+  branch-free.** A `When Called`/`executeWorkflow` sub-workflow returns the output
+  of whichever node n8n considers "last"; with **any branching (IFs, side-effect
+  nodes) this is non-deterministic** and will silently return the wrong node's data
+  — independent of connection order *or* node-array order (both were tried and
+  neither controls it). Make the return path a single linear terminal (… →
+  aggregate as the **sole leaf**); push side-effects (alerts, posts) to the caller
+  or a post-return step, and have the reader *report* problems as structured data
+  (e.g. a `warnings` array) for the caller to act on. Also: a **`Code (run once for
+  all items)` node with multiple incoming connections runs once *per* connection**,
+  processing only that branch's items and dropping the rest — give aggregators
+  exactly **one** input (merge upstream into a single stream first). Both traps were
+  hit building `read-input-text` (ADR-036, Block 2).
 
 ## Definition of done
 
