@@ -210,6 +210,41 @@ C owns every ClickUp side-effect: comment post, cost field write, status flip, t
   WARN). A proactive Docling freshness / dead-man's-switch cron only becomes meaningful once a reader
   depends on it; deferred to Block 2. Until then, a Docling outage degrades the (not-yet-wired) input
   path **silently** — acceptable only because no live workflow reads it yet.
+- **Block 2 (`Read Input Text (v1)`, id `zgGpONulGMohQQqI`) — 2026-06-10.** First input reader is
+  LIVE and verified end-to-end (n8n MCP build, ADR-018). It turns a task's text-family attachments
+  (`xlsx`/`docx`/`csv`/`txt`) into ordered input **text blocks** via Docling. **Contract refinement vs the
+  plan:** the reader takes only `{ clickup_task_id }` and **self-fetches + self-filters** the task's
+  attachments (rather than receiving an attachment array across the boundary) — unifies the `When Called`
+  and Form-Trigger test paths and keeps the workflow boundary reference-only, mirroring `Context Gather`'s
+  fetch-by-id shape. Output: `{ blocks:[{type:'text',order,md}], clickup_task_id }`.
+  **Build mechanics confirmed live (exec 833 on test task `869dhad2q`):**
+  (a) the n8n **ClickUp `get` node omits `attachments[]`**, so `Get Task` is an HTTP Request with the
+  `clickUpApi` credential against `/api/v2/task/{id}` (ADR-019); (b) attachment bytes download from the
+  pre-signed `url_w_query` with `authentication:none` into a **binary property** (`responseFormat:file` →
+  n8n `filesystem-v2` store) — never base64 in the JSON flow; (c) `Docling Convert` is a multipart POST
+  (`files` field) carrying **`image_export_mode=placeholder`** — verified: csv → clean markdown
+  **pipe-table**, txt → clean text, ~no payload bloat. **Gotcha for Block 3 / all readers:** Docling
+  returns **HTTP 200 with `status:"failure"` + `md_content:null`** for a corrupt file (it does *not* HTTP-
+  error), so success is gated on **`document.md_content` presence**, not the status code. (Heavy-format
+  `.docx`/`.xlsx` extraction fidelity was already proven directly in Block 1; Block 2's live test used
+  small `sample.csv`/`sample.txt` + a corrupt `broken.docx` to exercise the reader wiring + failure path.)
+  **n8n topology gotcha (fixed):** a `Code (run once for all items)` aggregator with **multiple incoming
+  connections** runs **once per arriving branch**, silently dropping items — the first build lost the
+  `[BRAK]` marker this way. Fixed by collapsing success+failure into one per-item `Build Block` so the
+  `Aggregate` node has exactly **one** input; Fetch/Docling use `onError:continueRegularOutput` (errors
+  stay inline → `[BRAK]`), alerts fire on dead-end side branches.
+  **Silent-failure coverage (reliability mandate).** _Covered:_ (1) Docling unreachable / non-200 /
+  `status!=success` / empty `md_content` → `[BRAK: extraction_failed <file>]` block **+ `WARN
+  multimodal/extraction-failed`** via `Post Alert (v1)`, run continues — this **retroactively closes the
+  Block-1-deferred "Docling down at request time" silent gap** (verified: corrupt file → one WARN on
+  `869dj2z2c`, two good files still extracted, all three blocks returned in order); (2) attachment binary
+  fetch failure → same `[BRAK]` + WARN path; (3) embedded in-doc images dropped (degradation) → non-
+  blocking `WARN multimodal/embedded-image-skipped` side branch; (4) a hard `Get Task` failure throws →
+  global `Error Handler (v1)` CRITICAL (verified: exec 826 empty-id → CRITICAL — reactive layer wired).
+  _Knowingly DEFERRED (operator decision):_ the **proactive Docling health / dead-man's-switch cron** —
+  Block 2 covers request-time failure only; real input-**image** blocks + page-render hosting (Block 3 /
+  Block 10); the PD image stance (Block 6). The reader writes **no `agent_runs` row** (pure extractor, no
+  model call — ADR-035 owner unchanged).
 - Phase 2–5: consequences recorded when each phase is verified end-to-end.
 
 ---
@@ -218,3 +253,4 @@ C owns every ClickUp side-effect: comment post, cost field write, status flip, t
 
 2026-06-09 (Phase 1 schema decisions)
 2026-06-10 (Block 1 — Docling verified live; spine doc-drift corrected)
+2026-06-10 (Block 2 — `Read Input Text (v1)` verified live)

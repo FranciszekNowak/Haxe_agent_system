@@ -789,6 +789,7 @@ the canonical form going forward.
 | **`Post Alert (v1)`** | Centralized alert seam → ClickUp Alerts task | **LIVE** |
 | **`Error Handler (v1)`** | Global `errorWorkflow`: throws → CRITICAL + status rollback | **LIVE** |
 | **`FX Rates Daily (v1)`** + **`FX Freshness Monitor (v1)`** | Daily NBP USD/PLN upsert + staleness WARN | **LIVE** |
+| **`Read Input Text (v1)`** (id `zgGpONulGMohQQqI`) | Multimodal input reader (Block 2): self-fetch task attachments → Docling → ordered input text blocks (xlsx/docx/csv/txt) | **LIVE (Phase 2, input)** |
 | Daily Due-Date Producer | 00:00 cron: enqueue due-today/yesterday `Czy dla AI=Tak` tasks | **Planned (Phase 3)** |
 | Gmail Email Workflow | Incoming mail → Gmail draft; sent-folder post-send analysis | **Planned (Phase 3)** |
 | Weekly Org Proposer | Mon 09:00 cron: synthesize evaluations → org proposals | **Planned (Phase 4)** |
