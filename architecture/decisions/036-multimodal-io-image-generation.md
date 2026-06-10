@@ -179,6 +179,43 @@ sequence, each with its own execution log and a shared Reset+Alert on failure:
 
 C owns every ClickUp side-effect: comment post, cost field write, status flip, temp cleanup.
 
+### Input readers unified (Update 2026-06-10 — supersedes the two-reader split of spec §2.1–2.3)
+
+The spec splits input reading into `read-input-text` and `read-input-visual` behind an
+`input-router`. Building Block 2 showed that split cuts along the wrong axis: the scaffolding
+(`fetch binary → Docling → build block → aggregate`) is **identical for everything Docling
+extracts** — `xlsx/docx/csv/txt` **and** `pdf/pptx`. The only genuinely different case is an
+**already-attached image**, which is pure URL passthrough (no fetch, no Docling — emit an image
+block from the existing ClickUp URL). The `read-input-visual` reader would itself have had to
+branch internally (pdf/pptx → Docling vs png/jpg → passthrough), which is the tell that the real
+axis is **"Docling-extract vs image-passthrough," not "text vs visual."**
+
+**Decision: one unified `read-input` reader.** A single per-item `Build Block` decides block
+type — image attachment → `{type:image, ref:<clickup_url>, …}`; Docling-extractable → `{type:text,
+md}`; failure → `[BRAK]` + a returned `warning`. Keep it **branch-free** (per the n8n
+sub-workflow-return gotcha recorded in CLAUDE.md and Block 2 consequences below): the linear
+`Explode → Fetch → Docling → Build Block → Aggregate` shape stays; `Build Block` just becomes
+type-aware. In this first linear cut images still pass *through* Fetch+Docling and we ignore the
+OCR (cost: a wasted fetch/OCR pass per image on the CPU-only Docling box, **no** prompt noise). If
+that latency is ever measured to matter, skip Docling for images via a `Switch`→`Merge` — but only
+after verifying n8n's `Merge` does not stall on an empty branch (branching is exactly what bit
+Block 2).
+
+**Cascade:** with one reader there is no text/visual classification to centralize, so the
+**`input-router` (Block 4) largely dissolves** — the reader reverts to taking `{ clickup_task_id }`,
+self-fetching the task, exploding + assigning global `order` to all attachments itself, and
+returning `{ blocks, clickup_task_id, warnings }`. (This partially reverts Block 2's "dumb reader
+takes a pre-classified list" shape, which was correct only under the two-reader assumption.) The
+reader stays a pure/branch-free function whose `warnings` are fired by its caller (Stage A) through
+`Post Alert (v1)`. Unsupported attachment types (`.zip`, `.mp4`, …) need no classifier — they fail
+Docling → `[BRAK]` + warning, handled by the same path.
+
+**Plan impact:** Blocks 2 + 3 + 4 collapse toward a single `read-input`. Block 3 is no longer "build
+a second (visual) reader" but **"extend `read-input-text` → unified `read-input`"**: add the image
+branch to `Build Block`, restore self-fetch (`{clickup_task_id}` in), rename the workflow, retire
+the separate router. Unaffected and still separate: pdf/pptx page-image rendering/hosting (Block 10)
+and image **generation** (Phase B) — those are output/hosting concerns, not reader extraction.
+
 ---
 
 ## Consequences
@@ -255,10 +292,12 @@ C owns every ClickUp side-effect: comment post, cost field write, status flip, t
   detection only); real input-**image** blocks + page-render hosting (Block 3 / Block 10); the PD image
   stance (Block 6). The reader writes **no `agent_runs` row** (pure extractor, no model call — ADR-035
   owner unchanged).
-  > **Block 4 (input-router) requirements crystallized here:** owns (a) MIME/ext classification → dispatch
-  > to `read-input-text` (text family) vs `read-input-visual` (pdf/pptx/images); (b) canonical global
-  > `order` assignment across all attachments; (c) firing each reader's returned `warnings` through
-  > `Post Alert (v1)`; (d) a WARN for unsupported attachment types it drops.
+  > **Update 2026-06-10 — superseded by the "Input readers unified" decision above.** The separate
+  > `input-router` + `read-input-visual` split is retired. Block 3 instead extends this reader into the
+  > unified `read-input` (add the image-passthrough branch to `Build Block`; restore self-fetch with
+  > `{ clickup_task_id }` in; assign global `order` itself). Classification dissolves (one reader); the
+  > reader still returns `warnings` for its caller (Stage A) to fire through `Post Alert (v1)`, and
+  > unsupported types fail Docling → `[BRAK]` + warning (no classifier needed).
 - Phase 2–5: consequences recorded when each phase is verified end-to-end.
 
 ---
