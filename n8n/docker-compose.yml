@@ -115,7 +115,7 @@ services:
       VERTEX_PROJECT: ${VERTEX_PROJECT:-}
       VERTEX_LOCATION: ${VERTEX_LOCATION:-}
       GOOGLE_APPLICATION_CREDENTIALS: /secrets/vertex-key.json
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}   # Gemini API for multimodal input (ADR-038)
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}   # unused — Gemini routes via vertex_ai/ + ADC (ADR-038/039)
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
       - ./vertex-key.json:/secrets/vertex-key.json:ro

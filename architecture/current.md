@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v21
+Version: v22
 Last updated: 2026-06-10
-Supersedes: v20
+Supersedes: v21
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -36,9 +36,10 @@ senior-management intervention.
    UI, and scheduling; worker processes pull jobs from Redis and execute
    workflows. Redis provides rate-limiting, decoupling, priority, and retries.
 
-3. **AWS Bedrock (eu-central-1) + Anthropic direct** — Claude inference via LiteLLM gateway.
-   Routed by `(impact, personal_data)`: `personal_data=false` → Anthropic direct (Opus 4.8);
-   `personal_data=true` (GDPR gate) → Bedrock EU. See ADR-030.
+3. **AWS Bedrock (eu-central-1) + Anthropic direct + Vertex AI (global)** — model inference via LiteLLM
+   gateway. Routed by `(impact, personal_data, modality)`: `personal_data=false` → Anthropic direct;
+   `personal_data=true` + `modality='text'` → Bedrock EU; `personal_data=true` + `modality='multimodal_input'`
+   → Vertex AI Gemini (global endpoint, DPA+SCCs). See ADR-030, ADR-038, ADR-039.
 
 4. **Supabase (eu-west-1, Ireland)** — application database. Operational logs, threaded
    human feedback, process-change proposals, conversation session cache, email
@@ -64,9 +65,10 @@ senior-management intervention.
 └────────────────────────────────────────────────────────────────┘
                               ↕
 ┌────────────────────────────────────────────────────────────────┐
-│  LAYER 3: LiteLLM Gateway → Anthropic direct / Bedrock EU      │
-│  personal_data=false → Anthropic (Haiku/Sonnet/Opus 4.8)       │
-│  personal_data=true (GDPR) → Bedrock EU (Haiku/Sonnet/Opus)    │
+│  LAYER 3: LiteLLM Gateway → Anthropic / Bedrock EU / Vertex AI │
+│  PD=false → Anthropic direct (Haiku/Sonnet/Opus/Fable 5)       │
+│  PD=true + text → Bedrock EU (Haiku/Sonnet/Opus)               │
+│  PD=true + multimodal_input → Vertex AI Gemini (global)        │
 └────────────────────────────────────────────────────────────────┘
                               ↕
 ┌────────────────────────────────────────────────────────────────┐
@@ -142,10 +144,12 @@ they slot in additively. See the corresponding ADRs.
   needed. Fail-safe preserved: DB-down falls back to `haxe-sonnet-4-6-direct` + WARN.
   See ADR-031 for the PD Verifier contract.
 
-- **Multimodal I/O.** File references (URLs / ClickUp attachment IDs) are
-  first-class through the pipeline; each skill declares its formats; non-text
-  outputs stored as attachments. Build the generic file-passing pipe when first
-  needed; add specific format adapters per-workflow on demand, never speculatively.
+- **Multimodal I/O (input + image-gen pipelines LIVE, ADR-036/038).** Image attachments from ClickUp tasks
+  pass as vision content blocks to the model; Docling extracts text from non-image files (PDF/DOCX/XLSX)
+  into the prompt. `personal_data=false` tasks use Anthropic direct aliases (vision-native, no routing
+  change). `personal_data=true` + images routes to Vertex AI Gemini (`modality='multimodal_input'`,
+  ADR-038/039). Image generation live via LiteLLM Stability/Vertex AI/DALL-E 3 tiers (ADR-036).
+  ClickUp attachment upload deferred.
 
 ---
 
@@ -247,6 +251,33 @@ a data location change.
 
 > Migration `009_triggered_by_search_step.sql` (2026-06-08, **applied**) adds
 > `search_step` to the `agent_runs.triggered_by` CHECK (ADR-031).
+
+> Migration `010_model_routing_nullable_temperature.sql` (**applied**) allows NULL `temperature` for
+> models that don't support the parameter. Sets `temperature=null` for `haxe-opus-4-8-direct`
+> (Opus 4.8 deprecated the parameter 2026-06-08).
+
+> Migration `011_research_parameters.sql` (**applied**, ADR-035) adds the `research_parameters` table
+> keyed by `impact`: `max_research_rounds` and `tavily_max_results` knobs for the agentic web-search
+> loop (Model Turn v1). Separate from `model_routing` — research effort scales with importance only,
+> not GDPR routing.
+
+> Migrations `012_multimodal_image_tiers.sql` then `013_image_tiers_match_clickup.sql` (**applied in that
+> order**, ADR-036): extend `model_routing` with `modality`, `eu_only`, `fallback_price_per_unit` columns;
+> add `image_gen_params` and `config` tables; seed image generation routes (Stability/Vertex AI/DALL-E 3
+> tiers). Migration 013 promotes the PK to `(impact, personal_data, modality)`, rekeys image rows from
+> English to Polish impact names (was `low/medium/high`, now matches ClickUp field values), and adds
+> `Krytycznie ważne` and `__default__` image rows. Also adds `image_gen` to `agent_runs.triggered_by`.
+
+> ⚠ **Migration naming conflict:** Two files share the `013_` prefix (`013_gemini_multimodal_routing.sql`
+> and `013_image_tiers_match_clickup.sql`), produced in separate build sessions. The `013_image_tiers…`
+> file is the one applied above. The `013_gemini_multimodal_routing.sql` file must be **renamed to
+> `014_gemini_multimodal_routing.sql`** before application — see below.
+
+> Migration `014_gemini_multimodal_routing.sql` (pending rename + application; ADR-038): drops the
+> `(impact, modality)` partial unique index (`model_routing_impact_modality_key`) and recreates it as
+> `model_routing_non_text_unique` on `(impact, modality, personal_data) WHERE modality != 'text'`; seeds
+> 8 `multimodal_input` rows — 4 GDPR (Gemini EU, `personal_data=true`) + 4 non-GDPR (Anthropic direct,
+> `personal_data=false`). Apply AFTER `013_image_tiers_match_clickup.sql`.
 
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
@@ -377,10 +408,16 @@ Target: 7–9 weeks to v1.
   - `litellm` (ghcr.io/berriai/litellm, v1.87.0 pinned by digest) — **deployed + active** (ADR-024/030).
     Internal-only LLM gateway (127.0.0.1:4000): signs Bedrock, returns exact token usage + USD cost header,
     multi-provider. **IS the production model-call path** (§15). Six versioned aliases: three Anthropic direct
-    (`haxe-haiku/sonnet/opus-*-direct`) + three Bedrock EU (`*-bedrock`). `ANTHROPIC_API_KEY` in `.env` and
-    passed through via `docker-compose.yml`; confirmed working 2026-06-08. Config in committed
-    `n8n/litellm-config.yaml`; credentials in `.env` (never committed). Native Bedrock node retained in n8n
-    **disabled** as fallback.
+    (`haxe-haiku/sonnet/opus-*-direct`) + three Bedrock EU (`*-bedrock`) + two Gemini EU (`haxe-gemini-flash-eu`,
+    `haxe-gemini-pro-eu`). `ANTHROPIC_API_KEY` in `.env` and passed through via `docker-compose.yml`; confirmed
+    working 2026-06-08. Config in committed `n8n/litellm-config.yaml`; credentials in `.env` (never committed).
+    Native Bedrock node retained in n8n **disabled** as fallback. Gemini EU aliases added (ADR-038):
+    `haxe-gemini-flash-eu` (`vertex_ai/gemini-3.5-flash`) and `haxe-gemini-pro-eu`
+    (`vertex_ai/gemini-3.1-pro-preview`), both `vertex_location: global` (ADR-039). Auth: ADC via
+    `GOOGLE_APPLICATION_CREDENTIALS=/secrets/vertex-key.json`; the key file is mounted read-only from
+    `/opt/haxe-agents/vertex-key.json` (service account `litellm-vertex@haxe-agent-system-499018.iam.gserviceaccount.com`,
+    `roles/aiplatform.user`). `VERTEX_PROJECT=haxe-agent-system-499018` in VPS `.env`. Never commit
+    `vertex-key.json` — source from 1Password.
   - `docling` (`quay.io/docling-project/docling-serve`, digest-pinned `sha256:c7ba482f…`) — **deployed +
     active** (ADR-036). Internal-only document extractor (127.0.0.1:5001, loopback). The single extractor for
     the multimodal input pipeline: converts docx/xlsx/csv/txt/pdf/pptx + images (OCR) → markdown with
@@ -419,6 +456,7 @@ SSH private key  ──key auth──────►  franciszek account (NOPASS
                                       ├─ /opt/haxe-agents/          ← flat; NOT a git repo (ADR-033)
                                       │    ├─ docker-compose.yml  (canonical: n8n/docker-compose.yml)
                                       │    ├─ litellm-config.yaml (canonical: n8n/litellm-config.yaml)
+                                      │    ├─ vertex-key.json     (Vertex AI SA key — never committed; source: 1Password)
                                       │    └─ .env                (VPS ONLY, never git)
                                       │
                                       ├─ Docker containers (private bridge network):
@@ -810,7 +848,9 @@ five Core-model steps are distributed across the stages:
   assembled context, plus **`image_blocks_json`** (input image refs for the vision model, non-PD) and
   `input_warnings_*`. Folds attachment **text** into the prompt and fires the reader's `warnings` via
   `Post Alert (v1)` on a reconverging side branch (`Return Context` stays the sole terminal). Multimodal
-  input: ADR-036 Block 5; PD interim guard drops images + WARNs until Block 6.
+  input (ADR-036/038 Block 5): images present → `modality='multimodal_input'` set on the context payload →
+  routing returns Gemini EU alias for PD=true tasks (ADR-038 supersedes former "PD guard drops images"
+  stance); Anthropic direct handles vision for PD=false tasks unchanged.
 - **Stage B — `Execute LLM Call (v1)`** (`n8n/workflows/execute-llm-call.json`, id `9qdJA4xnAGbxqkt9`,
   8 nodes): `Invoke Model (v1)` → drafted reply + cost; forwards `image_blocks_json` to Invoke Model.
   **Return path linearized** (`Call Invoke Model → Sum Task Cost → Update CU Cost Field → Return LLM
@@ -879,13 +919,23 @@ returns `{ completion, model, provider }`). The native AWS Bedrock node + `Basic
 **retained disabled** as a fallback path (a generic AWS credential + HTTP Request cannot sign
 Bedrock — only the native node can; ADR-021).
 
-- **Provider routing (ADR-030):** `personal_data=false` (default) → **Anthropic direct**;
-  `personal_data=true` (GDPR) → **Bedrock EU**. LiteLLM holds six versioned aliases — three
-  direct (`haxe-haiku-4-5-direct`, `haxe-sonnet-4-6-direct`, `haxe-opus-4-8-direct`) and three
-  Bedrock (`haxe-haiku-4-5-bedrock`, `haxe-sonnet-4-6-bedrock`, `haxe-opus-4-5-bedrock`).
-  `agent_runs.model_used` stores the **versioned model ID from the LiteLLM response body** (e.g.
-  `claude-opus-4-8`), not the alias. `ANTHROPIC_API_KEY` is in the VPS `.env` (passthrough via
-  `docker-compose.yml`); migration 008 applied 2026-06-08.
+- **Provider routing (ADR-030/038):** Three legs via `(personal_data, modality)`:
+  - `personal_data=false` → **Anthropic direct**: `haxe-haiku-4-5-direct`, `haxe-sonnet-4-6-direct`,
+    `haxe-opus-4-8-direct`, `haxe-fable-5-direct`. Auth: `ANTHROPIC_API_KEY`. All Claude 4.x aliases
+    are vision-capable; non-GDPR `multimodal_input` tasks route here with no alias change.
+  - `personal_data=true`, `modality='text'` → **Bedrock EU**: `haxe-haiku-4-5-bedrock`,
+    `haxe-sonnet-4-6-bedrock`, `haxe-opus-4-5-bedrock`. Auth: AWS IAM (eu-central-1). Bedrock Fable 5
+    pending model-access grant; Krytycznie ważne GDPR text path uses Opus 4.5 until then.
+  - `personal_data=true`, `modality='multimodal_input'` → **Vertex AI Gemini (global)**:
+    `haxe-gemini-flash-eu` (`vertex_ai/gemini-3.5-flash`), `haxe-gemini-pro-eu`
+    (`vertex_ai/gemini-3.1-pro-preview`). Auth: ADC via `/secrets/vertex-key.json`. GDPR basis:
+    Vertex AI DPA+SCCs (ADR-039). `Parse Response` detects Gemini aliases → sets provider to
+    `'litellm/vertex-eu'`. ⚠ Gemini 3.x uses **thinking tokens** billed on top of text: ~65
+    reasoning + 1 text tokens per one-word reply (Flash), ~133 + 1 (Pro). Real task cost will
+    significantly exceed text-token count alone.
+  `agent_runs.model_used` stores the versioned model ID from the LiteLLM response body. Migrations 008
+  (routing composite PK) and 013 (multimodal image tiers) applied; migration 014 (`gemini_multimodal_routing`)
+  pending rename + application.
 - **Impact → tier (ADR-023):** `Niski`→Haiku 4.5, `Średni`→Sonnet 4.6, `Wysoki`→Opus,
   `Krytycznie ważne`→Opus at temp 0.2 / 16k tokens with a prepended deliberation nudge;
   `n/d`/empty/unknown→Sonnet (fail-safe). "Max effort" is approximated via temperature +
