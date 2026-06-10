@@ -81,7 +81,9 @@
       },
       "retryOnFail": true,
       "waitBetweenTries": 2000,
-      "maxTries": 2
+      "maxTries": 2,
+      "onError": "continueErrorOutput",
+      "notes": "onError=continueErrorOutput: a non-2xx (e.g. Fable credit-exhausted after 2026-06-23) routes to the error output -> Fallback to Opus instead of throwing (ADR-037)."
     },
     {
       "id": "parse-response",
@@ -90,7 +92,7 @@
       "typeVersion": 2,
       "position": [896, 304],
       "parameters": {
-        "jsCode": "const routing = $('Resolve Routing').first().json;\nconst resp = $('Call LiteLLM').first().json || {};\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\nconst ch = headers['x-litellm-response-cost'];\nconst usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : routing.litellm_model;\nconst alias = routing.litellm_model || '';\nconst provider = alias.includes('bedrock') ? 'litellm/bedrock-eu' : 'litellm/anthropic-direct';\nreturn [{ json: {\n  completion,\n  model_used,\n  provider,\n  input_tokens, output_tokens, usd_cost,\n  price_in_usd_per_1k: routing.price_in_usd_per_1k,\n  price_out_usd_per_1k: routing.price_out_usd_per_1k,\n  routing_default_used: !!routing.routing_default_used,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
+        "jsCode": "const routing = $('Resolve Routing').first().json;\n\n// Pick whichever LLM branch produced a real completion. On primary failure\n// (Call LiteLLM onError=continueErrorOutput) the Fallback to Opus node ran instead.\nlet okCall = null, okFb = null;\ntry { okCall = $('Call LiteLLM').first().json; } catch (e) {}\ntry { okFb = $('Fallback to Opus').first().json; } catch (e) {}\nconst hasBody = (x) => x && x.body && x.body.choices;\nlet resp = {}, fell_back = false;\nif (hasBody(okCall)) { resp = okCall; fell_back = false; }\nelse if (hasBody(okFb)) { resp = okFb; fell_back = true; }\nelse { resp = (okCall && okCall.body) ? okCall : (okFb || {}); }\n\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\nconst ch = headers['x-litellm-response-cost'];\nconst usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\n\nconst pd = routing.personal_data;\nconst fbAlias = pd ? 'haxe-opus-4-5-bedrock' : 'haxe-opus-4-8-direct';\nconst alias = fell_back ? fbAlias : (routing.litellm_model || '');\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : alias;\nconst provider = alias.includes('bedrock') ? 'litellm/bedrock-eu' : 'litellm/anthropic-direct';\n\n// On fallback the model differs from the routed one. LiteLLM's response-cost header\n// is authoritative; these price columns are only a dormant backup. Keep them roughly\n// correct for the common non-PD direct case (Opus 4.8); PD bedrock keeps routed prices.\nconst price_in = (fell_back && !pd) ? 0.015 : routing.price_in_usd_per_1k;\nconst price_out = (fell_back && !pd) ? 0.075 : routing.price_out_usd_per_1k;\n\nreturn [{ json: {\n  completion,\n  model_used,\n  provider,\n  input_tokens, output_tokens, usd_cost,\n  price_in_usd_per_1k: price_in,\n  price_out_usd_per_1k: price_out,\n  routing_default_used: !!routing.routing_default_used,\n  fell_back_to_opus: fell_back,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
       }
     },
     {
@@ -100,12 +102,7 @@
       "typeVersion": 1.3,
       "position": [1120, 304],
       "parameters": {
-        "workflowId": {
-          "__rl": true,
-          "value": "ztSIUkp9ytbG1xpE",
-          "mode": "list",
-          "cachedResultName": "Log Model Run (v1)"
-        },
+        "workflowId": { "__rl": true, "value": "ztSIUkp9ytbG1xpE", "mode": "list", "cachedResultName": "Log Model Run (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -140,10 +137,11 @@
       "position": [1344, 304],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "options": { "version": 3, "leftValue": "", "caseSensitive": true, "typeValidation": "strict" },
           "conditions": [
             { "id": "d1", "leftValue": "={{ $('Parse Response').first().json.routing_default_used }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } },
-            { "id": "d2", "leftValue": "={{ $json.cost_missing }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
+            { "id": "d2", "leftValue": "={{ $json.cost_missing }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } },
+            { "id": "d3", "leftValue": "={{ $('Parse Response').first().json.fell_back_to_opus }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
           ],
           "combinator": "or"
         },
@@ -157,19 +155,14 @@
       "typeVersion": 1.3,
       "position": [1568, 200],
       "parameters": {
-        "workflowId": {
-          "__rl": true,
-          "value": "YSCdHlmdf3p9XEUx",
-          "mode": "list",
-          "cachedResultName": "Post Alert (v1)"
-        },
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
             "severity": "WARN",
             "source": "invoke-model",
-            "message": "Degradacja w Invoke Model: routing fail-safe i/lub brak danych o koszcie.",
-            "details": "=routing_default_used={{ $('Parse Response').first().json.routing_default_used }}; cost_missing={{ $json.cost_missing }}; impact={{ $('Parse Response').first().json.impact }}; model={{ $('Parse Response').first().json.model_used }}; task={{ $('Parse Response').first().json.clickup_task_id }}"
+            "message": "Degradacja w Invoke Model: fallback na Opus (model podstawowy zawiódł), routing fail-safe, i/lub brak danych o koszcie.",
+            "details": "=fell_back_to_opus={{ $('Parse Response').first().json.fell_back_to_opus }}; routing_default_used={{ $('Parse Response').first().json.routing_default_used }}; cost_missing={{ $json.cost_missing }}; impact={{ $('Parse Response').first().json.impact }}; model={{ $('Parse Response').first().json.model_used }}; task={{ $('Parse Response').first().json.clickup_task_id }}"
           },
           "matchingColumns": [],
           "schema": [
@@ -234,6 +227,33 @@
         "batching": {}
       },
       "disabled": true
+    },
+    {
+      "id": "fallback-opus",
+      "name": "Fallback to Opus",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [672, 496],
+      "parameters": {
+        "method": "POST",
+        "url": "http://litellm:4000/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: ($('Resolve Routing').first().json.personal_data ? 'haxe-opus-4-5-bedrock' : 'haxe-opus-4-8-direct'), messages: [{ role: 'user', content: $('Resolve Routing').first().json.prompt }], max_tokens: $('Resolve Routing').first().json.max_tokens }) }}",
+        "options": {
+          "response": { "response": { "fullResponse": true, "responseFormat": "json" } },
+          "timeout": 120000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": { "id": "396fqTZqWdFosVpT", "name": "LiteLLM master key" }
+      },
+      "notes": "Auto-fallback (ADR-037): primary model call failed -> retry once on Opus, GDPR-aware (non-PD -> opus-4-8-direct, PD -> opus-4-5-bedrock). Success feeds Parse Response with fell_back=true -> WARN. If Opus ALSO fails it throws -> Execute LLM Call CRITICAL.",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
     }
   ],
   "connections": {
@@ -245,7 +265,13 @@
       ]
     },
     "Resolve Routing": { "main": [[{ "node": "Call LiteLLM", "type": "main", "index": 0 }]] },
-    "Call LiteLLM": { "main": [[{ "node": "Parse Response", "type": "main", "index": 0 }]] },
+    "Call LiteLLM": {
+      "main": [
+        [{ "node": "Parse Response", "type": "main", "index": 0 }],
+        [{ "node": "Fallback to Opus", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fallback to Opus": { "main": [[{ "node": "Parse Response", "type": "main", "index": 0 }]] },
     "Parse Response": { "main": [[{ "node": "Call Log Model Run", "type": "main", "index": 0 }]] },
     "Call Log Model Run": { "main": [[{ "node": "Check Degradation", "type": "main", "index": 0 }]] },
     "Check Degradation": {
@@ -261,6 +287,7 @@
   },
   "settings": {
     "executionOrder": "v1",
+    "binaryMode": "separate",
     "errorWorkflow": "81eplXMD1v5ONhzs"
   },
   "staticData": null,

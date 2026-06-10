@@ -31,6 +31,12 @@ model_list:
       model: anthropic/claude-opus-4-8
       api_key: os.environ/ANTHROPIC_API_KEY
 
+  # Mythos-class, GA 2026-06-09 (ADR-037). Used by 'Krytycznie ważne' (non-PD).
+  - model_name: haxe-fable-5-direct
+    litellm_params:
+      model: anthropic/claude-fable-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
   # ── Bedrock EU eu-central-1 (GDPR — personal_data=true) ─────────────────────
   - model_name: haxe-haiku-4-5-bedrock
     litellm_params:
@@ -46,6 +52,15 @@ model_list:
     litellm_params:
       model: bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0
       aws_region_name: os.environ/AWS_REGION_NAME
+
+  # haxe-fable-5-bedrock — NOT YET ENABLED. Bedrock per-account model access for
+  # eu.anthropic.claude-fable-5 returns AccessDeniedException (probed 2026-06-10).
+  # Grant model access in the AWS Bedrock console (eu-central-1), then uncomment
+  # and point model_routing 'Krytycznie ważne' personal_data=true at this alias.
+  # - model_name: haxe-fable-5-bedrock
+  #   litellm_params:
+  #     model: bedrock/eu.anthropic.claude-fable-5
+  #     aws_region_name: os.environ/AWS_REGION_NAME
 
   # ── Image generation (ADR-036) ───────────────────────────────────────────────
   # Tiered by impact: low → Stability, medium → Vertex AI, high → DALL-E 3.

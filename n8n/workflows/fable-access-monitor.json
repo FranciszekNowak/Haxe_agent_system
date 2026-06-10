@@ -1,0 +1,98 @@
+{
+  "id": "Moh1coo5pPmuSTmD",
+  "name": "Fable 5 Access Monitor (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Daily 06:15",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [0, 300],
+      "notes": "Proactive dead-man's-switch for Fable 5 access (ADR-037). Catches the 2026-06-23 credit cliff and any other outage BEFORE a 'Krytycznie ważne' task hits it. The reactive layer (Execute LLM Call -> Alert Invoke Model Failed) only fires AFTER a task already failed.",
+      "parameters": { "rule": { "interval": [{ "field": "days", "triggerAtHour": 6, "triggerAtMinute": 15 }] } }
+    },
+    {
+      "id": "form-check",
+      "name": "Check now (manual)",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [0, 480],
+      "webhookId": "fable-access-manual-check",
+      "notes": "Manual harness to run the probe on demand (Schedule Trigger can't be fired via API).",
+      "parameters": {
+        "formTitle": "Fable 5 access check",
+        "formDescription": "Press submit to probe Fable 5 via the LiteLLM gateway now.",
+        "formFields": { "values": [{ "fieldLabel": "confirm", "fieldType": "dropdown", "fieldOptions": { "values": [{ "option": "run" }] }, "requiredField": true }] },
+        "responseMode": "lastNode"
+      }
+    },
+    {
+      "id": "probe-fable",
+      "name": "Probe Fable",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 300],
+      "notes": "1-token call to haxe-fable-5-direct through the gateway. Non-2xx (e.g. 4xx credit-exhausted after 2026-06-23, or unknown-model) -> node error -> error output -> CRITICAL alert. retryOnFail damps transient blips so we don't cry wolf.",
+      "parameters": {
+        "method": "POST",
+        "url": "http://litellm:4000/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'haxe-fable-5-direct', messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }) }}",
+        "options": { "timeout": 30000 }
+      },
+      "credentials": { "httpHeaderAuth": { "id": "396fqTZqWdFosVpT", "name": "LiteLLM master key" } },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "alert-fable-down",
+      "name": "Alert Fable Down",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [480, 420],
+      "notes": "CRITICAL: Fable unreachable means 'Krytycznie ważne' (non-PD) tasks are failing. Remediation in details: top up Anthropic credits OR roll routing back to Opus 4.8 (read live, no restart needed).",
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "fable-access-monitor",
+            "message": "Model Fable 5 (haxe-fable-5-direct) jest niedostępny przez bramę LiteLLM — zadania 'Krytycznie ważne' (bez danych osobowych) zawodzą.",
+            "details": "=Prawdopodobna przyczyna po 2026-06-23: koniec darmowego okna / wyczerpane kredyty Fable. Działanie: (1) doładuj kredyty Anthropic, albo (2) przełącz routing z powrotem na Opus 4.8 — routing czytany na żywo, restart NIE jest potrzebny: UPDATE model_routing SET litellm_model='haxe-opus-4-8-direct', price_in_usd_per_1k=0.015, price_out_usd_per_1k=0.075 WHERE impact='Krytycznie ważne' AND personal_data=false; — Błąd bramy: {{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Daily 06:15": { "main": [[{ "node": "Probe Fable", "type": "main", "index": 0 }]] },
+    "Check now (manual)": { "main": [[{ "node": "Probe Fable", "type": "main", "index": 0 }]] },
+    "Probe Fable": { "main": [[], [{ "node": "Alert Fable Down", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "tags": []
+}
