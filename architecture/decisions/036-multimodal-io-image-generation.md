@@ -190,16 +190,31 @@ block from the existing ClickUp URL). The `read-input-visual` reader would itsel
 branch internally (pdf/pptx → Docling vs png/jpg → passthrough), which is the tell that the real
 axis is **"Docling-extract vs image-passthrough," not "text vs visual."**
 
-**Decision: one unified `read-input` reader.** A single per-item `Build Block` decides block
-type — image attachment → `{type:image, ref:<clickup_url>, …}`; Docling-extractable → `{type:text,
-md}`; failure → `[BRAK]` + a returned `warning`. Keep it **branch-free** (per the n8n
-sub-workflow-return gotcha recorded in CLAUDE.md and Block 2 consequences below): the linear
-`Explode → Fetch → Docling → Build Block → Aggregate` shape stays; `Build Block` just becomes
-type-aware. In this first linear cut images still pass *through* Fetch+Docling and we ignore the
-OCR (cost: a wasted fetch/OCR pass per image on the CPU-only Docling box, **no** prompt noise). If
-that latency is ever measured to matter, skip Docling for images via a `Switch`→`Merge` — but only
-after verifying n8n's `Merge` does not stall on an empty branch (branching is exactly what bit
-Block 2).
+**Decision: one unified `read-input` reader that branches images past Docling.** Images are a
+URL passthrough, so they must **skip Fetch+Docling** — confirmed 2026-06-10 (operator): per-answer
+latency is already ~1–2 min, and fetching+OCR-ing reference photos only to discard the OCR is an
+easy, obvious cut. Structure:
+
+```
+Explode → Switch (is-image?)
+            ├─ image       → Build Image Block (ref = ClickUp URL, no I/O) ─┐
+            └─ extractable → Fetch → Docling → Build Text Block ─────────────┤→ Merge → Aggregate → return
+```
+
+This is **not** the hazard that bit Block 2. The n8n sub-workflow-return gotcha is about *dead-end
+side branches* making the return node ambiguous; here the branch **converges** and `Aggregate`
+remains the **sole terminal**, so the return stays deterministic. Two things Block 3 MUST verify at
+build (both are the *other* n8n traps from Block 2):
+1. **`Aggregate` keeps exactly one input** — converge the two branches through a `Merge` (Append)
+   first; never wire both branches straight into the run-once-for-all-items `Aggregate` (that runs
+   it once per connection and drops items).
+2. **`Merge` must not stall on an empty branch** — a task with only text files leaves the image
+   branch empty (and vice-versa). Verify n8n 2.56's `Merge` proceeds; if it stalls, fall back
+   (e.g. `alwaysOutputData` on the branch tails, or route both through a single run-once-for-each
+   builder that emits the right block type per item, then one `Aggregate`).
+
+`Build Block` is split by type: image → `{type:image, ref:<clickup_url>, mime, source_ref, alt}`;
+Docling-extractable → `{type:text, order, md}`; failure → `[BRAK]` + a returned `warning`.
 
 **Cascade:** with one reader there is no text/visual classification to centralize, so the
 **`input-router` (Block 4) largely dissolves** — the reader reverts to taking `{ clickup_task_id }`,

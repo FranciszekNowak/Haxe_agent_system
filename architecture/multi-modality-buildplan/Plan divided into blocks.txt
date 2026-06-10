@@ -113,14 +113,18 @@
 
  >>> REVISED 2026-06-10 (see ADR-036 "Input readers unified" + Block 2 consequences): the two-reader
  >>> split (read-input-text / read-input-visual / input-router) is RETIRED. Build ONE unified `read-input`
- >>> reader instead — extend Block 2's read-input-text rather than building a second workflow. Keep it
- >>> branch-free (n8n sub-workflow-return gotcha): the linear Explode→Fetch→Docling→Build Block→Aggregate
- >>> shape stays; Build Block becomes type-aware (image attachment → image block from its ClickUp URL;
- >>> Docling-extractable → text block; failure → [BRAK]+warning). Restore self-fetch ({clickup_task_id} in;
- >>> reader explodes + assigns global `order` itself); classification dissolves so Block 4 (input-router)
- >>> largely disappears. Reader stays pure; Stage A fires the returned `warnings` via Post Alert (v1).
- >>> First cut: images still pass through Fetch+Docling, OCR ignored (latency only, no prompt noise);
- >>> only add a Switch to skip Docling-for-images if measured to matter (verify Merge doesn't stall first).
+ >>> reader instead — extend Block 2's read-input-text rather than building a second workflow. Build Block
+ >>> becomes type-aware (image attachment → image block from its ClickUp URL; Docling-extractable → text
+ >>> block; failure → [BRAK]+warning). Restore self-fetch ({clickup_task_id} in; reader explodes + assigns
+ >>> global `order` itself); classification dissolves so Block 4 (input-router) largely disappears. Reader
+ >>> stays pure; Stage A fires the returned `warnings` via Post Alert (v1).
+ >>> IMAGES BRANCH PAST DOCLING (decided 2026-06-10 — latency is already ~1-2 min/answer; don't fetch+OCR
+ >>> photos just to discard the OCR): Explode → Switch(is-image?) → [image → build image block from URL] /
+ >>> [extractable → Fetch → Docling → build text block] → Merge → Aggregate → return. This converging
+ >>> branch is SAFE re: the sub-workflow-return gotcha (Aggregate stays the sole terminal). MUST verify at
+ >>> build: (1) Aggregate keeps ONE input — converge via Merge, never wire both branches into the
+ >>> run-once-for-all Aggregate; (2) Merge does not stall when one branch is empty (all-text or all-image
+ >>> task). See ADR-036 for the fallback if Merge stalls.
  >>> The text below is the ORIGINAL (superseded) framing, kept for the fixtures/test surface only.
 
  - Context: Second reader. Handles visual-primary attachments. Key shortcut: images already on the task are
