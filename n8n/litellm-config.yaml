@@ -62,23 +62,23 @@ model_list:
   #     model: bedrock/eu.anthropic.claude-fable-5
   #     aws_region_name: os.environ/AWS_REGION_NAME
 
-  # ── Gemini EU via Vertex AI (GDPR multimodal input — ADR-038) ──────────────────
-  # EU-region inference: europe-west4 (Netherlands). Google Cloud DPA covers EU residency.
+  # ── Gemini via Vertex AI global (GDPR multimodal input — ADR-038) ──────────────
+  # Global endpoint: inference may route outside EU. GDPR basis: Vertex AI DPA + SCCs.
+  # gemini-2.5-flash deprecated June 2026; gemini-3.x not yet available in EU regions.
   # Auth: ADC via GOOGLE_APPLICATION_CREDENTIALS (mounted service account key, docker-compose.yml).
-  # Model IDs: base names without version suffix — versioned IDs (e.g. -001) are discontinued.
-  # Verified working in europe-west4: gemini-2.5-flash, gemini-2.5-pro (2026-06-10).
+  # Revisit vertex_location when 3.x models land in an EU region.
 
   - model_name: haxe-gemini-flash-eu
     litellm_params:
-      model: vertex_ai/gemini-2.5-flash
+      model: vertex_ai/gemini-3.5-flash
       vertex_project: os.environ/VERTEX_PROJECT
-      vertex_location: europe-west4
+      vertex_location: global
 
   - model_name: haxe-gemini-pro-eu
     litellm_params:
-      model: vertex_ai/gemini-2.5-pro
+      model: vertex_ai/gemini-3.1-pro-preview
       vertex_project: os.environ/VERTEX_PROJECT
-      vertex_location: europe-west4
+      vertex_location: global
 
   # ── Image generation (ADR-036) ───────────────────────────────────────────────
   # Tiered by impact: low → Stability, medium → Vertex AI, high → DALL-E 3.

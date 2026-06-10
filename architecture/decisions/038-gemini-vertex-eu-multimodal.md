@@ -64,6 +64,20 @@ standard Data Processing Addendum covers Vertex AI inference at EU regions.
 
 2026-06-10
 
+> **Update 2026-06-10b — switched to Gemini 3.x on global endpoint:**
+>
+> `gemini-2.5-flash` is being deprecated June 2026. Gemini 3.x models (`gemini-3.5-flash`,
+> `gemini-3.1-pro-preview`) are only available on the Vertex AI `global` endpoint — not in
+> `europe-west4` or any EU single-region. EU multi-region (`europe`) also returns 404.
+>
+> Decision: switch to `vertex_location: global` for both aliases. GDPR basis reverts to
+> Vertex AI DPA + SCCs (contractual, not geographic). This is the same basis accepted during
+> the Gemini API investigation earlier in the session. Revisit when 3.x models land in an EU
+> region — change `vertex_location` back to `europe-west4` or `europe` at that point.
+>
+> `haxe-gemini-flash-eu` → `vertex_ai/gemini-3.5-flash` @ global (GA)
+> `haxe-gemini-pro-eu` → `vertex_ai/gemini-3.1-pro-preview` @ global (Preview)
+
 > **Update 2026-06-10 — deployment notes from first deploy:**
 >
 > Initial smoke tests returned 404 "project does not have access" for all Gemini models. Root cause
