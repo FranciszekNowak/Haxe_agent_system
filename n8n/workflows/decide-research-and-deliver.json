@@ -121,7 +121,7 @@
       "position": [880, 200],
       "parameters": {
         "operation": "executeQuery",
-        "query": "select litellm_model, temperature, max_tokens, price_in_usd_per_1k, price_out_usd_per_1k, impact\nfrom model_routing\nwhere impact in ($1, '__default__') and personal_data = $2 and active = true\norder by (impact = $1) desc\nlimit 1;",
+        "query": "select litellm_model, temperature, max_tokens, price_in_usd_per_1k, price_out_usd_per_1k, impact\nfrom model_routing\nwhere impact in ($1, '__default__') and personal_data = $2 and active = true and modality = 'text'\norder by (impact = $1) desc\nlimit 1;",
         "options": {
           "queryReplacement": "={{ [ $('When Called').first().json.impact || '__default__', $('When Called').first().json.personal_data === true ] }}"
         }

@@ -60,6 +60,25 @@ Image tiers use English keys (`low`/`medium`/`high`) intentionally distinct from
 Polish text-routing keys (`Niski`/`Średni`/`Wysoki`/`Krytycznie ważne`). Both coexist
 in `model_routing` without PK collision.
 
+> **Update 2026-06-10 (supersedes the English-key decision above — migration 013).**
+> The English keys were a workaround for the `(impact, personal_data)` PK: a Polish-keyed
+> image row would have collided with the text row of the same tier. But tasks only ever
+> carry the Polish ClickUp field values, so the `low`/`medium`/`high` image rows were
+> **unreachable by real routing**. Migration 013 fixes the root cause: the PK is promoted
+> to `(impact, personal_data, modality)`, the image rows + `image_gen_params` are rekeyed
+> to the ClickUp tiers, and two new image rows are added — `Krytycznie ważne` (shares the
+> top image model with `Wysoki`, mirroring text routing) and `__default__` (blank-field
+> fallback). Resulting image map: `Niski`→stable-diffusion-3-5 (2/standard),
+> `Średni`→imagegeneration@006 (4/high), `Wysoki`/`Krytycznie ważne`→dall-e-3 (8/max),
+> `__default__`→imagegeneration@006 (4/high).
+>
+> **Required non-DB change:** once image rows share Polish keys, the text-routing SELECTs
+> can match them, so both `Invoke Model (v1)` and `Decide Research and Deliver (v1)` now
+> filter `and modality = 'text'`. The `Fable 5 Access Monitor` remediation hint was
+> likewise scoped with `AND modality='text'` so a copy-paste rollback can't clobber the
+> image row. No image-consuming workflow exists yet (Phases 2–5 unbuilt), so nothing
+> downstream of the seeds changed.
+
 **`config` table** — system configuration key/value pairs:
 
 | key           | value           |
