@@ -233,6 +233,15 @@
 
  Block 10 — comment_native delivery primitives in Stage C (temp staging / upload / rollback / TTL) — dummy image
 
+ >>> ADD (INPUT side, noted 2026-06-10 after Block 5): these same temp-staging/upload primitives also
+ >>> unblock FULLY multimodal INPUT — extend Read Input (v1) to host (a) images embedded inside
+ >>> Docling-extracted docs (currently dropped as `<!-- image -->` placeholders → multimodal/
+ >>> embedded-image-skipped WARN; observed on a product photo inside an .xlsx) and (b) pdf/pptx page
+ >>> renders, then feed them into the SAME image_blocks_json path Block 5 built so they reach the vision
+ >>> model. Goal: an input image is an input image, attached or embedded. Noise caveat: the
+ >>> embedded-image-skipped WARN fires on any doc with a logo/icon/chart — when this lands, host them or
+ >>> downgrade decorative skips to INFO so the alert channel isn't flooded. See ADR-036 (Block 5 entry).
+
  - Context: How a generated image actually reaches ClickUp. ClickUp's comment API can't read our disk, so bytes
  must be uploaded to get a URL, then referenced. Built/tested with a dummy image so the plumbing is proven
  before generation rides on it. C owns every ClickUp side-effect.

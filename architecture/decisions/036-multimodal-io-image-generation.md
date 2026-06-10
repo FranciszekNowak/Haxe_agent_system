@@ -403,9 +403,25 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
     fail → CRITICAL, no draft (observed on `869dhad2q`, which still has 1×1 test-junk attachments). Real
     photos are unaffected. Block 6 (image guards) should add graceful degradation: on an image-processing
     400, retry text-only + WARN, so one bad attachment can't sink the answer.
-- Phase 2–5: consequences recorded when each phase is verified end-to-end. **Phase A (INPUT) COMPLETE
-  through Block 5;** Block 6 (image guards: Bedrock image-input + PD notice + unprocessable-image
-  degradation) remains before Phase B (image generation).
+  - **Deferred requirement → fully multimodal INPUT (Block 10 hosting).** Two input-image cases are NOT
+    yet seen by the model, only their surrounding text: (i) **images embedded inside a Docling-extracted
+    document** (xlsx/docx/pdf) — Docling runs in `image_export_mode=placeholder`, so each embedded image
+    becomes a `<!-- image -->` marker and the reader emits a `multimodal/embedded-image-skipped` WARN
+    (observed: a product photo inside `…Wzorcowa specyfikacja.xlsx`); (ii) **pdf/pptx page renders**.
+    Both were deferred because passing them to the model needs the **same temp-staging/upload primitives
+    Block 10 builds for output delivery** (ClickUp can't read our disk; bytes must be hosted to get a URL,
+    or base64-inlined). **Goal state: an input image is an input image** — whether attached directly
+    (already works) or embedded in a file — and reaches the vision model. Block 10 should extend the
+    reader to host embedded images + page renders (Docling can emit them) and feed them into the same
+    `image_blocks_json` path Block 5 built. Until then the WARN is the honest signal that an in-file image
+    was skipped. **Noise caveat:** this WARN fires on every doc with a logo/icon/chart embedded (most real
+    spec sheets) — when Block 10 lands, either host those images or downgrade decorative-image skips to
+    INFO so the WARN channel isn't flooded.
+- Phase 2–5: consequences recorded when each phase is verified end-to-end. **Phase A (INPUT) verified for
+  attachment-level text + directly-attached images through Block 5;** still owed for *fully* multimodal
+  input: Block 6 (image guards: Bedrock image-input + PD notice + unprocessable-image degradation) and
+  Block 10 (host embedded in-document images + pdf/pptx page renders → vision model). Then Phase B (image
+  generation).
 
 ---
 
