@@ -789,7 +789,7 @@ the canonical form going forward.
 | **`Post Alert (v1)`** | Centralized alert seam → ClickUp Alerts task | **LIVE** |
 | **`Error Handler (v1)`** | Global `errorWorkflow`: throws → CRITICAL + status rollback | **LIVE** |
 | **`FX Rates Daily (v1)`** + **`FX Freshness Monitor (v1)`** | Daily NBP USD/PLN upsert + staleness WARN | **LIVE** |
-| **`Read Input Text (v1)`** (id `zgGpONulGMohQQqI`) | Multimodal input reader (Block 2), pure/branch-free: given a router-classified attachment list → Docling → `{ blocks, clickup_task_id, warnings }` (xlsx/docx/csv/txt). Router (Block 4) owns classification, ordering + firing `warnings` | **LIVE (Phase 2, input)** |
+| **`Read Input (v1)`** (id `zgGpONulGMohQQqI`) | Unified multimodal input reader (Blocks 2+3, ADR-036 "Input readers unified"), pure/branch-free: self-fetches `{ clickup_task_id }` → `Classify Attachment` (Switch) → **image** = URL passthrough (skips Docling) / **extractable** = Docling → `Merge` → `{ blocks(text+image, ordered), clickup_task_id, warnings }`. Reader owns ordering; Stage A (Block 5) fires `warnings` via `Post Alert (v1)`. Router + visual reader retired | **LIVE (Phase 2, input)** |
 | Daily Due-Date Producer | 00:00 cron: enqueue due-today/yesterday `Czy dla AI=Tak` tasks | **Planned (Phase 3)** |
 | Gmail Email Workflow | Incoming mail → Gmail draft; sent-folder post-send analysis | **Planned (Phase 3)** |
 | Weekly Org Proposer | Mon 09:00 cron: synthesize evaluations → org proposals | **Planned (Phase 4)** |

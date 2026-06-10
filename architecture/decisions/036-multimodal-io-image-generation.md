@@ -313,6 +313,53 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
   > `{ clickup_task_id }` in; assign global `order` itself). Classification dissolves (one reader); the
   > reader still returns `warnings` for its caller (Stage A) to fire through `Post Alert (v1)`, and
   > unsupported types fail Docling → `[BRAK]` + warning (no classifier needed).
+  > **Done in Block 3 (below):** this workflow was extended in place (same id) into the unified
+  > `Read Input (v1)`; `read-input-text.json` was renamed to `read-input.json`.
+- **Block 3 (`Read Input (v1)`, id `zgGpONulGMohQQqI`) — 2026-06-10.** The unified reader is LIVE and
+  verified end-to-end (n8n MCP build, ADR-018). `Read Input Text (v1)` was extended **in place** (same
+  id, renamed) per the "Input readers unified" decision above; the file `read-input-text.json` →
+  `read-input.json`. Blocks 2+3+4 are now **one reader** — the separate `read-input-visual` and
+  `input-router` were never built and are formally retired (not built).
+  **Shape (pure, branch-free; in `{ clickup_task_id }` → out `{ blocks, clickup_task_id, warnings }`):**
+  `When Called`/`Form Trigger` → **`Get Task`** (self-fetch — restored; both triggers now go through it,
+  the router that previously pre-fetched is gone) → `Explode Attachments` (normalize raw ClickUp
+  `attachments[]`, assign **global `order` by index** — the reader owns ordering now) → **`Classify
+  Attachment`** (Switch v3.4: image vs extractable) → branches → **`Merge Branches`** (append) →
+  `Aggregate Blocks` (sole terminal). Image branch = `Build Image Block` (URL passthrough, **no I/O**):
+  `{ type:image, order, ref:<clickup_url>, mime, source:input, source_ref:att_id, alt:title }`.
+  Extractable branch = `Fetch Attachment Binary` → `Docling Convert` → `Build Text Block` (the former
+  `Build Block`, unchanged + a `warn_source` tag).
+  **Images branch PAST Docling — verified** (decided 2026-06-10: don't fetch+OCR a photo to discard the
+  OCR; per-answer latency is already ~1–2 min). Live exec 858 (mixed task: 2 png + docx/txt/csv): `Fetch`
+  and `Docling` each processed **only the 3 extractable files** (image items never entered either node);
+  image blocks were built from the ClickUp URL with zero I/O. ClickUp sets `mime=image/png` on png
+  uploads so the mime-primary check fires; the ext allowlist is the fallback for `application/octet-stream`.
+  **Global order preserved across block types** (exec 858 → blocks ordered 0–4: image, image, `[BRAK]`,
+  txt, csv).
+  **The two Block-2 n8n traps re-verified safe (the whole reason this needed a build-time check):**
+  (1) the converging Switch→Merge→Aggregate keeps `Aggregate` the **sole terminal** with a **single**
+  input, so n8n returns it deterministically (not the dead-end-branch ambiguity that bit Block 2), and a
+  run-once-for-all-items node still has exactly one incoming connection (no per-connection re-run / item
+  drop); (2) **`Merge` (append) does NOT stall on an empty branch — verified in BOTH directions**:
+  all-text task (image branch empty, input 0) → exec 857 passed; all-image task (extractable branch
+  empty, input 1) → exec 859 passed (`Fetch`/`Docling` didn't execute at all, Merge emitted the 2 image
+  items). **No fallback needed** (the `alwaysOutputData` / single-builder fallback flagged above is
+  unused).
+  **Silent-failure coverage (reliability mandate).** The reader **detects** every degradation and tags
+  it into `warnings` (each builder names its own `warn_source`): (1) Docling unreachable / non-200 /
+  `status!=success` / empty `md_content` → `[BRAK: extraction_failed]` + `multimodal/extraction-failed`
+  (verified: corrupt `broken.docx` → block returned + one warning, run continued); (2) attachment fetch
+  failure → same `[BRAK]` + warning (`onError: continueRegularOutput` on Fetch/Docling); (3) **NEW —
+  image attachment classified but missing `url` → `[BRAK: image_ref_missing]` + `multimodal/image-ref-missing`**
+  (no silent drop); (4) embedded in-doc images → `multimodal/embedded-image-skipped` (hosting deferred to
+  Block 10); (5) unsupported types (`.zip`/`.mp4`) → routed to extractable → Docling fails → `[BRAK]` +
+  warning (no classifier needed); (6) hard `Get Task` failure throws → global `Error Handler (v1)`
+  CRITICAL. The reader posts **no alerts itself** (pure function, **zero alert nodes**) and writes **no
+  `agent_runs` row** (no model call — ADR-035 owner unchanged); the actual `Post Alert (v1)` firing of
+  `warnings` is a hard requirement on **Stage A (Block 5)**. Safe because the reader is in **no live path
+  until Block 5 wires it** — nothing calls it in production yet. _Knowingly DEFERRED:_ Block 5 alert
+  firing; pdf/pptx **rendered page-image** hosting (Block 10); the PD/Bedrock image stance (Block 6);
+  proactive Docling dead-man's-switch cron (operator decision — request-time detection only).
 - Phase 2–5: consequences recorded when each phase is verified end-to-end.
 
 ---
@@ -322,3 +369,4 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
 2026-06-09 (Phase 1 schema decisions)
 2026-06-10 (Block 1 — Docling verified live; spine doc-drift corrected)
 2026-06-10 (Block 2 — `Read Input Text (v1)` verified live)
+2026-06-10 (Block 3 — unified `Read Input (v1)` verified live; readers unified, router retired)

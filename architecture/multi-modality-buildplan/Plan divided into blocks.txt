@@ -111,6 +111,12 @@
 
  Block 3 — extend read-input-text → unified `read-input` (pdf, pptx, images)
 
+ >>> DONE + VERIFIED 2026-06-10. Built as `Read Input (v1)` (id zgGpONulGMohQQqI), file
+ >>> n8n/workflows/read-input.json. Blocks 2+3+4 collapsed into ONE reader; read-input-visual +
+ >>> input-router retired (never built). Switch(Classify)→[image passthrough | Docling]→Merge→Aggregate.
+ >>> Merge verified non-stalling in BOTH empty-branch directions (execs 857/859); images verified to skip
+ >>> Fetch+Docling (exec 858). Next: Block 5 wires it into Stage A + fires `warnings`. See ADR-036 Block 3.
+
  >>> REVISED 2026-06-10 (see ADR-036 "Input readers unified" + Block 2 consequences): the two-reader
  >>> split (read-input-text / read-input-visual / input-router) is RETIRED. Build ONE unified `read-input`
  >>> reader instead — extend Block 2's read-input-text rather than building a second workflow. Build Block
