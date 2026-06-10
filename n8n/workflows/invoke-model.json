@@ -21,7 +21,8 @@
             { "name": "invocation_type" },
             { "name": "caller_user_id" },
             { "name": "process_type" },
-            { "name": "model_override" }
+            { "name": "model_override" },
+            { "name": "image_blocks_json" }
           ]
         }
       }
@@ -39,9 +40,7 @@
           "queryReplacement": "={{ [ $json.impact || '__default__', $json.personal_data === true || $json.personal_data === 'true' ? true : false ] }}"
         }
       },
-      "credentials": {
-        "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" }
-      },
+      "credentials": { "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" } },
       "retryOnFail": true,
       "waitBetweenTries": 2000,
       "maxTries": 2,
@@ -54,7 +53,7 @@
       "typeVersion": 2,
       "position": [448, 304],
       "parameters": {
-        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\nconst override = (orig.model_override != null && String(orig.model_override).trim() !== '') ? String(orig.model_override).trim() : null;\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nif (override) {\n  row = { litellm_model: override, temperature: null, max_tokens: 4000, nudge: null, price_in_usd_per_1k: 0, price_out_usd_per_1k: 0, impact: '__override__' };\n} else if (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\nconst pd = (orig.personal_data === true || orig.personal_data === 'true') ? true : false;\nconst temperature = (row.temperature != null && row.temperature !== '') ? Number(row.temperature) : null;\n\nreturn [{ json: {\n  litellm_model: row.litellm_model,\n  temperature,\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  impact,\n  personal_data: pd,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used\n} }];"
+        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\nconst override = (orig.model_override != null && String(orig.model_override).trim() !== '') ? String(orig.model_override).trim() : null;\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nif (override) {\n  row = { litellm_model: override, temperature: null, max_tokens: 4000, nudge: null, price_in_usd_per_1k: 0, price_out_usd_per_1k: 0, impact: '__override__' };\n} else if (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\nconst pd = (orig.personal_data === true || orig.personal_data === 'true') ? true : false;\nconst temperature = (row.temperature != null && row.temperature !== '') ? Number(row.temperature) : null;\n\n// Multimodal (ADR-036 Block 5): content is ALWAYS an array (one schema, not two). Image refs\n// (ClickUp URLs from read-input) are appended as image_url parts; LiteLLM fetches them. No images\n// -> a single text part, semantically identical to a bare string through LiteLLM.\nlet imgs = [];\ntry { imgs = JSON.parse(orig.image_blocks_json || '[]'); } catch (e) { imgs = []; }\nif (!Array.isArray(imgs)) imgs = [];\nconst content = [{ type: 'text', text: prompt }].concat(\n  imgs.filter(b => b && b.ref).map(b => ({ type: 'image_url', image_url: { url: b.ref } }))\n);\nconst messages = [{ role: 'user', content }];\n\nreturn [{ json: {\n  litellm_model: row.litellm_model,\n  temperature,\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  messages,\n  image_count: imgs.length,\n  impact,\n  personal_data: pd,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used\n} }];"
       }
     },
     {
@@ -70,20 +69,15 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ model: $json.litellm_model, messages: [{ role: 'user', content: $json.prompt }], max_tokens: $json.max_tokens }, $json.temperature != null ? { temperature: $json.temperature } : {})) }}",
-        "options": {
-          "response": { "response": { "fullResponse": true, "responseFormat": "json" } },
-          "timeout": 120000
-        }
+        "jsonBody": "={{ JSON.stringify(Object.assign({ model: $json.litellm_model, messages: $json.messages, max_tokens: $json.max_tokens }, $json.temperature != null ? { temperature: $json.temperature } : {})) }}",
+        "options": { "response": { "response": { "fullResponse": true, "responseFormat": "json" } }, "timeout": 120000 }
       },
-      "credentials": {
-        "httpHeaderAuth": { "id": "396fqTZqWdFosVpT", "name": "LiteLLM master key" }
-      },
+      "credentials": { "httpHeaderAuth": { "id": "396fqTZqWdFosVpT", "name": "LiteLLM master key" } },
       "retryOnFail": true,
       "waitBetweenTries": 2000,
       "maxTries": 2,
       "onError": "continueErrorOutput",
-      "notes": "onError=continueErrorOutput: a non-2xx (e.g. Fable credit-exhausted after 2026-06-23) routes to the error output -> Fallback to Opus instead of throwing (ADR-037)."
+      "notes": "Multimodal (ADR-036 Block 5): messages now comes from Resolve Routing (content array with optional image_url parts). onError=continueErrorOutput: a non-2xx routes to Fallback to Opus (ADR-037)."
     },
     {
       "id": "parse-response",
@@ -205,14 +199,8 @@
       "type": "@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
       "typeVersion": 1.1,
       "position": [672, 768],
-      "parameters": {
-        "modelSource": "inferenceProfile",
-        "model": "eu.anthropic.claude-sonnet-4-6",
-        "options": {}
-      },
-      "credentials": {
-        "aws": { "id": "8TDwsQAJFkSWUEJF", "name": "AWS (IAM) account" }
-      },
+      "parameters": { "modelSource": "inferenceProfile", "model": "eu.anthropic.claude-sonnet-4-6", "options": {} },
+      "credentials": { "aws": { "id": "8TDwsQAJFkSWUEJF", "name": "AWS (IAM) account" } },
       "disabled": true
     },
     {
@@ -221,11 +209,7 @@
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.9,
       "position": [672, 624],
-      "parameters": {
-        "promptType": "define",
-        "text": "={{ $json.prompt }}",
-        "batching": {}
-      },
+      "parameters": { "promptType": "define", "text": "={{ $json.prompt }}", "batching": {} },
       "disabled": true
     },
     {
@@ -241,16 +225,11 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: ($('Resolve Routing').first().json.personal_data ? 'haxe-opus-4-5-bedrock' : 'haxe-opus-4-8-direct'), messages: [{ role: 'user', content: $('Resolve Routing').first().json.prompt }], max_tokens: $('Resolve Routing').first().json.max_tokens }) }}",
-        "options": {
-          "response": { "response": { "fullResponse": true, "responseFormat": "json" } },
-          "timeout": 120000
-        }
+        "jsonBody": "={{ JSON.stringify({ model: ($('Resolve Routing').first().json.personal_data ? 'haxe-opus-4-5-bedrock' : 'haxe-opus-4-8-direct'), messages: $('Resolve Routing').first().json.messages, max_tokens: $('Resolve Routing').first().json.max_tokens }) }}",
+        "options": { "response": { "response": { "fullResponse": true, "responseFormat": "json" } }, "timeout": 120000 }
       },
-      "credentials": {
-        "httpHeaderAuth": { "id": "396fqTZqWdFosVpT", "name": "LiteLLM master key" }
-      },
-      "notes": "Auto-fallback (ADR-037): primary model call failed -> retry once on Opus, GDPR-aware (non-PD -> opus-4-8-direct, PD -> opus-4-5-bedrock). Success feeds Parse Response with fell_back=true -> WARN. If Opus ALSO fails it throws -> Execute LLM Call CRITICAL.",
+      "credentials": { "httpHeaderAuth": { "id": "396fqTZqWdFosVpT", "name": "LiteLLM master key" } },
+      "notes": "Auto-fallback (ADR-037): primary model call failed -> retry once on Opus, GDPR-aware (non-PD -> opus-4-8-direct, PD -> opus-4-5-bedrock). Uses the same multimodal messages from Resolve Routing (ADR-036 Block 5). Success feeds Parse Response with fell_back=true -> WARN. If Opus ALSO fails it throws -> Execute LLM Call CRITICAL.",
       "retryOnFail": true,
       "maxTries": 2,
       "waitBetweenTries": 2000
@@ -258,38 +237,17 @@
   ],
   "connections": {
     "When Called": { "main": [[{ "node": "Lookup Routing", "type": "main", "index": 0 }]] },
-    "Lookup Routing": {
-      "main": [
-        [{ "node": "Resolve Routing", "type": "main", "index": 0 }],
-        [{ "node": "Resolve Routing", "type": "main", "index": 0 }]
-      ]
-    },
+    "Lookup Routing": { "main": [[{ "node": "Resolve Routing", "type": "main", "index": 0 }], [{ "node": "Resolve Routing", "type": "main", "index": 0 }]] },
     "Resolve Routing": { "main": [[{ "node": "Call LiteLLM", "type": "main", "index": 0 }]] },
-    "Call LiteLLM": {
-      "main": [
-        [{ "node": "Parse Response", "type": "main", "index": 0 }],
-        [{ "node": "Fallback to Opus", "type": "main", "index": 0 }]
-      ]
-    },
-    "Fallback to Opus": { "main": [[{ "node": "Parse Response", "type": "main", "index": 0 }]] },
+    "Call LiteLLM": { "main": [[{ "node": "Parse Response", "type": "main", "index": 0 }], [{ "node": "Fallback to Opus", "type": "main", "index": 0 }]] },
     "Parse Response": { "main": [[{ "node": "Call Log Model Run", "type": "main", "index": 0 }]] },
     "Call Log Model Run": { "main": [[{ "node": "Check Degradation", "type": "main", "index": 0 }]] },
-    "Check Degradation": {
-      "main": [
-        [{ "node": "Alert Degradation", "type": "main", "index": 0 }],
-        [{ "node": "Shape Output", "type": "main", "index": 0 }]
-      ]
-    },
+    "Check Degradation": { "main": [[{ "node": "Alert Degradation", "type": "main", "index": 0 }], [{ "node": "Shape Output", "type": "main", "index": 0 }]] },
     "Alert Degradation": { "main": [[{ "node": "Shape Output", "type": "main", "index": 0 }]] },
-    "AWS Bedrock Chat Model (fallback)": {
-      "ai_languageModel": [[{ "node": "Basic LLM Chain (fallback)", "type": "ai_languageModel", "index": 0 }]]
-    }
+    "AWS Bedrock Chat Model (fallback)": { "ai_languageModel": [[{ "node": "Basic LLM Chain (fallback)", "type": "ai_languageModel", "index": 0 }]] },
+    "Fallback to Opus": { "main": [[{ "node": "Parse Response", "type": "main", "index": 0 }]] }
   },
-  "settings": {
-    "executionOrder": "v1",
-    "binaryMode": "separate",
-    "errorWorkflow": "81eplXMD1v5ONhzs"
-  },
+  "settings": { "executionOrder": "v1", "binaryMode": "separate", "errorWorkflow": "81eplXMD1v5ONhzs" },
   "staticData": null,
   "meta": null,
   "pinData": {},

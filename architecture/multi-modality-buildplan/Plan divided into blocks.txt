@@ -159,6 +159,15 @@
 
  Block 5 — Wire input into Stage A (assemble-context-and-build-prompt + context-gather)
 
+ >>> DONE + VERIFIED 2026-06-10. Input wired into the live spine: Stage A calls Read Input (v1), folds
+ >>> attachment text into the prompt, emits image_blocks_json (threaded → orchestrator → Stage B → Invoke
+ >>> Model), and fires the reader's warnings via Post Alert. Invoke Model builds one-schema always-array
+ >>> multimodal messages; vision verified via remote image_url on Haiku 4.5 (low) AND Fable 5 (high, with
+ >>> research). Also fixed two PRE-EXISTING spine return-determinism bugs surfaced by the e2e test (Stage B
+ >>> cost-branch race; Decide Research deliver-branch race) — see ADR-036 Block 5. Phase A (INPUT) COMPLETE.
+ >>> Block 6 (image guards) still owed, incl. NEW item: graceful text-only fallback when a provider can't
+ >>> process an input image (1×1/corrupt → 400 currently sinks the whole call). Next: paste Block 6.
+
  - Context: The integration block — the readers now feed the real spine. After this, an @-mention on a task
  with attachments produces a draft that actually used the docs/photos. First user-visible multimodal value.
  - Grounding: spec §4 (Stage A row) + §10 step 2; current.md §15 Stage A.

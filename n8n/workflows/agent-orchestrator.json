@@ -77,7 +77,7 @@
         },
         "options": {}
       },
-      "notes": "Calls SW3: context gather + PD check + workspace search + research decision + rules + prompt assembly. Returns full Build Prompt output."
+      "notes": "Calls SW3: context gather + PD check + workspace search + research decision + rules + input reader + prompt assembly. Returns full Build Prompt output (incl. image_blocks_json, input_warnings_*)."
     },
     {
       "id": "status-inprogress",
@@ -153,7 +153,8 @@
             "process_type": "={{ $json.process_type }}",
             "reviewer_user_id": "={{ $json.reviewer_user_id }}",
             "triggering_comment_id": "={{ $json.triggering_comment_id }}",
-            "web_sources": "={{ $json.web_sources }}"
+            "web_sources": "={{ $json.web_sources }}",
+            "image_blocks_json": "={{ $json.image_blocks_json || '[]' }}"
           },
           "matchingColumns": [],
           "schema": [
@@ -168,14 +169,15 @@
             { "id": "process_type", "displayName": "process_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "reviewer_user_id", "displayName": "reviewer_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "triggering_comment_id", "displayName": "triggering_comment_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "web_sources", "displayName": "web_sources", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+            { "id": "web_sources", "displayName": "web_sources", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "image_blocks_json", "displayName": "image_blocks_json", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
           ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": false
         },
         "options": {}
       },
-      "notes": "Calls SW4: LLM invocation + status reset on failure + cost sync. Returns { completion, model, cost_pln, clickup_task_id, reviewer_user_id, triggering_comment_id, web_sources }."
+      "notes": "Calls SW4: LLM invocation + status reset on failure + cost sync. image_blocks_json forwarded for multimodal messages (ADR-036 Block 5). Returns { completion, model, cost_pln, clickup_task_id, reviewer_user_id, triggering_comment_id, web_sources }."
     },
     {
       "id": "if-llm-succeeded",
@@ -240,11 +242,7 @@
     "Call Execute LLM": { "main": [[{ "node": "If LLM Succeeded?", "type": "main", "index": 0 }]] },
     "If LLM Succeeded?": { "main": [[{ "node": "Call Post Reply", "type": "main", "index": 0 }], []] }
   },
-  "settings": {
-    "executionOrder": "v1",
-    "binaryMode": "separate",
-    "errorWorkflow": "81eplXMD1v5ONhzs"
-  },
+  "settings": { "executionOrder": "v1", "binaryMode": "separate", "errorWorkflow": "81eplXMD1v5ONhzs" },
   "staticData": null,
   "meta": null,
   "pinData": {},

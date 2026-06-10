@@ -360,7 +360,52 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
   until Block 5 wires it** — nothing calls it in production yet. _Knowingly DEFERRED:_ Block 5 alert
   firing; pdf/pptx **rendered page-image** hosting (Block 10); the PD/Bedrock image stance (Block 6);
   proactive Docling dead-man's-switch cron (operator decision — request-time detection only).
-- Phase 2–5: consequences recorded when each phase is verified end-to-end.
+- **Block 5 (input wired into the spine; multimodal model call) — 2026-06-10.** Phase A INPUT is LIVE and
+  verified end-to-end: an @-mention (or orchestrator Form) on a task with attachments now produces a draft
+  that uses the attached doc text **and** visibly accounts for attached photos. Edits across four workflows:
+  (1) **Stage A** (`assemble-context-and-build-prompt.json`) — added `Call Read Input` (executeWorkflow →
+  `Read Input (v1)`, `onError:continueRegularOutput`) after `Load Agent Rules`; `Build Prompt` now folds
+  text blocks into a `# Treść załączników` section and emits `image_blocks_json` (image refs when
+  `personal_data=false`); added `Check Input Warnings` IF → `Alert Input Warnings` (Post Alert,
+  `source=assemble-context/input-reader`) reconverging into `Return Context` — this **fires the reader's
+  `warnings`** (discharges Block 3's deferral). (2) **Orchestrator** + (3) **Stage B**
+  (`execute-llm-call.json`) thread `image_blocks_json` through to Invoke Model. (4) **Invoke Model**
+  (`invoke-model.json`) — `Resolve Routing` builds `messages` with **content ALWAYS an array** (one schema):
+  `[{type:'text',text:prompt}, …{type:'image_url',image_url:{url:<clickup_url>}}]`; `Call LiteLLM` and
+  `Fallback to Opus` use `$json.messages`. **Vision via remote `image_url`** — LiteLLM fetches the ClickUp
+  URL; no bytes cross any n8n boundary (ADR-036 reference-not-bytes). No DB/routing change — `-direct`
+  Claude aliases are vision-capable; `modality='text'` SELECT unchanged.
+  **Verified live:** low-impact task (`869dmwh6g`, Haiku 4.5) → posted draft describing a green
+  "HAXE-VISION-OK" image + summarizing the text note; high-impact research task (`869dmx4z2`, Fable 5) →
+  posted draft with a sea-vs-rail research table **and** a description of a red "HAXE-FABLE-OK" image
+  (research + vision together at the top tier); a `broken.docx` task fired the new
+  `assemble-context/input-reader` WARN. **Interim PD guard:** `personal_data=true` + images → images dropped
+  **+ WARN** (`multimodal/image-dropped-pd`), no user-facing notice yet (Block 6 adds it + the Bedrock guard).
+  - **Two PRE-EXISTING spine return-determinism bugs found + fixed (the documented "keep the return path
+    branch-free" trap, surfaced by Block 5's end-to-end testing — not caused by Block 5's edits):**
+    (a) **Stage B** — `Return LLM Result` raced in parallel with the cost branch (`Sum Task Cost → Update CU
+    Cost Field`); the cost branch (a ClickUp write, ~650ms) finished **last**, so n8n returned its empty
+    `{}` as Stage B's result → orchestrator saw no `completion` → `Post Reply` never ran (no draft posted).
+    **Fix:** linearized `Call Invoke Model → Sum Task Cost → Update CU Cost Field → Return LLM Result`, with
+    the cost-error branch reconverging via `Alert Cost Sync Failed → Return LLM Result`; `Return LLM Result`
+    is now the deterministic sole terminal (reads via absolute refs, so a cost-sync failure still returns the
+    answer). (b) **Decide Research and Deliver** (`decide-research-and-deliver.json`) — `Collect Research
+    Results` ran in parallel with `Check Research Degradation → Alert Research Degraded` (a competing
+    dead-end leaf), so on research-"deliver" runs its output landed on the caller's output index 1 (index 0
+    empty) → Stage A's `Call Decide Research → Load Agent Rules` (index 0) carried nothing → Stage A halted
+    after Decide Research and returned the research blob. **Fix:** linearized `Call Research the web → Check
+    Research Degradation →[true] Alert Research Degraded / [false] Collect`, `Alert Research Degraded →
+    Collect`; `Collect Research Results` is now the sole terminal. Both fixes verified by the live re-tests
+    above. **Lesson:** every executeWorkflow sub-workflow must end in a single branch-free terminal; parallel
+    side-effect branches (cost sync, degradation alerts) must reconverge into it, never race it.
+  - **NEW reliability gap → Block 6.** A single **unprocessable input image** (e.g. a 1×1 px PNG) makes
+    Anthropic reject the whole request (`"Could not process image"`, 400) → both primary and Opus fallback
+    fail → CRITICAL, no draft (observed on `869dhad2q`, which still has 1×1 test-junk attachments). Real
+    photos are unaffected. Block 6 (image guards) should add graceful degradation: on an image-processing
+    400, retry text-only + WARN, so one bad attachment can't sink the answer.
+- Phase 2–5: consequences recorded when each phase is verified end-to-end. **Phase A (INPUT) COMPLETE
+  through Block 5;** Block 6 (image guards: Bedrock image-input + PD notice + unprocessable-image
+  degradation) remains before Phase B (image generation).
 
 ---
 
@@ -370,3 +415,4 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
 2026-06-10 (Block 1 — Docling verified live; spine doc-drift corrected)
 2026-06-10 (Block 2 — `Read Input Text (v1)` verified live)
 2026-06-10 (Block 3 — unified `Read Input (v1)` verified live; readers unified, router retired)
+2026-06-10 (Block 5 — input wired into spine; multimodal model call verified; Stage B + Decide Research return-path bugs fixed)

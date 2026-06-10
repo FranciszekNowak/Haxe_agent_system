@@ -301,12 +301,18 @@
     "Resolve Research Inputs": { "main": [[{ "node": "Call Research the web", "type": "main", "index": 0 }]] },
     "Call Research the web": {
       "main": [
-        [{ "node": "Collect Research Results", "type": "main", "index": 0 }, { "node": "Check Research Degradation", "type": "main", "index": 0 }],
+        [{ "node": "Check Research Degradation", "type": "main", "index": 0 }],
         [{ "node": "Alert Research Failed", "type": "main", "index": 0 }]
       ]
     },
     "Alert Research Failed": { "main": [[{ "node": "Collect Research Results", "type": "main", "index": 0 }]] },
-    "Check Research Degradation": { "main": [[{ "node": "Alert Research Degraded", "type": "main", "index": 0 }]] }
+    "Check Research Degradation": {
+      "main": [
+        [{ "node": "Alert Research Degraded", "type": "main", "index": 0 }],
+        [{ "node": "Collect Research Results", "type": "main", "index": 0 }]
+      ]
+    },
+    "Alert Research Degraded": { "main": [[{ "node": "Collect Research Results", "type": "main", "index": 0 }]] }
   },
   "settings": {
     "executionOrder": "v1",

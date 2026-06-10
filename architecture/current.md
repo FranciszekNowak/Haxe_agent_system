@@ -805,10 +805,18 @@ shared **Reset Status + Alert** path (ADR-032), replacing the earlier per-node a
 five Core-model steps are distributed across the stages:
 
 - **Stage A — `Assemble Context and Build Prompt (v1)`** (`n8n/workflows/assemble-context-and-build-prompt.json`,
-  id `GGTBvFBgGSNbtUR6`, 10 nodes): `Context Gather (v1)` → `PD Verifier (v1)` → `Search (v1)` →
-  `Build Prompt`. Returns the prompt payload + assembled context.
+  id `GGTBvFBgGSNbtUR6`, 13 nodes): `Context Gather (v1)` → `PD Verifier (v1)` → Workspace Search →
+  Decide Research → Load Agent Rules → **`Read Input (v1)`** → `Build Prompt`. Returns the prompt payload +
+  assembled context, plus **`image_blocks_json`** (input image refs for the vision model, non-PD) and
+  `input_warnings_*`. Folds attachment **text** into the prompt and fires the reader's `warnings` via
+  `Post Alert (v1)` on a reconverging side branch (`Return Context` stays the sole terminal). Multimodal
+  input: ADR-036 Block 5; PD interim guard drops images + WARNs until Block 6.
 - **Stage B — `Execute LLM Call (v1)`** (`n8n/workflows/execute-llm-call.json`, id `9qdJA4xnAGbxqkt9`,
-  8 nodes): `Invoke Model (v1)` → drafted reply + cost.
+  8 nodes): `Invoke Model (v1)` → drafted reply + cost; forwards `image_blocks_json` to Invoke Model.
+  **Return path linearized** (`Call Invoke Model → Sum Task Cost → Update CU Cost Field → Return LLM
+  Result`, the sole terminal) so the sub-workflow deterministically returns `completion` — fixed a
+  return-determinism bug where the parallel cost-sync branch's empty output could be returned instead,
+  silently dropping the draft (ADR-036 Block 5).
 - **Stage C — `Post Reply (v1)`** (`n8n/workflows/post-reply.json`, id `t17moGs7Vxo5ZcFv`, 9 nodes):
   posts the thread-aware draft comment, writes the cost field, flips status **W trakcie → Zakończono**.
   C owns every ClickUp side-effect (comment, cost, status, and — once multimodal lands, ADR-036 —
@@ -890,6 +898,13 @@ Bedrock — only the native node can; ADR-021).
   `cost-missing` WARN. Token counts come exact from the gateway. Logged to `agent_runs` (live
   cols: `model_used`, `impact`, `input/output_tokens`, `cost_pln`, …; no `provider` col;
   `triggered_by` NOT NULL). Fail-safe: DB-down → `haxe-sonnet-4-6-direct` + WARN.
+- **Multimodal input (ADR-036 Block 5):** `Resolve Routing` builds the `messages` array with content as
+  **one shape — always an array**: `[{type:'text', text:prompt}]` plus `{type:'image_url', image_url:{url:
+  <clickup_url>}}` parts when the caller passes `image_blocks_json` (input image refs from `Read Input
+  (v1)`). LiteLLM fetches the URLs (no bytes cross workflow boundaries; ADR-036 reference-not-bytes). The
+  `-direct` Claude aliases are vision-capable, so no routing/`modality` change. `Call LiteLLM` and
+  `Fallback to Opus` both send these messages. ⚠ A provider-unprocessable image (e.g. 1×1 px) currently
+  400s the whole call → graceful text-only fallback is deferred to Block 6.
 
 See ADR-022 (shape), ADR-023 (routing), ADR-024 (LiteLLM/cost), ADR-030 (multi-provider).
 

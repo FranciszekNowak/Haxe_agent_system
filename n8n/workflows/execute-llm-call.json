@@ -22,11 +22,12 @@
             { "name": "process_type" },
             { "name": "reviewer_user_id" },
             { "name": "triggering_comment_id" },
-            { "name": "web_sources" }
+            { "name": "web_sources" },
+            { "name": "image_blocks_json" }
           ]
         }
       },
-      "notes": "Inputs: all Invoke Model fields + pass-through fields for Post Reply (reviewer_user_id, triggering_comment_id, web_sources)."
+      "notes": "Inputs: all Invoke Model fields + pass-through fields for Post Reply (reviewer_user_id, triggering_comment_id, web_sources) + image_blocks_json (ADR-036 Block 5, forwarded to Invoke Model for multimodal messages)."
     },
     {
       "id": "call-invoke-model",
@@ -47,7 +48,8 @@
             "triggered_by": "={{ $json.triggered_by }}",
             "invocation_type": "={{ $json.invocation_type }}",
             "caller_user_id": "={{ $json.caller_user_id }}",
-            "process_type": "={{ $json.process_type }}"
+            "process_type": "={{ $json.process_type }}",
+            "image_blocks_json": "={{ $json.image_blocks_json || '[]' }}"
           },
           "matchingColumns": [],
           "schema": [
@@ -59,7 +61,8 @@
             { "id": "triggered_by", "displayName": "triggered_by", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "caller_user_id", "displayName": "caller_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "process_type", "displayName": "process_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+            { "id": "process_type", "displayName": "process_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "image_blocks_json", "displayName": "image_blocks_json", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
           ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": false
@@ -124,11 +127,11 @@
       "name": "Return LLM Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [440, 140],
+      "position": [880, 200],
       "parameters": {
         "jsCode": "const wc = $('When Called').first().json;\nconst mr = $('Call Invoke Model').first().json;\nreturn [{ json: {\n  completion: mr.completion || '',\n  model: mr.model || '',\n  cost_pln: mr.cost_pln,\n  clickup_task_id: wc.clickup_task_id,\n  reviewer_user_id: wc.reviewer_user_id,\n  triggering_comment_id: wc.triggering_comment_id || '',\n  web_sources: wc.web_sources || '[]'\n} }];"
       },
-      "notes": "Terminal output node: bundles model response with pass-through fields for Post Reply. Fires in parallel with Sum Task Cost so cost-sync failures don't block the response."
+      "notes": "SOLE TERMINAL of the success path (ADR-036 Block 5 fix). The cost branch (Sum Task Cost -> Update CU Cost Field) now feeds INTO this node so n8n returns it deterministically — previously it raced in parallel and n8n sometimes returned Update CU Cost Field's empty output, losing `completion`. Reads model result + pass-through via absolute refs, so the incoming item doesn't matter."
     },
     {
       "id": "sum-task-cost",
@@ -139,9 +142,7 @@
       "parameters": {
         "operation": "executeQuery",
         "query": "select coalesce(sum(cost_pln), 0) as total\nfrom agent_runs\nwhere clickup_task_id = $1;",
-        "options": {
-          "queryReplacement": "={{ [ $('When Called').first().json.clickup_task_id ] }}"
-        }
+        "options": { "queryReplacement": "={{ [ $('When Called').first().json.clickup_task_id ] }}" }
       },
       "retryOnFail": true,
       "maxTries": 2,
@@ -171,7 +172,7 @@
       "waitBetweenTries": 2000,
       "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
       "onError": "continueErrorOutput",
-      "notes": "Writes running total to CU '[AI] Koszt akcji [PLN]'."
+      "notes": "Writes running total to CU '[AI] Koszt akcji [PLN]'. On success -> Return LLM Result (sole terminal); on error -> Alert Cost Sync Failed (which also reconverges to Return LLM Result), so a cost-sync failure never blocks returning the answer."
     },
     {
       "id": "alert-cost-failed",
@@ -207,7 +208,7 @@
     "When Called": { "main": [[{ "node": "Call Invoke Model", "type": "main", "index": 0 }]] },
     "Call Invoke Model": {
       "main": [
-        [{ "node": "Return LLM Result", "type": "main", "index": 0 }, { "node": "Sum Task Cost", "type": "main", "index": 0 }],
+        [{ "node": "Sum Task Cost", "type": "main", "index": 0 }],
         [{ "node": "Reset Status on Failure", "type": "main", "index": 0 }]
       ]
     },
@@ -223,12 +224,15 @@
         [{ "node": "Alert Cost Sync Failed", "type": "main", "index": 0 }]
       ]
     },
-    "Update CU Cost Field": { "main": [[], [{ "node": "Alert Cost Sync Failed", "type": "main", "index": 0 }]] }
+    "Update CU Cost Field": {
+      "main": [
+        [{ "node": "Return LLM Result", "type": "main", "index": 0 }],
+        [{ "node": "Alert Cost Sync Failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Alert Cost Sync Failed": { "main": [[{ "node": "Return LLM Result", "type": "main", "index": 0 }]] }
   },
-  "settings": {
-    "executionOrder": "v1",
-    "errorWorkflow": "81eplXMD1v5ONhzs"
-  },
+  "settings": { "executionOrder": "v1", "errorWorkflow": "81eplXMD1v5ONhzs" },
   "staticData": null,
   "meta": null,
   "pinData": {},
