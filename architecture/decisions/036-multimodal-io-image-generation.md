@@ -202,6 +202,14 @@ C owns every ClickUp side-effect: comment post, cost field write, status flip, t
   / token cost silently explode. Also corrected the spine doc-drift in `current.md` (§11/§15 still
   described a monolithic 26-node `agent-spine.json`; reality is the decomposed `Agent Orchestrator
   (v1)` → Stage A/B/C, id `a8XKaijkMFNBpRBa` now the thin orchestrator).
+  **Silent-failure coverage (reliability mandate).** _Covered:_ an unhealthy/OOM Docling is guarded
+  at the Docker level by the container `healthcheck` (`GET /health`) + `restart: unless-stopped`;
+  digest reconcile prevents silent image drift. _Knowingly DEFERRED:_ there is **no `Post Alert (v1)`
+  ClickUp alert for "Docling down / erroring at request time"** in Block 1, because nothing consumes
+  Docling yet — it is added in **Block 2** (`read-input-text`'s per-file `multimodal/extraction-failed`
+  WARN). A proactive Docling freshness / dead-man's-switch cron only becomes meaningful once a reader
+  depends on it; deferred to Block 2. Until then, a Docling outage degrades the (not-yet-wired) input
+  path **silently** — acceptable only because no live workflow reads it yet.
 - Phase 2–5: consequences recorded when each phase is verified end-to-end.
 
 ---
