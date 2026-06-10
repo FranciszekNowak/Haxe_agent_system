@@ -44,6 +44,21 @@ wrong. Surface failure modes. Don't accommodate sloppy thinking.
   scripting on the Linux VPS.
 - whenever you explain how to do something, and you notice it may be useful in the future for Franciszek, teach him a deeper understanding of it. He wants his knowledge to grow by doing, not outsource everything blindly with no understanding.
 
+## Git and commit discipline
+
+- **Commit automatically at meaningful milestones** — a completed build block, a verified
+  unit of work, a self-contained fix or doc write-back — with a descriptive message. No need
+  to ask for approval first; a clean, well-described commit at a natural boundary is the
+  default, not an interruption.
+- **Every commit, regardless:** show the staged file list, verify the change via `git diff`
+  before committing, **never stage credentials or `.env`**, and **never force-push**. Reserve
+  asking before committing only when the change set mixes unrelated work, the scope is
+  ambiguous, or the change is destructive/hard to reverse.
+- **Pushing is NOT automatic.** Commits are local and cheap to amend or revert; pushes —
+  especially to `main` — remain a deliberate, explicitly-approved step. Auto-commit at
+  milestones does not imply auto-push. Push when ending a work session or when the operator
+  asks, after the milestone's verification has passed (see *Definition of done*).
+
 ## File conventions
 
 - All documentation in markdown
