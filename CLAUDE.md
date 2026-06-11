@@ -59,6 +59,24 @@ wrong. Surface failure modes. Don't accommodate sloppy thinking.
   milestones does not imply auto-push. Push when ending a work session or when the operator
   asks, after the milestone's verification has passed (see *Definition of done*).
 
+## Live changes must be written back (every repo-mastered system)
+
+Several systems are edited **live** (via MCP/UI) but are **mastered by the repo**. After ANY
+live change, write the repo artifact back **in the same session** and commit. A forward-note
+("a later block will codify it") is NOT a write-back — it is the exact drift that has bitten us
+(ADR-038 deployed-but-never-exported; a live `model_routing` temperature change left as a note,
+caught only on review → migration 015).
+
+- **n8n graph** → re-export `n8n/workflows/*.json` (`n8n_get_workflow` mode `active`),
+  reconciling by behaviour and preserving curated node `notes` (live usually lacks them) —
+  don't dump raw API JSON over them.
+- **Supabase DB** → add an append-only migration; never leave a live SQL change uncodified.
+- **LiteLLM** → update `litellm-config.yaml`.
+
+Drift is often **bidirectional** (repo ahead in some files, live in others), so check direction
+per artifact — never blind-dump one side over the other. Run `node scripts/check-workflow-drift.mjs`
+to surface n8n repo↔live drift loudly instead of relying on memory (see `docs/drift-check.md`).
+
 ## Plans: block-by-block master-plan routine
 
 Large changes run as a sequence of self-contained **Blocks** against one durable **master plan**
@@ -126,13 +144,6 @@ Date
   processing only that branch's items and dropping the rest — give aggregators
   exactly **one** input (merge upstream into a single stream first). Both traps were
   hit building `read-input-text` (ADR-036, Block 2).
-- **Always re-export and commit the workflow JSON after changing a workflow live.** n8n
-  edits happen on the live instance (n8n MCP/UI per ADR-018); the repo `n8n/workflows/*.json`
-  is the master **only if kept in sync**. After any live change: `n8n_get_workflow` (mode
-  `active`) → re-export → commit. Reconcile against live behaviour, preserving curated node
-  `notes` (which live often lacks) — don't dump raw API JSON over them. Drift bites: ADR-038's
-  multimodal routing was deployed live but never exported, leaving the repo stale and a later
-  plan built on wrong assumptions.
 
 ## Definition of done
 
