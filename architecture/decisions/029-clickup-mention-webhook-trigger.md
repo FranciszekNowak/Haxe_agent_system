@@ -143,3 +143,23 @@ pipeline), ADR-024 (`agent_runs` / cost), ADR-004 (Docs v3 rules loading).
 >   workspace-wide mentions; caller-scoping is enforced in software (prompt + MCP) and the LLM stays
 >   tool-less (ADR-026). Private spaces the agent isn't a member of won't deliver/read (a mention
 >   there triggers but Context Gather 403s → WARN).
+
+> Update 2026-06-11 — webhook idempotency (duplicate-delivery dedup).
+> ClickUp delivers the comment webhook **more than once** — observed: **two deliveries ~45 ms apart**
+> for a single @-mention → two producer runs → two full agent runs on the same comment (doubling model
+> spend, risking double-posts). The `Recent Runs`/`Under Limit?` loop-breaker can't catch this: both
+> near-simultaneous duplicates query `agent_runs` *before* either has logged a run, so neither sees the
+> other. ClickUp delivery is at-least-once, so this is correct-by-design to defend, not a one-off.
+>
+> **Fix — atomic claim on the triggering comment id.** Right after `If Mentioned` (true), a new
+> **`Claim Comment`** Postgres node runs `INSERT INTO agent_webhook_dedup (triggering_comment_id) VALUES
+> ($1) ON CONFLICT DO NOTHING …` and returns `is_first` — the unique PK serialises the two concurrent
+> inserts so exactly one wins. **`Not Duplicate?`** proceeds when `is_first !== false` and dead-ends
+> duplicates. This **complements** the loop-breaker: dedup kills exact-comment duplicates (at-least-once
+> delivery); the breaker still caps agent→agent storms. **Fail-open:** `Claim Comment` is
+> `onError: continueRegularOutput`, so a DB blip leaves `is_first` undefined → treated as not-duplicate
+> (a dropped real mention is worse than a rare double-run); an empty comment id also never blocks.
+> Schema: **migration `018_webhook_dedup`** (table `agent_webhook_dedup`, prunable — the dedup window is
+> seconds). Numbered 018 to leave the reserved `016_global_model_routing` / `017_agent_runs_erasure_ready`
+> slots (multimodal plan Blocks 3–4) untouched. Validated structurally + via drift-check; not yet
+> exercised by a real double-delivery (can't forge a signed ClickUp webhook).

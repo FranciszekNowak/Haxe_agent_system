@@ -8,19 +8,24 @@
       "type": "n8n-nodes-base.formTrigger",
       "typeVersion": 2.5,
       "position": [0, 224],
+      "webhookId": "agent-spine-v1-webhook-001",
       "parameters": {
         "formTitle": "Agent Orchestrator",
         "formDescription": "Enter a ClickUp task ID. Optionally a reviewer ClickUp user ID to @-direct the draft (blank = operator).",
         "formFields": {
           "values": [
-            { "fieldLabel": "taskId", "requiredField": true },
-            { "fieldLabel": "reviewer_user_id" }
+            {
+              "fieldLabel": "taskId",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "reviewer_user_id"
+            }
           ]
         },
         "responseMode": "lastNode",
         "options": {}
-      },
-      "webhookId": "agent-spine-v1-webhook-001"
+      }
     },
     {
       "id": "exec-trigger",
@@ -31,17 +36,30 @@
       "parameters": {
         "workflowInputs": {
           "values": [
-            { "name": "taskId" },
-            { "name": "reviewer_user_id" },
-            { "name": "caller_username" },
-            { "name": "triggered_by" },
-            { "name": "invocation_type" },
-            { "name": "triggering_comment_id" },
-            { "name": "triggering_comment_text" }
+            {
+              "name": "taskId"
+            },
+            {
+              "name": "reviewer_user_id"
+            },
+            {
+              "name": "caller_username"
+            },
+            {
+              "name": "triggered_by"
+            },
+            {
+              "name": "invocation_type"
+            },
+            {
+              "name": "triggering_comment_id"
+            },
+            {
+              "name": "triggering_comment_text"
+            }
           ]
         }
-      },
-      "notes": "Production entry: called by CU Webhook Producer. Form Trigger stays as manual test harness."
+      }
     },
     {
       "id": "call-assemble-context",
@@ -50,7 +68,11 @@
       "typeVersion": 1.3,
       "position": [260, 352],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "GGTBvFBgGSNbtUR6", "mode": "list", "cachedResultName": "Assemble Context and Build Prompt (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "GGTBvFBgGSNbtUR6",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -63,21 +85,12 @@
             "triggering_comment_text": "={{ $json.triggering_comment_text || '' }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "taskId", "displayName": "taskId", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "reviewer_user_id", "displayName": "reviewer_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "caller_username", "displayName": "caller_username", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggered_by", "displayName": "triggered_by", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggering_comment_id", "displayName": "triggering_comment_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggering_comment_text", "displayName": "triggering_comment_text", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
         },
         "options": {}
       },
-      "notes": "Calls SW3: context gather + PD check + workspace search + research decision + rules + input reader + prompt assembly. Returns full Build Prompt output (incl. image_blocks_json, input_warnings_*)."
+      "alwaysOutputData": true
     },
     {
       "id": "status-inprogress",
@@ -85,9 +98,10 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [500, 160],
+      "notes": "Fires immediately off BOTH triggers (parallel side-branch) so the requester sees '[AI] Status agenta = W trakcie' within ~1s of webhook receipt, not after the ~30s context build (repositioned 2026-06-11; was downstream of Assemble). Fire-and-forget: success output dead-ends, error -> Alert Status Failed (onError:continueErrorOutput) so a status-write failure never blocks the answer. Reads taskId from the trigger item. Post Reply (Stage C) flips the field to 'Zakończono' at the end.",
       "parameters": {
         "method": "POST",
-        "url": "=https://api.clickup.com/api/v2/task/{{ $json.clickup_task_id }}/field/30130652-01c2-451b-954a-c36a455790fe",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $json.taskId || $json.clickup_task_id }}/field/30130652-01c2-451b-954a-c36a455790fe",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "clickUpApi",
         "sendBody": true,
@@ -95,12 +109,16 @@
         "jsonBody": "={{ JSON.stringify({ value: '10290b3f-e47d-4157-a3d4-1bbd770918e8' }) }}",
         "options": {}
       },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
-      "waitBetweenTries": 2000,
-      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
-      "onError": "continueErrorOutput",
-      "notes": "Sets [AI] Status agenta -> 'W trakcie'. Fires in parallel with Call Execute LLM from Call Assemble Context output — non-blocking side effect."
+      "waitBetweenTries": 2000
     },
     {
       "id": "alert-status-fail",
@@ -109,27 +127,26 @@
       "typeVersion": 1.3,
       "position": [720, 80],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
             "severity": "WARN",
             "source": "agent-orchestrator/status",
             "message": "Nie udało się zaktualizować pola CU '[AI] Status agenta' na W trakcie.",
-            "details": "=task={{ $('Call Assemble Context').first().json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+            "details": "=task={{ $json.taskId || $json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
         },
         "options": {}
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "call-execute-llm",
@@ -138,13 +155,18 @@
       "typeVersion": 1.3,
       "position": [500, 352],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "9qdJA4xnAGbxqkt9", "mode": "list", "cachedResultName": "Execute LLM Call (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "9qdJA4xnAGbxqkt9",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
             "prompt": "={{ $json.prompt }}",
             "impact": "={{ $json.impact }}",
             "personal_data": "={{ $json.personal_data }}",
+            "modality": "={{ $json.modality || 'text' }}",
             "task_type": "={{ $json.task_type }}",
             "clickup_task_id": "={{ $json.clickup_task_id }}",
             "triggered_by": "={{ $json.triggered_by }}",
@@ -157,27 +179,11 @@
             "image_blocks_json": "={{ $json.image_blocks_json || '[]' }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "prompt", "displayName": "prompt", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "impact", "displayName": "impact", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "personal_data", "displayName": "personal_data", "type": "boolean", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "task_type", "displayName": "task_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "clickup_task_id", "displayName": "clickup_task_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggered_by", "displayName": "triggered_by", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "caller_user_id", "displayName": "caller_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "process_type", "displayName": "process_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "reviewer_user_id", "displayName": "reviewer_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggering_comment_id", "displayName": "triggering_comment_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "web_sources", "displayName": "web_sources", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "image_blocks_json", "displayName": "image_blocks_json", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": false
         },
         "options": {}
-      },
-      "notes": "Calls SW4: LLM invocation + status reset on failure + cost sync. image_blocks_json forwarded for multimodal messages (ADR-036 Block 5). Returns { completion, model, cost_pln, clickup_task_id, reviewer_user_id, triggering_comment_id, web_sources }."
+      }
     },
     {
       "id": "if-llm-succeeded",
@@ -187,15 +193,28 @@
       "position": [720, 352],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
           "conditions": [
-            { "id": "s1", "leftValue": "={{ $json.completion }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } }
+            {
+              "id": "s1",
+              "leftValue": "={{ $json.completion }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
           ],
           "combinator": "and"
         },
         "options": {}
-      },
-      "notes": "Guards Call Post Reply. False = LLM failed, error handled inside SW4, run ends cleanly."
+      }
     },
     {
       "id": "call-post-reply",
@@ -204,7 +223,11 @@
       "typeVersion": 1.3,
       "position": [940, 352],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "t17moGs7Vxo5ZcFv", "mode": "list", "cachedResultName": "Post Reply (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "t17moGs7Vxo5ZcFv",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -217,34 +240,210 @@
             "web_sources": "={{ $json.web_sources }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "completion", "displayName": "completion", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "model", "displayName": "model", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "cost_pln", "displayName": "cost_pln", "type": "number", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "clickup_task_id", "displayName": "clickup_task_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "reviewer_user_id", "displayName": "reviewer_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggering_comment_id", "displayName": "triggering_comment_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "web_sources", "displayName": "web_sources", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": false
         },
         "options": {}
+      }
+    },
+    {
+      "id": "9dbf3086-cae6-4c7c-85e4-e305574ff872",
+      "name": "Context OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [400, 352],
+      "notes": "Layer-B reliability guard (silent-failure mandate, 2026-06-11). Call Assemble Context has alwaysOutputData=true so an empty context build still emits an item; this IF gates on a non-empty `prompt`. true -> Call Execute LLM; false -> Alert Context Empty (CRITICAL). Without it, a 0-item Assemble return silently skipped Execute LLM + Post Reply and the run still reported success (the exact failure on task 869dm1z8y).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "ctx1",
+              "leftValue": "={{ $json.prompt }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "fb1c0f33-af6a-4128-b24f-b18eba2e06e0",
+      "name": "Alert Context Empty",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [620, 540],
+      "notes": "CRITICAL via Post Alert (v1): context assembly returned empty -> pipeline aborted, no reply posted. Task id read from whichever trigger fired ($('When Called').isExecuted ? mention : form). onError:continueRegularOutput so the alert itself can't throw.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "agent-orchestrator/context",
+            "message": "Złożenie kontekstu zwróciło pusty wynik — pipeline przerwany, nie opublikowano odpowiedzi.",
+            "details": "=task={{ $('When Called').isExecuted ? $('When Called').first().json.taskId : $('Form Trigger').first().json.taskId }}; trigger={{ $('When Called').isExecuted ? 'mention' : 'form' }}; sprawdź Assemble Context / Read Input dla tego zadania."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
       },
-      "notes": "Calls SW2: builds Quill-delta comment, routes @mention vs. top-level, posts to CU, sets Zakończono status."
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "80baf910-eff7-4e63-8990-783e1110bfd9",
+      "name": "Alert LLM Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [940, 540],
+      "notes": "CRITICAL via Post Alert (v1): model returned an empty completion -> no reply posted. Wired to the If LLM Succeeded? FALSE branch, which previously dead-ended silently (2026-06-11). onError:continueRegularOutput.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "agent-orchestrator/llm",
+            "message": "Model nie zwrócił treści (completion puste) — odpowiedź nie została opublikowana.",
+            "details": "=task={{ $json.clickup_task_id }}; model={{ $json.model || 'brak' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
-    "Form Trigger": { "main": [[{ "node": "Call Assemble Context", "type": "main", "index": 0 }]] },
-    "When Called": { "main": [[{ "node": "Call Assemble Context", "type": "main", "index": 0 }]] },
-    "Call Assemble Context": { "main": [[{ "node": "Call Execute LLM", "type": "main", "index": 0 }, { "node": "Set Status W trakcie", "type": "main", "index": 0 }]] },
-    "Set Status W trakcie": { "main": [[], [{ "node": "Alert Status Failed", "type": "main", "index": 0 }]] },
-    "Call Execute LLM": { "main": [[{ "node": "If LLM Succeeded?", "type": "main", "index": 0 }]] },
-    "If LLM Succeeded?": { "main": [[{ "node": "Call Post Reply", "type": "main", "index": 0 }], []] }
+    "Form Trigger": {
+      "main": [
+        [
+          {
+            "node": "Call Assemble Context",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Set Status W trakcie",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Call Assemble Context",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Set Status W trakcie",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Status W trakcie": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Alert Status Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Execute LLM": {
+      "main": [
+        [
+          {
+            "node": "If LLM Succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If LLM Succeeded?": {
+      "main": [
+        [
+          {
+            "node": "Call Post Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert LLM Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Assemble Context": {
+      "main": [
+        [
+          {
+            "node": "Context OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Context OK?": {
+      "main": [
+        [
+          {
+            "node": "Call Execute LLM",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Context Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
   },
-  "settings": { "executionOrder": "v1", "binaryMode": "separate", "errorWorkflow": "81eplXMD1v5ONhzs" },
-  "staticData": null,
-  "meta": null,
-  "pinData": {},
-  "tags": []
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
 }

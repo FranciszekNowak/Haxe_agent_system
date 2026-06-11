@@ -26,14 +26,22 @@
       "position": [180, 120],
       "parameters": {
         "conditions": {
-          "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" },
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "t1",
               "leftValue": "={{ $json.body.task_id }}",
               "rightValue": "869dj2z2c",
-              "operator": { "type": "string", "operation": "notEquals" }
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
             }
           ]
         }
@@ -68,14 +76,22 @@
       "position": [620, 120],
       "parameters": {
         "conditions": {
-          "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" },
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "s1",
               "leftValue": "={{ $json.computedSig }}",
               "rightValue": "={{ $('CU Webhook').first().json.headers['x-signature'] }}",
-              "operator": { "type": "string", "operation": "equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
             }
           ]
         }
@@ -92,8 +108,7 @@
         "workflowId": {
           "__rl": true,
           "value": "YSCdHlmdf3p9XEUx",
-          "mode": "list",
-          "cachedResultName": "Post Alert (v1)"
+          "mode": "list"
         },
         "workflowInputs": {
           "mappingMode": "defineBelow",
@@ -104,12 +119,6 @@
             "details": "=task={{ $('CU Webhook').first().json.body.task_id }}; got_sig={{ ($('CU Webhook').first().json.headers['x-signature'] || 'BRAK').toString().slice(0,12) }}…; jeśli dotyczy prawdziwych wzmianek — sprawdź, czy poświadczenie 'ClickUp Webhook HMAC' zgadza się z sekretem webhooka w ClickUp."
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
         }
@@ -134,14 +143,23 @@
       "position": [1060, 120],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "m1",
               "leftValue": "={{ $json.matched }}",
               "rightValue": true,
-              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
             }
           ]
         }
@@ -153,10 +171,6 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [1280, 120],
-      "onError": "continueRegularOutput",
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 2000,
       "parameters": {
         "operation": "executeQuery",
         "query": "select count(*)::int as n from agent_runs where clickup_task_id = $1 and created_at > now() - interval '10 minutes';",
@@ -169,7 +183,11 @@
           "id": "EjK3iACTbSNRDhVz",
           "name": "Postgres / supabase connection"
         }
-      }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
     },
     {
       "id": "run-or-break",
@@ -179,14 +197,22 @@
       "position": [1500, 120],
       "parameters": {
         "conditions": {
-          "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" },
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "lim",
               "leftValue": "={{ Number($json.n || 0) }}",
               "rightValue": 8,
-              "operator": { "type": "number", "operation": "lt" }
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
             }
           ]
         }
@@ -203,8 +229,7 @@
         "workflowId": {
           "__rl": true,
           "value": "a8XKaijkMFNBpRBa",
-          "mode": "list",
-          "cachedResultName": "Agent Spine (v1)"
+          "mode": "list"
         },
         "workflowInputs": {
           "mappingMode": "defineBelow",
@@ -218,15 +243,6 @@
             "triggering_comment_text": "={{ $('Detect Mention').first().json.triggering_comment_text }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "taskId", "displayName": "taskId", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "reviewer_user_id", "displayName": "reviewer_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "caller_username", "displayName": "caller_username", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggered_by", "displayName": "triggered_by", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggering_comment_id", "displayName": "triggering_comment_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggering_comment_text", "displayName": "triggering_comment_text", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
         }
@@ -243,8 +259,7 @@
         "workflowId": {
           "__rl": true,
           "value": "YSCdHlmdf3p9XEUx",
-          "mode": "list",
-          "cachedResultName": "Post Alert (v1)"
+          "mode": "list"
         },
         "workflowInputs": {
           "mappingMode": "defineBelow",
@@ -255,47 +270,191 @@
             "details": "=task={{ $('Detect Mention').first().json.taskId }}; runs_10min={{ $json.n }}; próg=8"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "f94dea23-b883-402a-8cf7-96a787d6cdbb",
+      "name": "Claim Comment",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1180, 340],
+      "notes": "Webhook idempotency (ADR-029, migration 018_webhook_dedup, 2026-06-11). Atomic claim on the triggering comment id: INSERT ... ON CONFLICT DO NOTHING; the unique PK serialises the two near-simultaneous deliveries ClickUp sends for one @-mention (~45ms apart) so exactly one wins. Returns is_first (also true when comment id is empty -> never blocks). onError:continueRegularOutput + retry -> a DB blip fails OPEN (is_first undefined downstream).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with ins as (\n  insert into agent_webhook_dedup (triggering_comment_id)\n  values ($1)\n  on conflict (triggering_comment_id) do nothing\n  returning 1\n)\nselect (exists (select 1 from ins) or coalesce($1, '') = '') as is_first;",
+        "options": {
+          "queryReplacement": "={{ [ $('Detect Mention').first().json.triggering_comment_id ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "cfce4a6c-b8e3-4d4b-8084-3f35c387a342",
+      "name": "Not Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1400, 340],
+      "notes": "is_first !== false -> proceed (true, incl. DB-error fail-open where is_first is undefined); is_first === false -> duplicate delivery, dead-end (drop). Complements the Recent Runs / Under Limit? loop-breaker: THIS kills exact-comment duplicates (at-least-once delivery), THAT caps agent->agent storms.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "dup1",
+              "leftValue": "={{ $json.is_first !== false }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
         }
       }
     }
   ],
   "connections": {
     "CU Webhook": {
-      "main": [[{ "node": "Not Telemetry Task?", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Not Telemetry Task?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Not Telemetry Task?": {
-      "main": [[{ "node": "Verify Signature", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Verify Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Verify Signature": {
-      "main": [[{ "node": "Signature Valid?", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Signature Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Signature Valid?": {
       "main": [
-        [{ "node": "Detect Mention", "type": "main", "index": 0 }],
-        [{ "node": "Alert Bad Signature", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Detect Mention",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Bad Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Detect Mention": {
-      "main": [[{ "node": "If Mentioned", "type": "main", "index": 0 }]]
-    },
-    "If Mentioned": {
-      "main": [[{ "node": "Recent Runs", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "If Mentioned",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Recent Runs": {
-      "main": [[{ "node": "Under Limit?", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Under Limit?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Under Limit?": {
       "main": [
-        [{ "node": "Run Agent Spine", "type": "main", "index": 0 }],
-        [{ "node": "Alert Loop Breaker", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Run Agent Spine",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Loop Breaker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Mentioned": {
+      "main": [
+        [
+          {
+            "node": "Claim Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Comment": {
+      "main": [
+        [
+          {
+            "node": "Not Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Not Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Recent Runs",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },
@@ -303,10 +462,5 @@
     "executionOrder": "v1",
     "errorWorkflow": "81eplXMD1v5ONhzs",
     "binaryMode": "separate"
-  },
-  "staticData": null,
-  "meta": null,
-  "pinData": {},
-  "versionId": "4e7ab17c-e854-439c-a633-ed74cce155cf",
-  "tags": []
+  }
 }

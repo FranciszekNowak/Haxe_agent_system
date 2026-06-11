@@ -851,12 +851,19 @@ the canonical form going forward.
 
 ### 15.2 `Agent Orchestrator (v1)` + Stages A/B/C — the generic engine
 
-`n8n/workflows/agent-orchestrator.json`, n8n id `a8XKaijkMFNBpRBa`, **8 nodes** (thin). Entry is
+`n8n/workflows/agent-orchestrator.json`, n8n id `a8XKaijkMFNBpRBa`, **11 nodes** (thin). Entry is
 either a Form Trigger (`taskId`, manual testing) or a `When Called` Execute-Workflow trigger (from
-the webhook producer). It sets status **W trakcie**, then calls three stage subworkflows in
-sequence — each a Call-Workflow node with its own execution log; any stage's `onError` routes to one
-shared **Reset Status + Alert** path (ADR-032), replacing the earlier per-node alert sprawl. The
-five Core-model steps are distributed across the stages:
+the webhook producer). It sets status **W trakcie** on a **parallel fire-and-forget side-branch off
+the trigger itself** — so the requester sees "W trakcie" within ~1 s of webhook receipt, not after the
+~30 s context build (repositioned 2026-06-11; a status-write failure routes to `Alert Status Failed`
+and never blocks the run). In parallel it calls three stage subworkflows in sequence — each a
+Call-Workflow node with its own execution log; any stage's `onError` routes to one shared **Reset
+Status + Alert** path (ADR-032), replacing the earlier per-node alert sprawl. A **`Context OK?` guard**
+sits between Stage A and Stage B: Stage A runs with `alwaysOutputData`, so if it returns no `prompt`
+the run stops loudly at **`Alert Context Empty` (CRITICAL)** instead of silently skipping the model +
+reply; likewise the `If LLM Succeeded?` false branch now fires **`Alert LLM Failed` (CRITICAL)** on an
+empty completion (both added 2026-06-11 after a zero-attachment task silently produced no reply — see
+ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the stages:
 
 - **Stage A — `Assemble Context and Build Prompt (v1)`** (`n8n/workflows/assemble-context-and-build-prompt.json`,
   id `GGTBvFBgGSNbtUR6`, 13 nodes): `Context Gather (v1)` → `PD Verifier (v1)` → Workspace Search →
@@ -886,8 +893,9 @@ five Core-model steps are distributed across the stages:
   (v1)`** context (comments + external artifacts); then the **task context** (task + ancestor
   chain). It emits a soft output structure — **Wyniki / Pytania / Decyzje / Sugestie**
   (§13.1) — as guidance, not a hard template.
-- **Status lifecycle:** `[AI] Status agenta` flips **W trakcie → Zakończono** around the run
-  (set in the orchestrator / Stage C). The pipeline **never finalizes** — it never sets a done
+- **Status lifecycle:** `[AI] Status agenta` flips **W trakcie → Zakończono** around the run —
+  **W trakcie** is set immediately off the trigger (up-front feedback to the requester),
+  **Zakończono** by Stage C on completion. The pipeline **never finalizes** — it never sets a done
   status on the task itself nor writes
   `[AI] Finalny, zaakceptowany efekt`.
 - **Cost field:** writes `[AI] Koszt akcji [PLN]` = `SUM(agent_runs.cost_pln)` for the task

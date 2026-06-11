@@ -417,6 +417,28 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
     was skipped. **Noise caveat:** this WARN fires on every doc with a logo/icon/chart embedded (most real
     spec sheets) — when Block 10 lands, either host those images or downgrade decorative-image skips to
     INFO so the WARN channel isn't flooded.
+- **Block-5 follow-up — zero-attachment empty-return bug (2026-06-11).** A task with **no attachments**
+  made `Read Input (v1)`'s `Explode Attachments` emit **0 items**, so `Classify`/`Merge`/`Aggregate Blocks`
+  were all skipped and the reader returned nothing. That empty **cascaded up** (Assemble Context →
+  orchestrator) and **silently skipped** Set Status, Execute LLM, and Post Reply — while every execution
+  still reported `success`: no reply, no cost, status never reached "W trakcie" (observed on `869dm1z8y`,
+  two morning runs). The common **no-attachment** case had been broken all along; only attachment-bearing
+  tasks worked, which masked it. Two-layer fix:
+  - **(A) Reader (correctness).** `Explode Attachments` now emits a single `_passthrough` sentinel when the
+    task has no attachments, routed through the **no-I/O image branch** (extended the `Classify` image rule
+    + a `_passthrough` short-circuit in `Build Image Block` that emits a block-less item) so `Aggregate
+    Blocks` still runs and returns `{ blocks: [], clickup_task_id, warnings: [] }`. Branch-free terminal
+    preserved.
+  - **(B) Orchestrator (reliability mandate).** `Call Assemble Context` gains `alwaysOutputData`; a new
+    **`Context OK?`** IF gates on a non-empty `prompt` → empty stops the run at **`Alert Context Empty`
+    (CRITICAL)** instead of a green no-op, and the `If LLM Succeeded?` false branch now fires **`Alert LLM
+    Failed` (CRITICAL)** on an empty completion. This catches the whole class (any 0-item emit anywhere in
+    the long Assemble chain), not just attachments. Also repositioned **Set Status W trakcie** to fire
+    immediately off the trigger (up-front feedback, ~1 s vs ~30 s).
+  - **Verified end-to-end** on `869dm1z8y` (exec 1155): Sonnet 4.6 draft posted, status W trakcie→Zakończono,
+    cost field written; `Context OK?`/`If LLM Succeeded?` took the success path and neither CRITICAL
+    false-fired. _Silent-failure coverage:_ the previously-uncovered "context/reader returned empty" mode is
+    now a loud CRITICAL on a non-blocking side branch.
 - Phase 2–5: consequences recorded when each phase is verified end-to-end. **Phase A (INPUT) verified for
   attachment-level text + directly-attached images through Block 5;** still owed for *fully* multimodal
   input: Block 6 (image guards: Bedrock image-input + PD notice + unprocessable-image degradation) and
