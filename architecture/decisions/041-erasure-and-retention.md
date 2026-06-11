@@ -5,7 +5,7 @@ Date: 2026-06-10
 
 ## Context
 
-ADR-040 removed personal-data routing and made the pipeline PD-blind (migration 016). Two controller-side duties remain that do not depend on model location and are not satisfied by routing: the ability to erase a data subject's data on request (Art 17), and bounded, purposeful retention (Art 5(1)(e)). This ADR sets the minimal, proportionate mechanisms for both, scoped to our actual data: low-sensitivity operational data (customer service, B2B contacts) and employee wage and address data. None of it is special-category (Art 9) data.
+ADR-040 removed personal-data routing and made the pipeline PD-blind (migration 021). Two controller-side duties remain that do not depend on model location and are not satisfied by routing: the ability to erase a data subject's data on request (Art 17), and bounded, purposeful retention (Art 5(1)(e)). This ADR sets the minimal, proportionate mechanisms for both, scoped to our actual data: low-sensitivity operational data (customer service, B2B contacts) and employee wage and address data. None of it is special-category (Art 9) data.
 
 We are mid-build on multimodality (Docling to agent spine; image and PDF reading works). Nothing here changes that path.
 
@@ -37,8 +37,8 @@ Email is not wired yet, so subject_key population and the erasure runbook activa
 
 ## Consequences
 
-- Add `subject_key` (nullable, indexed) to `agent_runs` (migration 017). Zero behavioral change; nothing reads or writes it yet.
-- Ensure `agent_runs` records the external artifact ids it creates (ClickUp comment ids, Drive file ids — `clickup_comment_id` / `drive_file_id` added in migration 017). Confirm, do not yet enforce, that every PD-capable store links back to `agent_runs`.
+- Add `subject_key` (nullable, indexed) to `agent_runs` (migration 022). Zero behavioral change; nothing reads or writes it yet.
+- Ensure `agent_runs` records the external artifact ids it creates (ClickUp comment ids, Drive file ids — `clickup_comment_id` / `drive_file_id` added in migration 022). Confirm, do not yet enforce, that every PD-capable store links back to `agent_runs`.
 - No retention deletion job is built now. The retention posture is documented and reviewed.
 - The GDPR processing-decisions document records the bases and merits as the accountability record (Art 5(2)).
 

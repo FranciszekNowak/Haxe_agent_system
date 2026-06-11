@@ -27,7 +27,7 @@
  ├─────┼────────────────────────────────────────────────────────────┼────────┤
  │ 2   │ Strip PD plumbing (behavior-neutral)                       │ ☑ done │
  ├─────┼────────────────────────────────────────────────────────────┼────────┤
- │ 3   │ Routing cutover: SQL + migration + litellm (single window) │ ☐ todo │
+ │ 3   │ Routing cutover: SQL + migration + litellm (single window) │ ☑ done │
  ├─────┼────────────────────────────────────────────────────────────┼────────┤
  │ 4   │ Erasure schema readiness + artifact recording + audit      │ ☐ todo │
  └─────┴────────────────────────────────────────────────────────────┴────────┘
@@ -260,6 +260,49 @@
 
  Handoff prompt: "Block 3 done (routing is PD-blind, table collapsed, Gemini retained as alias). /clear, then start
  Block 4: read the master plan and add erasure schema readiness."
+
+ --- BLOCK 3 COMPLETION NOTE (2026-06-11) ---
+
+ DONE, but with Open Decision #1 resolved to the ALTERNATIVE, not the recommendation. Operator chose to
+ ACTIVATE GEMINI as the multimodal_input route (not keep Claude) — confirmed live: Gemini was already
+ serving multimodal via migration 019 + tuned by ADR-042 the same day, so "keep Claude" would have been a
+ REGRESSION, not zero-change. Open Decision #2 resolved to RENAME the Gemini aliases -eu->none now.
+
+ Migration numbers diverged from the plan (015-020 were consumed by intervening work):
+ - routing migration landed as 021_global_model_routing.sql (plan said 016).
+ - Block 4's erasure migration is now 022 (plan said 017). ADR-041 refs corrected 016/017 -> 021/022.
+
+ What landed:
+ - migration 021: modality-aware collapse — delete text pd=true (Bedrock), delete multimodal anthropic
+   (Claude vision), de-dup n/d; rename gemini-flash-eu->haxe-gemini-flash, gemini-pro-eu->haxe-gemini-pro;
+   PK (impact,personal_data,modality) -> (impact,modality); drop model_routing_non_text_unique (redundant
+   under the new PK — NOT recreated, a deliberate divergence from the plan's recreate step); drop
+   personal_data + eu_only columns. Result: 16 rows (6 text Claude / 5 image-gen / 5 multimodal Gemini
+   flash×3 pro×2). Table comment updated.
+ - invoke-model (live, re-exported): Lookup Routing PD-blind (filter + queryReplacement -> [impact,modality]);
+   Resolve Routing/Parse Response drop personal_data; fbAlias + Fallback to Opus -> literal
+   haxe-opus-4-8-direct (was bedrock when PD); provider gemini->'litellm/vertex'; price gate fell_back-only;
+   alert text + When Called input de-PD'd.
+ - decide-research (live, re-exported): Lookup Research Routing dropped personal_data=$2.
+ - litellm-config.yaml: two-pass deploy for ZERO-GAP cutover — (1) additive (new gemini aliases alongside -eu),
+   (2) cleanup (remove -eu gemini + 3 bedrock aliases + commented fable-bedrock; de-GDPR comments). Committed
+   file = end state. Deploys via `docker compose restart litellm` (config-only change; `up -d` did NOT
+   recreate since the compose spec was unchanged — restart re-reads the bind-mounted file).
+ - Write-backs: current.md (layer summary, diagram, routing narratives, §15 detail, LiteLLM aliases, Block 3
+   migration narrative) reconciled to PD-blind + Gemini-active; ADR-040 Update note (records the Claude->Gemini
+   reversal, append-only); ADR-041 migration refs fixed.
+
+ Verification (DoD): live PD-blind Lookup Routing query returns exactly one correct row per (impact,modality)
+ across all tiers (multimodal->Gemini flash/pro, text->Claude, image->gen tiers); renamed haxe-gemini-flash
+ alias resolves through LiteLLM->Vertex (PONG smoke); end-to-end image smoke (task 869dm1z8y) routed to
+ haxe-gemini-flash, vision correct, threaded reply posted, no degradation, ZERO alerts on the clean run.
+ text routing exercised live by the Haiku research-gate in the same run; PDF == text path (Docling untouched),
+ covered by the text proof — no extra ClickUp posts made to avoid channel noise. All 17 workflows drift-clean.
+
+ OPEN ITEM for operator: my test harness produced 5 spurious alerts on Alerts task 869dj2z2c (wrong form
+ content-type + null-taskId from positional form-field naming) — comment ids 90120227449442/449752/449760/
+ 449761/449762. All test artifacts, not regressions; recommend deleting them. Also: Bedrock now unused, so
+ AWS creds in the VPS .env are dead (deployment hygiene cleanup, out of Block 3 scope).
 
  ---
  BLOCK 4 — Erasure schema readiness + artifact recording + referential audit

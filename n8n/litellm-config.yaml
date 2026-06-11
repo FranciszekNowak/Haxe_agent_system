@@ -1,21 +1,20 @@
-# LiteLLM gateway config (ADR-024, ADR-030). Committed — contains NO secrets.
-# AWS credentials, region, Anthropic API key, and the master key are injected
-# from the VPS .env as environment variables (see docker-compose.yml `litellm`
-# service + .env.example).
+# LiteLLM gateway config (ADR-024, ADR-030, ADR-040). Committed — contains NO secrets.
+# The Anthropic API key, Vertex/OpenAI/Stability/Tavily keys, and the master key are injected
+# from the VPS .env as environment variables (see docker-compose.yml `litellm` service +
+# .env.example).
 #
-# Two provider tiers (ADR-030):
-#   -direct aliases  -> Anthropic API (latest models, non-GDPR tasks)
-#   -bedrock aliases -> AWS Bedrock EU eu-central-1 (GDPR-compliant tasks)
+# PD-blind global routing (ADR-040): there is no EU-residency / personal_data tier. Models are
+# chosen by capability + modality only. The DPA + SCCs (+ DPF where certified) make non-EU
+# processing lawful, so the Bedrock-EU tier and the Gemini `-eu` alias suffix were removed
+# (migration 021). `model_name` is the alias stored in Supabase `model_routing.litellm_model`;
+# routing selects it by (impact, modality) and the gateway resolves it to the model+provider here.
 #
-# `model_name` is the alias stored in Supabase `model_routing.litellm_model`.
-# Routing chooses the alias based on (impact, personal_data); the gateway
-# resolves it to the underlying model+provider here.
-#
-# NOTE: Bedrock cross-region EU inference-profile strings must be smoke-tested
-# on first deploy (same discipline as ADR-021/023).
+#   *-direct aliases  -> Anthropic API (Claude family: text + native vision)
+#   haxe-gemini-*     -> Gemini via Vertex AI (global endpoint) — the multimodal_input route
+#   image-gen aliases -> Stability / Vertex / OpenAI (image OUTPUT tiers)
 
 model_list:
-  # ── Anthropic direct (non-GDPR default) ─────────────────────────────────────
+  # ── Anthropic direct (text + native vision) ─────────────────────────────────
   - model_name: haxe-haiku-4-5-direct
     litellm_params:
       model: anthropic/claude-haiku-4-5-20251001
@@ -31,50 +30,24 @@ model_list:
       model: anthropic/claude-opus-4-8
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # Mythos-class, GA 2026-06-09 (ADR-037). Used by 'Krytycznie ważne' (non-PD).
+  # Mythos-class, GA 2026-06-09 (ADR-037). Used by 'Krytycznie ważne' text.
   - model_name: haxe-fable-5-direct
     litellm_params:
       model: anthropic/claude-fable-5
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # ── Bedrock EU eu-central-1 (GDPR — personal_data=true) ─────────────────────
-  - model_name: haxe-haiku-4-5-bedrock
-    litellm_params:
-      model: bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0
-      aws_region_name: os.environ/AWS_REGION_NAME
-
-  - model_name: haxe-sonnet-4-6-bedrock
-    litellm_params:
-      model: bedrock/eu.anthropic.claude-sonnet-4-6
-      aws_region_name: os.environ/AWS_REGION_NAME
-
-  - model_name: haxe-opus-4-5-bedrock
-    litellm_params:
-      model: bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0
-      aws_region_name: os.environ/AWS_REGION_NAME
-
-  # haxe-fable-5-bedrock — NOT YET ENABLED. Bedrock per-account model access for
-  # eu.anthropic.claude-fable-5 returns AccessDeniedException (probed 2026-06-10).
-  # Grant model access in the AWS Bedrock console (eu-central-1), then uncomment
-  # and point model_routing 'Krytycznie ważne' personal_data=true at this alias.
-  # - model_name: haxe-fable-5-bedrock
-  #   litellm_params:
-  #     model: bedrock/eu.anthropic.claude-fable-5
-  #     aws_region_name: os.environ/AWS_REGION_NAME
-
-  # ── Gemini via Vertex AI global (GDPR multimodal input — ADR-038) ──────────────
-  # Global endpoint: inference may route outside EU. GDPR basis: Vertex AI DPA + SCCs.
-  # gemini-2.5-flash deprecated June 2026; gemini-3.x not yet available in EU regions.
-  # Auth: ADC via GOOGLE_APPLICATION_CREDENTIALS (mounted service account key, docker-compose.yml).
-  # Revisit vertex_location when 3.x models land in an EU region.
-
+  # ── Gemini via Vertex AI, global endpoint (multimodal_input route — ADR-040/042) ──────
+  # Transfer basis: Vertex AI DPA + SCCs (ADR-040; no EU-residency requirement, so vertex_location
+  # is the global endpoint and the alias is no longer `-eu`-pinned).
+  # Auth: ADC via GOOGLE_APPLICATION_CREDENTIALS (mounted service-account key, docker-compose.yml).
+  #
   # reasoning_effort bounds thinking (Gemini 3.x maps it to thinkingLevel). Gemini 3 Flash
   # DEFAULTS to thinkingLevel=high, and thinking tokens are billed/counted as OUTPUT tokens —
   # so default thinking burned ~3.8k–7.7k tokens of the request's max_tokens and truncated the
   # answer to empty (finish_reason=length, content=null) on the n/d tier (8k cap). Flash serves
   # the lower tiers (n/d/Niski/Średni) -> 'low' keeps thinking small so the output cap is real
   # and responses are faster. (reasoning_effort: minimal/low/medium/high; ADR-042.)
-  - model_name: haxe-gemini-flash-eu
+  - model_name: haxe-gemini-flash
     litellm_params:
       model: vertex_ai/gemini-3.5-flash
       vertex_project: os.environ/VERTEX_PROJECT
@@ -83,7 +56,7 @@ model_list:
 
   # Pro serves the high tiers (Wysoki/Krytycznie ważne) -> 'high' for deep reasoning; their
   # 32k output cap leaves ample room for thinking + answer.
-  - model_name: haxe-gemini-pro-eu
+  - model_name: haxe-gemini-pro
     litellm_params:
       model: vertex_ai/gemini-3.1-pro-preview
       vertex_project: os.environ/VERTEX_PROJECT
@@ -92,7 +65,7 @@ model_list:
 
   # ── Image generation (ADR-036) ───────────────────────────────────────────────
   # Tiered by impact: low → Stability, medium → Vertex AI, high → DALL-E 3.
-  # No eu_only requirement — image payloads carry no personal data (spec 0.1).
+  # Image payloads carry no personal data (spec 0.1).
   # Aliases match model_routing.litellm_model seeds from migration 012.
   # API keys injected from .env; see .env.example for required variable names.
   # Replace model IDs if the listed versions become unavailable at build time.

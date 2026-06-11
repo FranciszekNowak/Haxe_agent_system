@@ -36,10 +36,11 @@ senior-management intervention.
    UI, and scheduling; worker processes pull jobs from Redis and execute
    workflows. Redis provides rate-limiting, decoupling, priority, and retries.
 
-3. **AWS Bedrock (eu-central-1) + Anthropic direct + Vertex AI (global)** — model inference via LiteLLM
-   gateway. Routed by `(impact, personal_data, modality)`: `personal_data=false` → Anthropic direct;
-   `personal_data=true` + `modality='text'` → Bedrock EU; `personal_data=true` + `modality='multimodal_input'`
-   → Vertex AI Gemini (global endpoint, DPA+SCCs). See ADR-030, ADR-038, ADR-039.
+3. **Anthropic direct + Vertex AI (global)** — model inference via LiteLLM gateway. **PD-blind** routing
+   by `(impact, modality)` (ADR-040, migration 021): `modality='text'` → Anthropic direct (Claude);
+   `modality='multimodal_input'` → Vertex AI Gemini (global endpoint, DPA+SCCs; flash for low tiers, pro
+   for high — ADR-042); `modality='image'` → image-gen tiers (Stability/Vertex/DALL-E). Bedrock EU and
+   the `personal_data`/`eu_only` axis were retired (migration 021). See ADR-030, ADR-040, ADR-042.
 
 4. **Supabase (eu-west-1, Ireland)** — application database. Operational logs, threaded
    human feedback, process-change proposals, conversation session cache, email
@@ -65,10 +66,11 @@ senior-management intervention.
 └────────────────────────────────────────────────────────────────┘
                               ↕
 ┌────────────────────────────────────────────────────────────────┐
-│  LAYER 3: LiteLLM Gateway → Anthropic / Bedrock EU / Vertex AI │
-│  PD=false → Anthropic direct (Haiku/Sonnet/Opus/Fable 5)       │
-│  PD=true + text → Bedrock EU (Haiku/Sonnet/Opus)               │
-│  PD=true + multimodal_input → Vertex AI Gemini (global)        │
+│  LAYER 3: LiteLLM Gateway → Anthropic direct / Vertex AI       │
+│  PD-blind, routed by (impact, modality) — ADR-040             │
+│  text → Anthropic direct (Haiku/Sonnet/Opus/Fable 5)          │
+│  multimodal_input → Vertex AI Gemini (flash/pro, global)      │
+│  image → Stability / Vertex / DALL-E (image-gen tiers)        │
 └────────────────────────────────────────────────────────────────┘
                               ↕
 ┌────────────────────────────────────────────────────────────────┐
@@ -135,21 +137,21 @@ For **due-date triggered** autonomous runs, caller is determined as:
 Two future capabilities are designed-for but NOT built. Seams are preserved so
 they slot in additively. See the corresponding ADRs.
 
-- **Multi-provider routing (LIVE; going PD-blind).** Model invocation is centralized behind
-  `Invoke Model (v1)`; routing is data-driven via `model_routing (impact, personal_data, modality)`
-  (ADR-030). `personal_data=false` → Anthropic direct; the `personal_data=true` (GDPR) rows → Bedrock
-  EU / Vertex Gemini still exist but are never selected. The `PD Verifier (v1)` sensitivity-classifier
-  seam was **removed in Block 2** (ADR-040): the pipeline no longer threads `personal_data`, so every
-  task resolves to the `personal_data=false` rows. Collapsing the table to `(impact, modality)` and
-  dropping the `personal_data`/`eu_only` columns is **Block 3**. Fail-safe preserved: DB-down falls
-  back to `haxe-sonnet-4-6-direct` + WARN.
+- **Multi-provider routing (LIVE; PD-blind).** Model invocation is centralized behind
+  `Invoke Model (v1)`; routing is data-driven via `model_routing (impact, modality)` — capability +
+  modality only, no `personal_data`/EU axis (ADR-040, migration 021). `modality='text'` → Anthropic
+  direct; `modality='multimodal_input'` → Vertex AI Gemini (flash/pro by tier, ADR-042); `modality='image'`
+  → image-gen tiers. The `PD Verifier (v1)` seam was removed in Block 2 and the `personal_data`/`eu_only`
+  columns + Bedrock-EU rows were dropped in **Block 3** (migration 021); the table collapsed to one row per
+  `(impact, modality)`. Fail-safe preserved: DB-down falls back to `haxe-sonnet-4-6-direct` + WARN.
 
-- **Multimodal I/O (input + image-gen pipelines LIVE, ADR-036/038).** Image attachments from ClickUp tasks
-  pass as vision content blocks to the model; Docling extracts text from non-image files (PDF/DOCX/XLSX)
-  into the prompt. `personal_data=false` tasks use Anthropic direct aliases (vision-native, no routing
-  change). `personal_data=true` + images routes to Vertex AI Gemini (`modality='multimodal_input'`,
-  ADR-038/039). Image generation live via LiteLLM Stability/Vertex AI/DALL-E 3 tiers (ADR-036).
-  ClickUp attachment upload deferred.
+- **Multimodal I/O (input + image-gen pipelines LIVE, ADR-036/038/040).** Image attachments from ClickUp
+  tasks pass as vision content blocks to the model; Docling extracts text from non-image files
+  (PDF/DOCX/XLSX) into the prompt — a PDF therefore routes as `modality='text'` → Claude. Image *input*
+  (`modality='multimodal_input'`) routes to **Vertex AI Gemini** for all tasks (the active multimodal
+  route — flash for n/d/Niski/Średni, pro for Wysoki/Krytycznie; ADR-040 operator decision + ADR-042).
+  Image *generation* live via LiteLLM Stability/Vertex AI/DALL-E 3 tiers (ADR-036). ClickUp attachment
+  upload deferred.
 
 ---
 
@@ -291,8 +293,9 @@ a data location change.
 > the answer and posted no reply. **(3)** Data hotfix: `model_routing` `temperature` set NULL for the
 > `Krytycznie ważne` × `multimodal_input` Fable 5 row (Fable 5 now rejects `temperature` → 400); the
 > `text` row was already NULL. Codified as **migration `015_fable5_multimodal_temperature_null.sql`**
-> (so the migrations stay the source of truth, not a forward-note); Block 3's routing migration (now 016)
-> must preserve `temperature = NULL` for that row. The `personal_data`/EU apparatus removal itself is
+> (so the migrations stay the source of truth, not a forward-note); Block 3's routing migration (landed as
+> `021`) preserved `temperature = NULL` for that row (the `text` Fable 5 row survives; the `multimodal_input`
+> Fable 5 row was replaced by Gemini Pro). The `personal_data`/EU apparatus removal itself is
 > still pending (Blocks 2–3).
 
 > **Block 2 — strip PD plumbing, behaviour-neutral (2026-06-11, ADR-040).** The `PD Verifier (v1)`
@@ -314,6 +317,24 @@ a data location change.
 > no `personal_data`/`pd_verifier_ok` in the Build-Prompt output, no alerts. Re-exported all six edited
 > workflows; `check-workflow-drift.mjs` reports all 17 match live (assemble-context + agent-orchestrator
 > reconciled — they already carried the ADR-038 context-health/modality work).
+
+> **Block 3 — routing cutover to PD-blind global (2026-06-11, ADR-040/042).** `model_routing` collapsed
+> to one row per `(impact, modality)` via migration `021_global_model_routing.sql`: dropped the Bedrock-EU
+> `text` rows and the Claude `multimodal_input` rows, **kept Gemini as the active multimodal route**
+> (operator decision — this *inverts* ADR-040's original "keep Claude, Gemini stays dormant" line; see the
+> ADR-040 Update note), renamed the Gemini aliases `-eu`→none (now global, not EU-pinned), re-keyed the PK
+> `(impact, personal_data, modality)` → `(impact, modality)`, and dropped the `personal_data`/`eu_only`
+> columns + the now-redundant `model_routing_non_text_unique` index. Result: 16 rows — 6 `text` (Claude
+> direct), 5 `image` (gen tiers), 5 `multimodal_input` (Gemini flash×3 / pro×2 per ADR-042). Workflows made
+> PD-blind: `Invoke Model` (`Lookup Routing` filter + queryReplacement, `Fallback to Opus`/`fbAlias` →
+> literal `haxe-opus-4-8-direct`, provider/price logic, `When Called` input) and `decide-research`
+> (`Lookup Research Routing`). LiteLLM deployed in **two passes** for a zero-gap cutover: (1) additive — new
+> `haxe-gemini-flash`/`-pro` aliases added alongside the `-eu` ones; (2) after the migration repointed the
+> rows — cleanup removing the `-eu` Gemini aliases + the three `*-bedrock` aliases. Verified: the live
+> PD-blind query returns exactly one correct row per `(impact, modality)` across all tiers; an image smoke
+> (task 869dm1z8y) routed to `haxe-gemini-flash`, vision correct, threaded reply posted, no degradation,
+> zero alerts on the clean run. Bedrock EU is now unused (AWS creds in `.env` are dead — a deployment
+> cleanup, intentionally not done here).
 
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
@@ -443,13 +464,15 @@ Target: 7–9 weeks to v1.
   - `n8n-worker` (n8nio/n8n:2.22.5) — queue consumer; concurrency 5.
   - `litellm` (ghcr.io/berriai/litellm, v1.87.0 pinned by digest) — **deployed + active** (ADR-024/030).
     Internal-only LLM gateway (127.0.0.1:4000): signs Bedrock, returns exact token usage + USD cost header,
-    multi-provider. **IS the production model-call path** (§15). Six versioned aliases: three Anthropic direct
-    (`haxe-haiku/sonnet/opus-*-direct`) + three Bedrock EU (`*-bedrock`) + two Gemini EU (`haxe-gemini-flash-eu`,
-    `haxe-gemini-pro-eu`). `ANTHROPIC_API_KEY` in `.env` and passed through via `docker-compose.yml`; confirmed
-    working 2026-06-08. Config in committed `n8n/litellm-config.yaml`; credentials in `.env` (never committed).
-    Native Bedrock node retained in n8n **disabled** as fallback. Gemini EU aliases added (ADR-038):
-    `haxe-gemini-flash-eu` (`vertex_ai/gemini-3.5-flash`) and `haxe-gemini-pro-eu`
-    (`vertex_ai/gemini-3.1-pro-preview`), both `vertex_location: global` (ADR-039). Auth: ADC via
+    multi-provider. **IS the production model-call path** (§15). Chat aliases (PD-blind — ADR-040, migration 021):
+    four Anthropic direct (`haxe-haiku-4-5-direct`, `haxe-sonnet-4-6-direct`, `haxe-opus-4-8-direct`,
+    `haxe-fable-5-direct`) + two Gemini global (`haxe-gemini-flash`, `haxe-gemini-pro`). The three Bedrock EU
+    (`*-bedrock`) aliases were **removed in Block 3** (no routing row references them); the Gemini aliases were
+    renamed from `-eu` (they run on the global endpoint, never EU-pinned). `ANTHROPIC_API_KEY` in `.env` and
+    passed through via `docker-compose.yml`. Config in committed `n8n/litellm-config.yaml`; credentials in `.env`
+    (never committed). Native Bedrock node retained in n8n **disabled** (legacy). Gemini (ADR-038/040):
+    `haxe-gemini-flash` (`vertex_ai/gemini-3.5-flash`) and `haxe-gemini-pro`
+    (`vertex_ai/gemini-3.1-pro-preview`), both `vertex_location: global` (ADR-039/042). Auth: ADC via
     `GOOGLE_APPLICATION_CREDENTIALS=/secrets/vertex-key.json`; the key file is mounted read-only from
     `/opt/haxe-agents/vertex-key.json` (service account `litellm-vertex@haxe-agent-system-499018.iam.gserviceaccount.com`,
     `roles/aiplatform.user`). `VERTEX_PROJECT=haxe-agent-system-499018` in VPS `.env`. Never commit
@@ -634,9 +657,10 @@ State as of 2026-06-10:
   `Invoke Model (v1)`; C posts the thread-aware draft and owns the ClickUp side-effects. (The earlier
   monolithic 26-node `agent-spine.json` was decomposed in place — `a8XKaijkMFNBpRBa` is now the
   orchestrator.)
-- **Model layer — DONE.** Self-hosted LiteLLM gateway, data-driven routing on `(impact,
-  personal_data)` — `false` → Anthropic direct, `true` → Bedrock EU (ADR-030) — exact USD ×
-  daily NBP FX → `cost_pln`, logged to `agent_runs` and summed into `[AI] Koszt akcji [PLN]`.
+- **Model layer — DONE.** Self-hosted LiteLLM gateway, **PD-blind** data-driven routing on `(impact,
+  modality)` — `text` → Anthropic direct, `multimodal_input` → Vertex Gemini, `image` → image-gen tiers
+  (ADR-040, migration 021) — exact USD × daily NBP FX → `cost_pln`, logged to `agent_runs` and summed
+  into `[AI] Koszt akcji [PLN]`.
 - **Output — DONE.** Draft comment @-mentions the reviewer and renders full markdown (headings,
   lists, code, tables) via a deterministic markdown→Quill-Delta converter; soft
   Wyniki/Pytania/Decyzje/Sugestie structure. **Never finalizes** (no agent-done status, no
@@ -892,9 +916,10 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   assembled context, plus **`image_blocks_json`** (input image refs for the vision model, non-PD) and
   `input_warnings_*`. Folds attachment **text** into the prompt and fires the reader's `warnings` via
   `Post Alert (v1)` on a reconverging side branch (`Return Context` stays the sole terminal). Multimodal
-  input (ADR-036/038 Block 5): images present → `modality='multimodal_input'` set on the context payload →
-  routing returns Gemini EU alias for PD=true tasks (ADR-038 supersedes former "PD guard drops images"
-  stance); Anthropic direct handles vision for PD=false tasks unchanged.
+  input (ADR-036/038/040 Block 5): images present → `modality='multimodal_input'` set on the context payload →
+  routing returns the **Gemini** alias for all multimodal tasks (`haxe-gemini-flash`/`-pro` by tier; ADR-040
+  made Gemini the active multimodal route, superseding both the former "PD guard drops images" stance and the
+  Claude-direct vision path).
 - **Stage B — `Execute LLM Call (v1)`** (`n8n/workflows/execute-llm-call.json`, id `9qdJA4xnAGbxqkt9`,
   8 nodes): `Invoke Model (v1)` → drafted reply + cost; forwards `image_blocks_json` to Invoke Model.
   **Return path linearized** (`Call Invoke Model → Sum Task Cost → Update CU Cost Field → Return LLM
@@ -954,9 +979,9 @@ was a task-node link-rendering / pre-grant artifact).
 `n8n/workflows/invoke-model.json`, n8n id `XcOIVdZnVCCWNPeb`. The ADR-013 model-call seam,
 running on the self-hosted **LiteLLM gateway** (`litellm` container, `127.0.0.1:4000`, v1.87.0
 pinned by digest; ADR-024/030). Typed Execute-Workflow contract (`prompt` / `impact` /
-`personal_data` / `task_type`). Node chain:
+`modality` / `task_type`). Node chain:
 
-`Lookup Routing` (Supabase `model_routing`, composite PK `(impact, personal_data)`,
+`Lookup Routing` (Supabase `model_routing`, composite PK `(impact, modality)`,
 `__default__` fail-safe row, DB-error tolerant) → `Resolve Routing` (in-code Sonnet last-resort
 + deliberation-nudge prepend) → `Call LiteLLM` (HTTP, header-auth credential, full response) →
 `Get FX Rate` → `Compute Cost` → `Insert agent_runs` → `Shape Output` (single terminal,
@@ -964,23 +989,22 @@ returns `{ completion, model, provider }`). The native AWS Bedrock node + `Basic
 **retained disabled** as a fallback path (a generic AWS credential + HTTP Request cannot sign
 Bedrock — only the native node can; ADR-021).
 
-- **Provider routing (ADR-030/038):** Three legs via `(personal_data, modality)`:
-  - `personal_data=false` → **Anthropic direct**: `haxe-haiku-4-5-direct`, `haxe-sonnet-4-6-direct`,
-    `haxe-opus-4-8-direct`, `haxe-fable-5-direct`. Auth: `ANTHROPIC_API_KEY`. All Claude 4.x aliases
-    are vision-capable; non-GDPR `multimodal_input` tasks route here with no alias change.
-  - `personal_data=true`, `modality='text'` → **Bedrock EU**: `haxe-haiku-4-5-bedrock`,
-    `haxe-sonnet-4-6-bedrock`, `haxe-opus-4-5-bedrock`. Auth: AWS IAM (eu-central-1). Bedrock Fable 5
-    pending model-access grant; Krytycznie ważne GDPR text path uses Opus 4.5 until then.
-  - `personal_data=true`, `modality='multimodal_input'` → **Vertex AI Gemini (global)**:
-    `haxe-gemini-flash-eu` (`vertex_ai/gemini-3.5-flash`), `haxe-gemini-pro-eu`
-    (`vertex_ai/gemini-3.1-pro-preview`). Auth: ADC via `/secrets/vertex-key.json`. GDPR basis:
-    Vertex AI DPA+SCCs (ADR-039). `Parse Response` detects Gemini aliases → sets provider to
-    `'litellm/vertex-eu'`. ⚠ Gemini 3.x uses **thinking tokens** billed on top of text: ~65
-    reasoning + 1 text tokens per one-word reply (Flash), ~133 + 1 (Pro). Real task cost will
-    significantly exceed text-token count alone.
+- **Provider routing (PD-blind — ADR-040/042):** one row per `(impact, modality)`, three legs by modality:
+  - `modality='text'` → **Anthropic direct**: `haxe-haiku-4-5-direct`, `haxe-sonnet-4-6-direct`,
+    `haxe-opus-4-8-direct`, `haxe-fable-5-direct`. Auth: `ANTHROPIC_API_KEY`. (A PDF/DOCX task is read as
+    text via Docling, so it routes here, not to multimodal_input.)
+  - `modality='multimodal_input'` → **Vertex AI Gemini (global)**: `haxe-gemini-flash`
+    (`vertex_ai/gemini-3.5-flash`) for `n/d`/`Niski`/`Średni`, `haxe-gemini-pro`
+    (`vertex_ai/gemini-3.1-pro-preview`) for `Wysoki`/`Krytycznie ważne` (ADR-042). This is the **active**
+    multimodal route (operator decision, ADR-040). Auth: ADC via `/secrets/vertex-key.json`. Transfer
+    basis: Vertex AI DPA+SCCs (ADR-040). `Parse Response` detects Gemini aliases → sets provider
+    `'litellm/vertex'`. ⚠ Gemini 3.x uses **thinking tokens** billed on top of text: ~65 reasoning + 1 text
+    tokens per one-word reply (Flash), ~133 + 1 (Pro); bounded per-model via `reasoning_effort` (ADR-042).
+    Real task cost will exceed text-token count alone.
+  - `modality='image'` → **image generation tiers** (Stability/Vertex/DALL-E 3; ADR-036).
   `agent_runs.model_used` stores the versioned model ID from the LiteLLM response body. Migrations 008
-  (routing composite PK) and 013 (multimodal image tiers) applied; migration 014 (`gemini_multimodal_routing`)
-  pending rename + application.
+  (composite PK), 013 (image tiers), 014 (Gemini multimodal), 020 (max_tokens by tier), and **021 — PD-blind
+  collapse to `(impact, modality)`, Bedrock rows dropped, Gemini aliases renamed `-eu`→none** — all applied.
 - **Impact → tier (ADR-023):** `Niski`→Haiku 4.5, `Średni`→Sonnet 4.6, `Wysoki`→Opus,
   `Krytycznie ważne`→Opus at temp 0.2 / 16k tokens with a prepended deliberation nudge;
   `n/d`/empty/unknown→Sonnet (fail-safe).
@@ -989,11 +1013,11 @@ Bedrock — only the native node can; ADR-021).
   skip on 0 items and silently null the whole chain (no reply, no alert). Now `Lookup Routing` has
   `alwaysOutputData:true` (so `Resolve Routing` always runs its safety-net) and a `routing_row_missing`
   flag fires **`Alert Routing Missing` (CRITICAL, `invoke-model/routing`)** naming the unmatched
-  impact×modality×personal_data combo — loud but non-blocking (it reconverges to `Check Degradation`;
+  impact×modality combo — loud but non-blocking (it reconverges to `Check Degradation`;
   `Shape Output` stays the sole leaf). Migration 019 closed the specific gap that triggered it: the
   `n/d - zadanie nie jest dla AI` tier had no `multimodal_input` row, so a not-for-AI task *with an
-  image* matched nothing. It now routes to `haxe-gemini-flash-eu` (both PD values, operator choice). The PK is
-  `(impact, personal_data, modality)`.
+  image* matched nothing. It now routes to `haxe-gemini-flash` (Gemini, the active multimodal route). The PK is
+  `(impact, modality)` after migration 021.
 - **`max_tokens` by tier (migration 020):** `max_tokens` is the **output/completion** cap only — it
   does **not** limit input/context (the context window does). Reasoning models (Gemini 3.x, Fable 5)
   count thinking tokens against it, which is why the former 4000 truncated gemini-flash to an empty
