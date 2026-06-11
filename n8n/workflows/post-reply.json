@@ -208,6 +208,74 @@
         },
         "options": {}
       }
+    },
+    {
+      "id": "record-artifact",
+      "name": "Record Artifact",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1320, 380],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with target as (\n  select id from agent_runs where clickup_task_id = $1 order by id desc limit 1\n), upd as (\n  update agent_runs set clickup_comment_id = $2\n  where id = (select id from target)\n  returning id\n)\nselect (select id from target) as target_id, (select count(*) from upd)::int as updated;",
+        "options": {
+          "queryReplacement": "={{ [ $('When Called').first().json.clickup_task_id, ($('Post Draft Comment').isExecuted && $('Post Draft Comment').first().json.id) ? $('Post Draft Comment').first().json.id : ($('Post Reply').isExecuted ? $('Post Reply').first().json.id : '') ] }}"
+        }
+      },
+      "credentials": { "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" } },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "notes": "ADR-041 erasure-readiness: writes the posted ClickUp comment id onto the task's latest agent_runs row. Side branch off Set Status success — cannot affect the already-complete reply/status. CTE always returns one row (target_id, updated 0/1) so a 0-row UPDATE is detectable, not a silent 0-item drop."
+    },
+    {
+      "id": "recorded",
+      "name": "Recorded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1540, 380],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 3 },
+          "conditions": [
+            { "id": "r1", "leftValue": "={{ $json.updated }}", "rightValue": 1, "operator": { "type": "number", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "True: clickup_comment_id written (updated=1) -> done. False: no matching agent_runs row (updated=0) -> WARN."
+    },
+    {
+      "id": "alert-record-artifact",
+      "name": "Alert Record Artifact",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1760, 480],
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "post-reply/record-artifact",
+            "message": "Nie zapisano clickup_comment_id na agent_runs (obserwowalność/erasure-readiness; odpowiedź i status zostały dostarczone).",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; target_id={{ $('Record Artifact').first().json.target_id || 'null' }}; updated={{ $('Record Artifact').first().json.updated }}; err={{ ($json.error && (($json.error.message) || $json.error)) || 'none' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
+            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "notes": "WARN when the comment-id write found no row or errored. Defense-in-depth: a missing run row is also alerted upstream by Log Model Run. Posts to the Alerts task (disjoint from the answer task) so no webhook loop; does not block reply/status."
     }
   ],
   "connections": {
@@ -226,7 +294,9 @@
         [{ "node": "Alert Post-back Failed", "type": "main", "index": 0 }]
       ]
     },
-    "Set Status Zakonczono": { "main": [[], [{ "node": "Alert Status Failed", "type": "main", "index": 0 }]] }
+    "Set Status Zakonczono": { "main": [[{ "node": "Record Artifact", "type": "main", "index": 0 }], [{ "node": "Alert Status Failed", "type": "main", "index": 0 }]] },
+    "Record Artifact": { "main": [[{ "node": "Recorded?", "type": "main", "index": 0 }], [{ "node": "Alert Record Artifact", "type": "main", "index": 0 }]] },
+    "Recorded?": { "main": [[], [{ "node": "Alert Record Artifact", "type": "main", "index": 0 }]] }
   },
   "settings": {
     "executionOrder": "v1",

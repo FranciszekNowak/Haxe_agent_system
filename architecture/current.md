@@ -161,6 +161,11 @@ Two parallel feedback systems with identical machinery, different subject:
 
 ### 4.1 Artifacts (Tier 0)
 - `agent_runs` — one row per agent execution (context, trigger, model, cost, status).
+  Also the **erasure hub** (ADR-041, migration 022): nullable `subject_key` (the
+  channel-natural counterparty id, populated only once the email channel is wired),
+  `clickup_comment_id` (the id of the comment the run posted — recorded live by
+  Post-back's `Record Artifact`), and a reserved `drive_file_id`. Nothing reads
+  `subject_key` yet; the schema is ready at zero behavioral cost.
 - `agent_run_evaluations` — append-only threaded human feedback on a given
   output. Each row = one timestamped contribution carrying an optional thumbs
   rating and/or comment. Same user may appear many times; current stance = their
@@ -335,6 +340,22 @@ a data location change.
 > (task 869dm1z8y) routed to `haxe-gemini-flash`, vision correct, threaded reply posted, no degradation,
 > zero alerts on the clean run. Bedrock EU is now unused (AWS creds in `.env` are dead — a deployment
 > cleanup, intentionally not done here).
+
+> **Block 4 — erasure schema readiness + artifact recording (2026-06-11, ADR-041).** Migration
+> `022_agent_runs_erasure_ready.sql` adds three nullable `text` columns to `agent_runs` —
+> `subject_key` (partial-indexed `where subject_key is not null`), `clickup_comment_id`,
+> `drive_file_id` — making `agent_runs` the **erasure hub** at zero behavioral risk (nothing reads
+> or writes `subject_key`/`drive_file_id`; the pipeline stays PD-blind). `Post Reply (v1)` gains a
+> `Record Artifact` Postgres node on a **side branch off `Set Status Zakończono` success**: it writes
+> the just-posted ClickUp comment id onto the task's latest `agent_runs` row (`order by id desc`),
+> via a CTE that always returns one row (`target_id`, `updated 0/1`) so a 0-row write is detectable,
+> not a silent drop → `Recorded?` IF fires a WARN (`post-reply/record-artifact`) on miss/error. The
+> WARN posts to the Alerts task (disjoint from the answer task → no webhook loop) and never blocks
+> reply/status. Referential audit (report-only, no FKs/cascades added): PD-capable stores either FK
+> `agent_runs` (`email_sends.agent_run_id` **nullable, no cascade**; `agent_run_evaluations` **ON
+> DELETE CASCADE**; `agent_proposals.source_agent_run_id` nullable; `agent_proposal_evaluations`
+> transitive) or — `conversation_sessions` — link only by `clickup_task_id`/`comment_root_id` text
+> (**no FK back**). Retention + lawful-basis posture is recorded in `compliance/gdpr-processing-decisions.md`.
 
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
@@ -1092,6 +1113,12 @@ post never sets status or `[AI] Finalny…`.
   > (§15.7) — replying to a reply is impossible (ClickUp threads are single-level → `Unsupported
   > Entity`), so the root is the only valid target. On reply failure → new top-level comment + WARN,
   > unchanged.
+
+- **Artifact recording (ADR-041, migration 022):** after the status field is set, a `Record Artifact`
+  Postgres node (side branch off `Set Status Zakończono` success) writes the posted comment id onto
+  the task's latest `agent_runs.clickup_comment_id`. Best-effort + observable: a 0-row write or DB
+  error fires a `post-reply/record-artifact` WARN; reply and status still complete. This is
+  erasure-readiness plumbing — see the §4 `agent_runs` note and the Block 4 migration narrative.
 
 ### 15.7 `CU Webhook Producer (v1)` — automatic triggering
 

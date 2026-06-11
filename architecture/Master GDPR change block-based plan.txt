@@ -29,7 +29,7 @@
  ├─────┼────────────────────────────────────────────────────────────┼────────┤
  │ 3   │ Routing cutover: SQL + migration + litellm (single window) │ ☑ done │
  ├─────┼────────────────────────────────────────────────────────────┼────────┤
- │ 4   │ Erasure schema readiness + artifact recording + audit      │ ☐ todo │
+ │ 4   │ Erasure schema readiness + artifact recording + audit      │ ☑ done │
  └─────┴────────────────────────────────────────────────────────────┴────────┘
 
  ---
@@ -393,6 +393,54 @@
  Output deliverable (Step 6): migration summary — columns added (subject_key+clickup_comment_id+drive_file_id, partial index on subject_key); artifact-id recording status (was nowhere on agent_runs; now ClickUp comment id via Record
  Artifact, Drive id reserved/unwritten); the referential-graph map; the store that does not link back (conversation_sessions + email_sends no-cascade + nullable-proposal caveats); smoke results (image+PDF unchanged); anything ambiguous
  left untouched.
+
+ --- BLOCK 4 COMPLETION NOTE (2026-06-11) ---
+
+ DONE as scoped. PD-blind pipeline untouched; zero behavioral risk; the spine/reading path/routing
+ were not modified.
+
+ Migration number: landed as 022_agent_runs_erasure_ready.sql (plan said 017; Block 3 already
+ renumbered to 022, and ADR-041 cites 022). Applied to haxe-agent-prod; verified: three nullable
+ text columns (subject_key, clickup_comment_id, drive_file_id) + partial index
+ idx_runs_subject_key (where subject_key is not null) + column comments all present.
+
+ Artifact recording — Open Decision #3 resolved to latest-row UPDATE (recommended), #4 to reserve
+ drive_file_id now (recommended). Post Reply (v1) (id t17moGs7Vxo5ZcFv) gained 3 nodes on a side
+ branch off Set Status Zakończono SUCCESS output (single convergence, runs once, cannot affect the
+ already-complete reply/status):
+  - Record Artifact (Postgres): a single CTE that ALWAYS returns one row (target_id, updated 0/1),
+    so a 0-row write is detectable instead of a silent 0-item drop. comment-id expression is
+    execution-guarded ($('Post Draft Comment').isExecuted ? ... : $('Post Reply')...) — the plan's
+    bare `a || b` would THROW on an unexecuted node in n8n, so it was hardened.
+  - Recorded? (IF updated==1) → false → Alert Record Artifact (WARN post-reply/record-artifact);
+    Record Artifact error output → same alert. Posts to the Alerts task (disjoint from the answer
+    task) → no webhook loop. Reply/status always complete.
+ Re-exported to repo (surgical edit, drift-clean). Ordering verified safe: agent_runs is inserted by
+ Log Model Run (inside Invoke Model) BEFORE Post Reply runs, and the final-answer row is the highest
+ id, so `order by id desc limit 1` targets the right row.
+
+ Referential audit (read-only, confirmed live via pg_constraint): email_sends.agent_run_id FK
+ NULLABLE + NO cascade; agent_run_evaluations ON DELETE CASCADE; agent_proposals.source_agent_run_id
+ nullable FK; agent_proposal_evaluations transitive; conversation_sessions NO FK (links by
+ task/comment text only). No FKs/cascades added — audit only.
+
+ Write-backs: current.md (agent_runs erasure-hub note in §4, Block-4 migration narrative, §15.6
+ Record Artifact note); compliance/gdpr-processing-decisions.md CREATED (drafted from ADR-040/041,
+ English, ROPA-style; retention figure recorded as ~10yr post-2019 / ~50yr pre-2019, flagged
+ "confirm with counsel"); Block status table set to done. ADR-041 needed no edit (already Accepted,
+ already cites migration 022).
+
+ INCIDENTAL DRIFT FIXED (separate commit, not erasure): invoke-model.json Routing Missing? node had
+ a behaviorally-inert `options: {}` added live by n8n auto-sanitization on a 14:12 save (NOT this
+ work, NOT a logic change — the whole delta was one empty object). Reconciled repo←live to restore
+ drift-clean; all 17 workflows now match live. Contradicts Block 3's "all drift-clean" — flag: an
+ unattributed live save of invoke-model happened at 14:12.
+
+ STILL OPEN for operator: (a) ADR NUMBER COLLISION — 040/041 each name two committed ADRs
+ (global-model-routing/erasure vs. the pre-existing thread-root-replies/routing-zero-row-guard +
+ 042 gemini-thinking from commit 5e5e229). Not folded into Block 4; recommend a dedicated renumber
+ (ours → 043/044) + reference sweep. (b) Confirm the Polish employment-records retention figure and
+ the executed DPAs/SCCs + no-training terms per sub-processor (compliance doc §8).
 
  ---
  Do NOT build (explicit out-of-scope)
