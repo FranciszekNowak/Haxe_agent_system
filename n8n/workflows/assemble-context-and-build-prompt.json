@@ -7,37 +7,53 @@
       "name": "When Called",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
-      "position": [0, 300],
+      "position": [0, 304],
       "parameters": {
         "workflowInputs": {
           "values": [
-            { "name": "taskId" },
-            { "name": "reviewer_user_id" },
-            { "name": "caller_username" },
-            { "name": "triggered_by" },
-            { "name": "invocation_type" },
-            { "name": "triggering_comment_id" },
-            { "name": "triggering_comment_text" }
+            {
+              "name": "taskId"
+            },
+            {
+              "name": "reviewer_user_id"
+            },
+            {
+              "name": "caller_username"
+            },
+            {
+              "name": "triggered_by"
+            },
+            {
+              "name": "invocation_type"
+            },
+            {
+              "name": "triggering_comment_id"
+            },
+            {
+              "name": "triggering_comment_text"
+            }
           ]
         }
-      },
-      "notes": "Same inputs as the former agent-spine When Called trigger."
+      }
     },
     {
       "id": "call-context-gather",
       "name": "Call Context Gather",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [220, 300],
+      "position": [224, 304],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "qgM37HdQj78Rn090", "mode": "list", "cachedResultName": "Context Gather (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "qgM37HdQj78Rn090",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
-          "value": { "taskId": "={{ $json.taskId }}" },
+          "value": {
+            "taskId": "={{ $json.taskId }}"
+          },
           "matchingColumns": [],
-          "schema": [
-            { "id": "taskId", "displayName": "taskId", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
         },
@@ -49,9 +65,13 @@
       "name": "Call PD Verifier",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [440, 300],
+      "position": [448, 304],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "hzwmak7UBpuHaiTO", "mode": "list", "cachedResultName": "PD Verifier (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "hzwmak7UBpuHaiTO",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -59,25 +79,24 @@
             "triggering_comment_text": "={{ $('When Called').first().json.triggering_comment_text || '' }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "current_task", "displayName": "current_task", "type": "object", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggering_comment_text", "displayName": "triggering_comment_text", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": false
         },
         "options": {}
-      },
-      "notes": "Simplified: no $if($isExecuted) guard needed — SW3 always has When Called as its only trigger."
+      }
     },
     {
       "id": "call-workspace-search",
       "name": "Call Workspace Search",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [660, 300],
+      "position": [672, 304],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "eL3fJuRMpzVRuVUT", "mode": "list", "cachedResultName": "Workspace Search (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "eL3fJuRMpzVRuVUT",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -88,28 +107,24 @@
             "clickup_task_id": "={{ ($('Call Context Gather').first().json.current_task || {}).id || '' }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "current_task", "displayName": "current_task", "type": "object", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggering_comment_text", "displayName": "triggering_comment_text", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "caller_user_id", "displayName": "caller_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "personal_data", "displayName": "personal_data", "type": "boolean", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "clickup_task_id", "displayName": "clickup_task_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": false
         },
         "options": {}
-      },
-      "notes": "Returns {task_comments, additional_context, sources_used, sources_filtered_out}."
+      }
     },
     {
       "id": "call-decide-research",
       "name": "Call Decide Research",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [880, 300],
+      "position": [880, 304],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "Ccc9y0AcLwL022FY", "mode": "list", "cachedResultName": "Decide Research and Deliver (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "Ccc9y0AcLwL022FY",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -125,121 +140,190 @@
             "triggering_comment_text": "={{ $('When Called').first().json.triggering_comment_text || '' }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "impact", "displayName": "impact", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "process_type", "displayName": "process_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "clickup_task_id", "displayName": "clickup_task_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "task_name", "displayName": "task_name", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "task_description", "displayName": "task_description", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "personal_data", "displayName": "personal_data", "type": "boolean", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "reviewer_user_id", "displayName": "reviewer_user_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggered_by", "displayName": "triggered_by", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "invocation_type", "displayName": "invocation_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "triggering_comment_text", "displayName": "triggering_comment_text", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": false
         },
         "options": {}
       },
-      "onError": "continueRegularOutput",
-      "notes": "Calls Decide Research and Deliver (v1). Returns { web_findings, web_sources }. continueRegularOutput so a research failure doesn't abort context assembly."
+      "onError": "continueRegularOutput"
     },
     {
       "id": "load-agent-rules",
       "name": "Load Agent Rules",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1100, 300],
+      "position": [1104, 304],
       "parameters": {
         "url": "https://api.clickup.com/api/v3/workspaces/761759/docs/q7wz-16892/pages?content_format=text%2Fmd",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "clickUpApi",
-        "options": { "response": { "response": { "fullResponse": true, "responseFormat": "json" } } }
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
       },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
       "retryOnFail": true,
       "maxTries": 2,
-      "waitBetweenTries": 2000,
-      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
-      "onError": "continueRegularOutput",
-      "notes": "Fetches AI doc pages (q7wz-16892) as markdown. onError=continueRegularOutput -> run proceeds degraded (Build Prompt flags global_rules_missing -> WARN)."
+      "waitBetweenTries": 2000
     },
     {
-      "id": "r-call-read-input",
+      "id": "1f5df793-67d8-4a69-9509-0d19de1b30d5",
       "name": "Call Read Input",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1100, 480],
-      "onError": "continueRegularOutput",
+      "position": [1104, 480],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "zgGpONulGMohQQqI", "mode": "list", "cachedResultName": "Read Input (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "zgGpONulGMohQQqI",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
-          "value": { "clickup_task_id": "={{ ($('Call Context Gather').first().json.current_task || {}).id || $('When Called').first().json.taskId }}" },
+          "value": {
+            "clickup_task_id": "={{ ($('Call Context Gather').first().json.current_task || {}).id || $('When Called').first().json.taskId }}"
+          },
           "matchingColumns": [],
-          "schema": [
-            { "id": "clickup_task_id", "displayName": "clickup_task_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
         },
         "options": {}
       },
-      "notes": "Block 5 (ADR-036): unified attachment reader. Self-fetches the task -> { blocks, warnings }. Build Prompt folds text blocks into the prompt + emits image_blocks_json (vision); warnings fire via Check Input Warnings -> Alert Input Warnings. onError=continueRegularOutput: a reader failure degrades to no-attachments, never aborts the answer."
+      "onError": "continueRegularOutput"
     },
     {
       "id": "build-prompt",
       "name": "Build Prompt",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1320, 300],
+      "position": [1328, 304],
       "parameters": {
-        "jsCode": "const ctx = $('Call Context Gather').first().json;\nconst ct = ctx.current_task || {};\nconst chain = ctx.ancestor_chain || [];\nconst leaves = ctx.linked_doc_leaves || [];\n\nlet pages = [];\ntry { pages = $('Load Agent Rules').first().json.body || []; } catch (e) {}\nconst allPages = [];\n(function flat(arr){ for (const p of (arr||[])) { allPages.push(p); if (p.pages) flat(p.pages); } })(pages);\nconst globalPage = allPages.find(p => p.id === 'q7wz-44812');\nconst global_rules = (globalPage && globalPage.content) ? globalPage.content : '';\nconst global_rules_missing = !global_rules;\n\nconst OPERATOR_ID = '2521617';\nconst OPERATOR_NAME = 'Franciszek Nowak';\nconst wc = $('When Called').first().json || {};\nconst reviewer_user_id = (wc.reviewer_user_id || OPERATOR_ID).toString().trim();\nconst caller_username = (wc.caller_username || OPERATOR_NAME);\nconst triggered_by = wc.triggered_by || 'explicit_command';\nconst invocation_type = wc.invocation_type || 'explicit';\nconst triggering_comment_text = (wc.triggering_comment_text || '').toString().trim();\nconst triggering_comment_id = (wc.triggering_comment_id || '').toString().trim();\n\nconst personalPage = allPages.find(p => p.name === ('Instrukcje dla agenta - ' + caller_username));\nconst person_rules = (personalPage && personalPage.content) ? personalPage.content : '';\nconst person_rules_missing = !person_rules;\n\nlet task_comments = [], additional_context = '', sources_used = [], sources_filtered_out = 0;\ntry { const sr = $('Call Workspace Search').first().json; task_comments = sr.task_comments || []; additional_context = sr.additional_context || ''; sources_used = sr.sources_used || []; sources_filtered_out = sr.sources_filtered_out || 0; } catch(e) {}\n\nlet web_findings = '', web_sources = [];\ntry { const rw = $('Call Decide Research').first().json; if (rw) { web_findings = rw.web_findings || ''; web_sources = rw.web_sources || []; } } catch(e) {}\n\nlet personal_data = false;\ntry { personal_data = $('Call PD Verifier').first().json.personal_data === true; } catch(e) {}\n\n// Block 5 (ADR-036): attachment content from Read Input (v1).\nlet inBlocks = [], inWarnings = [];\ntry { const ri = $('Call Read Input').first().json; inBlocks = ri.blocks || []; inWarnings = (ri.warnings || []).slice(); } catch(e) {}\nconst textBlocks = inBlocks.filter(b => b && b.type === 'text').sort((a,b)=>(a.order||0)-(b.order||0));\nconst imageBlocks = inBlocks.filter(b => b && b.type === 'image').sort((a,b)=>(a.order||0)-(b.order||0));\n\nconst lines = [];\nif (global_rules) { lines.push('# Zasady ogólne agenta (obowiązują zawsze)'); lines.push(global_rules); lines.push(''); lines.push('---'); lines.push(''); }\nif (person_rules) { lines.push('# Preferencje osoby zlecającej (' + caller_username + ')'); lines.push(person_rules); lines.push(''); lines.push('---'); lines.push(''); }\n\nlines.push('# Wiadomość wywołująca tę akcję');\nlines.push('Użytkownik ' + caller_username + ' napisał:');\nlines.push('---');\nlines.push(triggering_comment_text || '[treść wiadomości niedostępna]');\nlines.push('---');\nlines.push('');\n\nif (task_comments.length) { lines.push('# Ostatnie komentarze w zadaniu'); for (const c of task_comments) { lines.push((c.author || 'nieznany') + ': ' + (c.text || '')); } lines.push(''); }\nif (additional_context) { lines.push('# Dodatkowy kontekst (wyszukiwanie semantyczne)'); lines.push(additional_context); if (sources_used.length) lines.push('Źródła: ' + sources_used.join(', ')); lines.push(''); }\nif (web_findings) { lines.push('# Wyniki researchu w sieci'); lines.push(web_findings); if (web_sources.length) lines.push('Źródła: ' + web_sources.map(function(s){return s.url;}).join(', ')); lines.push(''); }\n\nlines.push('# Zadanie');\nlines.push(ct.name || '(bez nazwy)');\nif (ct.description) { lines.push(''); lines.push(ct.description); }\nif (chain.length) {\n  lines.push(''); lines.push('# Kontekst nadrzędny (od najogólniejszego do najbliższego)');\n  for (const a of chain.slice().reverse()) { lines.push(''); lines.push('## ' + (a.name || '')); if (a.description) lines.push(a.description); }\n}\nif (leaves.length) {\n  lines.push(''); lines.push('# Szczegółowe wytyczne');\n  for (const l of leaves) { lines.push('- ' + (l.name || '')); if (l.content) lines.push(l.content); }\n}\n\n// Attachment text (read-input). [BRAK: ...] markers kept so the model knows a file couldn't be read.\nif (textBlocks.length) {\n  lines.push(''); lines.push('# Treść załączników');\n  for (const b of textBlocks) { lines.push(''); lines.push(b.md || ''); }\n}\n\n// Image attachments: pass to the vision model (non-PD). PD interim guard drops + WARNs (Block 6 adds notice).\nlet imageOut = [];\nif (imageBlocks.length && !personal_data) {\n  imageOut = imageBlocks.map(b => ({ ref: b.ref, mime: b.mime, alt: b.alt }));\n  lines.push(''); lines.push('# Załączone obrazy');\n  lines.push('Do zadania dołączono ' + imageBlocks.length + ' obraz(y) — przeanalizuj je wizualnie (są przekazane modelowi).');\n} else if (imageBlocks.length && personal_data) {\n  inWarnings.push({ source: 'multimodal/image-dropped-pd', title: '(' + imageBlocks.length + ' obraz/y)', err: 'personal_data=true; obrazy nie przekazane modelowi (notatka dla użytkownika w Bloku 6)' });\n}\n\nlines.push('');\nlines.push('Przygotuj wynik dla powyższego zadania. Możesz rozumować swobodnie, ale ostateczną odpowiedź zwróć w poniższej strukturze (pomin sekcję, jeśli pusta):');\nlines.push('');\nlines.push('## Wyniki');\nlines.push('## Pytania do zlecającego');\nlines.push('## Decyzje i kompromisy');\nlines.push('');\nlines.push('---');\nlines.push('## Sugestie do procesu');\n\nconst prompt = lines.join('\\n');\n\nreturn [{ json: {\n  prompt,\n  impact: ctx.impact || '',\n  personal_data,\n  task_type: '',\n  clickup_task_id: (ct.id || ''),\n  triggered_by,\n  invocation_type,\n  reviewer_user_id,\n  caller_user_id: reviewer_user_id,\n  caller_username,\n  process_type: ctx.process_type || '',\n  assignee_user_id: ctx.assignee_user_id || '',\n  creator_user_id: ctx.creator_user_id || '',\n  global_rules_missing,\n  person_rules_missing,\n  triggering_comment_id,\n  web_sources: JSON.stringify(web_sources),\n  image_blocks_json: JSON.stringify(imageOut),\n  input_warnings_json: JSON.stringify(inWarnings),\n  input_warnings_count: inWarnings.length\n} }];"
-      },
-      "notes": "Assembles full prompt from context gather + workspace search + research + rules + attachment reader. web_sources/image_blocks_json/input_warnings serialized to JSON strings for safe passage through executeWorkflow (ADR-036 Block 5)."
+        "jsCode": "const ctx = $('Call Context Gather').first().json;\nconst ct = ctx.current_task || {};\nconst chain = ctx.ancestor_chain || [];\nconst leaves = ctx.linked_doc_leaves || [];\n\nlet pages = [];\ntry { pages = $('Load Agent Rules').first().json.body || []; } catch (e) {}\nconst allPages = [];\n(function flat(arr){ for (const p of (arr||[])) { allPages.push(p); if (p.pages) flat(p.pages); } })(pages);\nconst globalPage = allPages.find(p => p.id === 'q7wz-44812');\nconst global_rules = (globalPage && globalPage.content) ? globalPage.content : '';\nconst global_rules_missing = !global_rules;\n\nconst OPERATOR_ID = '2521617';\nconst OPERATOR_NAME = 'Franciszek Nowak';\nconst wc = $('When Called').first().json || {};\nconst reviewer_user_id = (wc.reviewer_user_id || OPERATOR_ID).toString().trim();\nconst caller_username = (wc.caller_username || OPERATOR_NAME);\nconst triggered_by = wc.triggered_by || 'explicit_command';\nconst invocation_type = wc.invocation_type || 'explicit';\nconst triggering_comment_text = (wc.triggering_comment_text || '').toString().trim();\nconst triggering_comment_id = (wc.triggering_comment_id || '').toString().trim();\n\nconst personalPage = allPages.find(p => p.name === ('Instrukcje dla agenta - ' + caller_username));\nconst person_rules = (personalPage && personalPage.content) ? personalPage.content : '';\nconst person_rules_missing = !person_rules;\n\nlet task_comments = [], additional_context = '', sources_used = [], sources_filtered_out = 0;\ntry { const sr = $('Call Workspace Search').first().json; task_comments = sr.task_comments || []; additional_context = sr.additional_context || ''; sources_used = sr.sources_used || []; sources_filtered_out = sr.sources_filtered_out || 0; } catch(e) {}\n\nlet web_findings = '', web_sources = [];\ntry { const rw = $('Call Decide Research').first().json; if (rw) { web_findings = rw.web_findings || ''; web_sources = rw.web_sources || []; } } catch(e) {}\n\nlet personal_data = false;\ntry { personal_data = $('Call PD Verifier').first().json.personal_data === true; } catch(e) {}\n\nlet inBlocks = [], inWarnings = [];\ntry { const ri = $('Call Read Input').first().json; inBlocks = ri.blocks || []; inWarnings = (ri.warnings || []).slice(); } catch(e) {}\nconst textBlocks = inBlocks.filter(b => b && b.type === 'text').sort((a,b)=>(a.order||0)-(b.order||0));\nconst imageBlocks = inBlocks.filter(b => b && b.type === 'image').sort((a,b)=>(a.order||0)-(b.order||0));\n\nlet context_gather_ok = false;\ntry { const cg = $('Call Context Gather').first().json; context_gather_ok = !!(cg && cg.current_task); } catch(e) {}\nlet pd_verifier_ok = false;\ntry { const pv = $('Call PD Verifier').first().json; pd_verifier_ok = pv !== null && pv !== undefined && 'personal_data' in pv; } catch(e) {}\nlet workspace_search_ok = false;\ntry { const ws = $('Call Workspace Search').first().json; workspace_search_ok = ws !== null && ws !== undefined && 'task_comments' in ws; } catch(e) {}\nlet research_ok = false;\ntry { const rd = $('Call Decide Research').first().json; research_ok = rd !== null && rd !== undefined && 'web_findings' in rd; } catch(e) {}\nlet read_input_ok = false;\ntry { const ri2 = $('Call Read Input').first().json; read_input_ok = ri2 !== null && ri2 !== undefined && 'blocks' in ri2; } catch(e) {}\n\nconst lines = [];\nif (global_rules) { lines.push('# Zasady ogólne agenta (obowiązują zawsze)'); lines.push(global_rules); lines.push(''); lines.push('---'); lines.push(''); }\nif (person_rules) { lines.push('# Preferencje osoby zlecającej (' + caller_username + ')'); lines.push(person_rules); lines.push(''); lines.push('---'); lines.push(''); }\n\nlines.push('# Wiadomość wywołująca tę akcję');\nlines.push('Użytkownik ' + caller_username + ' napisał:');\nlines.push('---');\nlines.push(triggering_comment_text || '[treść wiadomości niedostępna]');\nlines.push('---');\nlines.push('');\n\nif (task_comments.length) { lines.push('# Ostatnie komentarze w zadaniu'); for (const c of task_comments) { lines.push((c.author || 'nieznany') + ': ' + (c.text || '')); } lines.push(''); }\nif (additional_context) { lines.push('# Dodatkowy kontekst (wyszukiwanie semantyczne)'); lines.push(additional_context); if (sources_used.length) lines.push('Źródła: ' + sources_used.join(', ')); lines.push(''); }\nif (web_findings) { lines.push('# Wyniki researchu w sieci'); lines.push(web_findings); if (web_sources.length) lines.push('Źródła: ' + web_sources.map(function(s){return s.url;}).join(', ')); lines.push(''); }\n\nlines.push('# Zadanie');\nlines.push(ct.name || '(bez nazwy)');\nif (ct.description) { lines.push(''); lines.push(ct.description); }\nif (chain.length) {\n  lines.push(''); lines.push('# Kontekst nadrzędny (od najogólniejszego do najbliższego)');\n  for (const a of chain.slice().reverse()) { lines.push(''); lines.push('## ' + (a.name || '')); if (a.description) lines.push(a.description); }\n}\nif (leaves.length) {\n  lines.push(''); lines.push('# Szczegółowe wytyczne');\n  for (const l of leaves) { lines.push('- ' + (l.name || '')); if (l.content) lines.push(l.content); }\n}\n\nif (textBlocks.length) {\n  lines.push(''); lines.push('# Treść załączników');\n  for (const b of textBlocks) { lines.push(''); lines.push(b.md || ''); }\n}\n\nlet imageOut = [];\nif (imageBlocks.length) {\n  imageOut = imageBlocks.map(b => ({ ref: b.ref, mime: b.mime, alt: b.alt }));\n  lines.push(''); lines.push('# Załączone obrazy');\n  lines.push('Do zadania dołączono ' + imageBlocks.length + ' obraz(y) — przeanalizuj je wizualnie (są przekazane modelowi).');\n}\n\nlines.push('');\nlines.push('Przygotuj wynik dla powyższego zadania. Możesz rozumować swobodnie, ale ostateczną odpowiedź zwróć w poniższej strukturze (pomiń sekcję, jeśli pusta):');\nlines.push('');\nlines.push('## Wyniki');\nlines.push('## Pytania do zlecającego');\nlines.push('## Decyzje i kompromisy');\nlines.push('');\nlines.push('---');\nlines.push('## Sugestie do procesu');\n\nconst prompt = lines.join('\\n');\n\nreturn [{ json: {\n  prompt,\n  impact: ctx.impact || '',\n  personal_data,\n  modality: imageOut.length > 0 ? 'multimodal_input' : 'text',\n  task_type: '',\n  clickup_task_id: (ct.id || ''),\n  triggered_by,\n  invocation_type,\n  reviewer_user_id,\n  caller_user_id: reviewer_user_id,\n  caller_username,\n  process_type: ctx.process_type || '',\n  assignee_user_id: ctx.assignee_user_id || '',\n  creator_user_id: ctx.creator_user_id || '',\n  global_rules_missing,\n  person_rules_missing,\n  context_gather_ok,\n  pd_verifier_ok,\n  workspace_search_ok,\n  research_ok,\n  read_input_ok,\n  triggering_comment_id,\n  web_sources: JSON.stringify(web_sources),\n  image_blocks_json: JSON.stringify(imageOut),\n  input_warnings_json: JSON.stringify(inWarnings),\n  input_warnings_count: inWarnings.length\n} }];"
+      }
     },
     {
       "id": "check-rules-loaded",
       "name": "Check Rules Loaded",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [1540, 180],
+      "position": [1552, 192],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
-          "combinator": "or",
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
           "conditions": [
-            { "id": "r1", "leftValue": "={{ $json.global_rules_missing }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } },
-            { "id": "r2", "leftValue": "={{ $json.person_rules_missing }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }
-          ]
+            {
+              "id": "r1",
+              "leftValue": "={{ $json.global_rules_missing }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "r2",
+              "leftValue": "={{ $json.person_rules_missing }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "r3",
+              "leftValue": "={{ $json.context_gather_ok }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "r4",
+              "leftValue": "={{ $json.pd_verifier_ok }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "r5",
+              "leftValue": "={{ $json.workspace_search_ok }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "r6",
+              "leftValue": "={{ $json.research_ok }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "r7",
+              "leftValue": "={{ $json.read_input_ok }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
         },
         "options": {}
-      },
-      "notes": "Side branch: WARN if agent rules or personal prefs failed to load. Both branches reconverge into Check Input Warnings -> Return Context (sole terminal)."
+      }
     },
     {
       "id": "alert-rules-missing",
       "name": "Alert Rules Missing",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1760, 100],
+      "position": [1760, 112],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
             "severity": "WARN",
-            "source": "assemble-context/rules",
-            "message": "Brak zasad agenta przy budowie promptu (globalnych i/lub osobistych).",
-            "details": "=task={{ $('Build Prompt').first().json.clickup_task_id }}; global_missing={{ $('Build Prompt').first().json.global_rules_missing }}; person_missing={{ $('Build Prompt').first().json.person_rules_missing }}; osoba={{ $('Build Prompt').first().json.caller_username }}"
+            "source": "assemble-context/context-health",
+            "message": "Degradacja budowania kontekstu: jeden lub więcej podworkflow nie zwrócił oczekiwanego wyniku.",
+            "details": "=task={{ $('Build Prompt').first().json.clickup_task_id }}; context_gather={{ $('Build Prompt').first().json.context_gather_ok }}; pd_verifier={{ $('Build Prompt').first().json.pd_verifier_ok }}; workspace_search={{ $('Build Prompt').first().json.workspace_search_ok }}; research={{ $('Build Prompt').first().json.research_ok }}; read_input={{ $('Build Prompt').first().json.read_input_ok }}; global_rules_missing={{ $('Build Prompt').first().json.global_rules_missing }}; person_rules_missing={{ $('Build Prompt').first().json.person_rules_missing }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
         },
@@ -247,31 +331,57 @@
       }
     },
     {
-      "id": "r-check-input-warnings",
+      "id": "return-context",
+      "name": "Return Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1984, 304],
+      "parameters": {
+        "jsCode": "return [{ json: $('Build Prompt').first().json }];"
+      }
+    },
+    {
+      "id": "46557ab0-250f-46ef-a212-71ad5a7db9e3",
       "name": "Check Input Warnings",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [1760, 300],
+      "position": [1760, 304],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
           "combinator": "and",
           "conditions": [
-            { "id": "w1", "leftValue": "={{ $('Build Prompt').first().json.input_warnings_count }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }
+            {
+              "id": "w1",
+              "leftValue": "={{ $('Build Prompt').first().json.input_warnings_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
           ]
         },
         "options": {}
-      },
-      "notes": "Block 5 side branch: WARN if read-input returned warnings. Reconverges into Return Context (sole terminal — preserves sub-workflow return determinism)."
+      }
     },
     {
-      "id": "r-alert-input-warnings",
+      "id": "6736f85b-beaf-4f63-8086-a47e5a2e51a4",
       "name": "Alert Input Warnings",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1980, 160],
+      "position": [1984, 160],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -281,58 +391,164 @@
             "details": "=task={{ $('Build Prompt').first().json.clickup_task_id }}; warnings={{ $('Build Prompt').first().json.input_warnings_json }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
         },
         "options": {}
-      },
-      "notes": "Block 5: fires the read-input warnings (extraction-failed / image-ref-missing / image-dropped-pd) through Post Alert (v1). Discharges Block 3's deferral. Reconverges into Return Context."
-    },
-    {
-      "id": "return-context",
-      "name": "Return Context",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1980, 300],
-      "parameters": {
-        "jsCode": "return [{ json: $('Build Prompt').first().json }];"
-      },
-      "notes": "Single guaranteed terminal node for this subworkflow. All branches (rules-ok/missing, input-warnings yes/no) converge here. Always returns Build Prompt output (incl. image_blocks_json)."
+      }
     }
   ],
   "connections": {
-    "When Called": { "main": [[{ "node": "Call Context Gather", "type": "main", "index": 0 }]] },
-    "Call Context Gather": { "main": [[{ "node": "Call PD Verifier", "type": "main", "index": 0 }]] },
-    "Call PD Verifier": { "main": [[{ "node": "Call Workspace Search", "type": "main", "index": 0 }]] },
-    "Call Workspace Search": { "main": [[{ "node": "Call Decide Research", "type": "main", "index": 0 }]] },
-    "Call Decide Research": { "main": [[{ "node": "Load Agent Rules", "type": "main", "index": 0 }]] },
-    "Load Agent Rules": { "main": [[{ "node": "Call Read Input", "type": "main", "index": 0 }]] },
-    "Call Read Input": { "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]] },
-    "Build Prompt": { "main": [[{ "node": "Check Rules Loaded", "type": "main", "index": 0 }]] },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Call Context Gather",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Context Gather": {
+      "main": [
+        [
+          {
+            "node": "Call PD Verifier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call PD Verifier": {
+      "main": [
+        [
+          {
+            "node": "Call Workspace Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Workspace Search": {
+      "main": [
+        [
+          {
+            "node": "Call Decide Research",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Decide Research": {
+      "main": [
+        [
+          {
+            "node": "Load Agent Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Agent Rules": {
+      "main": [
+        [
+          {
+            "node": "Call Read Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Read Input": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "Check Rules Loaded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Check Rules Loaded": {
       "main": [
-        [{ "node": "Alert Rules Missing", "type": "main", "index": 0 }],
-        [{ "node": "Check Input Warnings", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Alert Rules Missing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check Input Warnings",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Alert Rules Missing": { "main": [[{ "node": "Check Input Warnings", "type": "main", "index": 0 }]] },
+    "Alert Rules Missing": {
+      "main": [
+        [
+          {
+            "node": "Check Input Warnings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Check Input Warnings": {
       "main": [
-        [{ "node": "Alert Input Warnings", "type": "main", "index": 0 }],
-        [{ "node": "Return Context", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Alert Input Warnings",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Alert Input Warnings": { "main": [[{ "node": "Return Context", "type": "main", "index": 0 }]] }
+    "Alert Input Warnings": {
+      "main": [
+        [
+          {
+            "node": "Return Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
   },
-  "settings": { "executionOrder": "v1", "errorWorkflow": "81eplXMD1v5ONhzs" },
-  "staticData": null,
-  "meta": null,
-  "pinData": {},
-  "tags": []
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "binaryMode": "separate"
+  }
 }
