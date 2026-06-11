@@ -279,6 +279,20 @@ a data location change.
 > 8 `multimodal_input` rows — 4 GDPR (Gemini EU, `personal_data=true`) + 4 non-GDPR (Anthropic direct,
 > `personal_data=false`). Apply AFTER `013_image_tiers_match_clickup.sql`.
 
+> **Block 1 — repo↔live re-sync + targeted fixes (2026-06-11, ADR-040/041).** The repo
+> `n8n/workflows/*.json` were re-baselined against the running graph (ADR-038's multimodal deploy had
+> never been exported). Drift was **bidirectional** — see `architecture/workflow-repo-live-reconciliation.md`
+> for the per-workflow tracker (what is reconciled vs deferred to Block 2). Behaviour changes landed this
+> block (not behaviour-neutral): **(1)** invoke-model fix-forward — multimodal request now built as a
+> `messages` content-array in Resolve Routing and reused by the Opus fallback, so **images are preserved
+> on fallback** (live previously dropped them); modality routing + a Gemini provider label retained.
+> **(2)** execute-llm-call return path made a single branch-free terminal (`Return LLM Result` sole leaf;
+> cost-sync funnels into it) — fixes a non-deterministic sub-workflow return that intermittently dropped
+> the answer and posted no reply. **(3)** Data hotfix: `model_routing` `temperature` set NULL for the
+> `Krytycznie ważne` × `multimodal_input` Fable 5 row (Fable 5 now rejects `temperature` → 400); the
+> `text` row was already NULL. Block 3's routing migration must preserve `temperature = NULL` for that
+> row. The `personal_data`/EU apparatus removal itself is still pending (Blocks 2–3).
+
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
 is needed; append-only threaded feedback with "current stance" derived via

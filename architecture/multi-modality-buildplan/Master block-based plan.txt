@@ -1,0 +1,327 @@
+ ▎ This is the durable master plan. Read it in full at the start of every block.
+ ▎ It is the single source of truth across /clear boundaries. Do not rely on prior-session memory — this file is the
+ ▎ contract.
+
+ How to run this plan (block-by-block routine)
+
+ 1. Start of every block: read this master plan top-to-bottom. Find the first block in the status table that is not
+ done.
+ 2. Do the block: execute only that block's steps. Each block is scoped to leave the system in a working, verified
+ state (its Definition of Done).
+ 3. Write back (mandatory before commit): update architecture/current.md and any ADRs the block introduced/closed to
+ reflect what actually landed; update the Block status table below (mark the block done, note anything deferred or that
+ diverged from plan).
+ 4. Commit the block (show staged files, git diff, never stage .env/secrets). Push only when explicitly told.
+ 5. Handoff: emit the block's Handoff prompt to the operator. The operator /clears and starts the next block, which
+ again begins at step 1.
+
+ This master plan file IS the artifact that survives /clear; the per-block write-backs to current.md/ADRs are the
+ durable record of what changed.
+
+ Block status
+
+ ┌─────┬────────────────────────────────────────────────────────────┬────────┐
+ │  #  │                           Block                            │ State  │
+ ├─────┼────────────────────────────────────────────────────────────┼────────┤
+ │ 1   │ Sync repo↔live, ADR renumber, CLAUDE.md routine            │ ☑ done │
+ ├─────┼────────────────────────────────────────────────────────────┼────────┤
+ │ 2   │ Strip PD plumbing (behavior-neutral)                       │ ☐ todo │
+ ├─────┼────────────────────────────────────────────────────────────┼────────┤
+ │ 3   │ Routing cutover: SQL + migration + litellm (single window) │ ☐ todo │
+ ├─────┼────────────────────────────────────────────────────────────┼────────┤
+ │ 4   │ Erasure schema readiness + artifact recording + audit      │ ☐ todo │
+ └─────┴────────────────────────────────────────────────────────────┴────────┘
+
+ ---
+ Context (why)
+
+ After fast-forwarding to origin/main, two things reshaped this work:
+
+ - Architectural fork. The other desktop pushed ADR-038 (Gemini via Vertex AI as the GDPR multimodal route), ADR-039
+ (vertex/global-endpoint), and migration 014_gemini_multimodal_routing.sql — all on the premise that the
+ personal_data/EU axis is real; it added a multimodal_input modality. Your local untracked ADR-039
+ (global-model-routing) + ADR-040 (erasure) reverse that premise (DPA+SCCs make non-EU lawful → remove the whole PD/EU
+ apparatus → PD-blind pipeline). Your local ADRs supersede the merged ADR-038 + ADR-039. They renumber to 040/041 (039
+ is taken on main).
+ - Repo↔live drift (verified via n8n MCP). Live Invoke Model/Assemble Context already contain ADR-038's
+ multimodal_input routing, Gemini provider detection, the already-removed PD image-strip guard, and new subworkflow
+ health checks — none of it in the repo JSON. ADR-038 was deployed but never exported. The repo workflow files are
+ stale; edits must target the live graph.
+ - Gemini decision (you): retain haxe-gemini-* as global, non-PD, callable capability aliases (cheaper + stronger
+ multimodal) — not deleted, only its PD/EU gating removed.
+ - Current real behavior: the PD Verifier is a stub that always returns personal_data=false, so every task already
+ routes to the personal_data=false rows. Image tasks route to Claude direct today; the Gemini rows have never served a
+ task. Therefore keeping Claude as the multimodal_input route = zero behavioral change.
+
+ Intended outcome: a PD-blind pipeline (Gemini retained as a dormant capability), an erasure-ready agent_runs at zero
+ behavioral risk, reconciled docs — without touching Docling, the reading path, the spine, context gathering, or
+ modality capability routing.
+
+ Scope guardrail (do not touch)
+
+ Docling extraction · read-input.json (image/PDF reading) · the agent spine · context gathering · the subtask-tree read
+ · the modality/multimodal_input capability routing (it stays). Only PD/EU mechanisms are removed; only nullable
+ schema columns + ClickUp-comment-id recording are added. If unsure whether something is PD/EU apparatus vs.
+ capability, stop and ask.
+
+ ---
+ BLOCK 1 — Sync repo↔live, ADR renumber, CLAUDE.md routine (no pipeline behavior change)
+
+ Goal: clean, truthful baseline + governing decisions committed + the process rules captured.
+
+ Steps:
+ 1. Re-baseline workflows. For every pipeline workflow, n8n_get_workflow (mode active) and re-export to
+ n8n/workflows/<file>.json so the repo matches the running graph (captures the ADR-038 deploy). Re-grep the exported
+ JSON for personal_data to produce the authoritative PD edit list used by Blocks 2–3 (the lists below are from live
+ reads of invoke-model+assemble-context; confirm decide-research, workspace-search, execute-llm-call,
+ agent-orchestrator here).
+ 2. Renumber local ADR drafts: 039-global-model-routing.md → 040-; 040-erasure-and-retention.md → 041- (keep decisions/
+ gap-free). Amend before committing (they are uncommitted drafts):
+   - ADR-040: Supersedes now names merged ADR-038 + ADR-039 (vertex); amend the deletion list to retain Gemini aliases
+ as a non-PD global capability (only PD/EU gating removed); reference migration 014's multimodal_input rows being
+ collapsed PD-blind.
+   - ADR-041: fix internal cross-refs (it cited "ADR-039" → ADR-040) and migration numbers (015/016).
+ 3. Add to project CLAUDE.md (exact text; apply on execution — propose-first is satisfied by your instruction):
+   - New section "## Plans: block-by-block master-plan routine" — Large changes run as a sequence of self-contained
+ Blocks against one durable master plan (the plan file). Every block starts by reading the master plan in full (the
+ source of truth across /clear). A block does one verifiable unit of work, then writes back: update
+ architecture/current.md and any ADRs it introduced/closed, update the master plan's block-status table, and commit. It
+ ends by emitting a handoff prompt; the operator /clears and starts the next block, which again begins by reading the
+ master plan. Order blocks so each leaves the system working and verified — never a half-cut-over path.
+   - Under "## n8n environment" (new bullet) — Always re-export and commit the workflow JSON after changing a workflow
+ live. n8n edits happen on the live instance (n8n MCP/UI per ADR-018); the repo n8n/workflows/*.json is the master only
+ if kept in sync. After any live change, n8n_get_workflow (mode active) → re-export → commit. Drift bites: ADR-038's
+ multimodal routing was deployed live but never exported, leaving the repo stale and a later plan built on wrong
+ assumptions.
+ 4. Write-back: current.md — one line under the n8n/migration narrative noting the repo was re-synced to live (ADR-038
+ deploy captured). Update Block status.
+ 5. Commit as a standalone "sync repo to live + renumber ADRs + plan routine" commit (no pipeline behavior change).
+
+ Definition of Done: exported workflows validate (n8n_validate_workflow); git diff shows only re-export + ADR renames +
+ doc/CLAUDE.md edits; ADR sequence is contiguous; the authoritative PD edit list is recorded (append it to this master
+ plan under Block 2 if it differs).
+
+ Handoff prompt: "Block 1 done (repo synced to live, ADRs renumbered 040/041, CLAUDE.md routine added). /clear, then
+ start Block 2: read the master plan and strip the behavior-neutral PD plumbing."
+
+ --- BLOCK 1 COMPLETION NOTE (2026-06-11) ---
+
+ Authoritative personal_data edit list (confirmed by grepping live re-exports — MATCHES the provisional
+ list, no divergence): agent-orchestrator, assemble-context-and-build-prompt, decide-research-and-deliver,
+ execute-llm-call, fable-access-monitor, invoke-model, pd-verifier, workspace-search.
+
+ Diverged from the original "behavior-neutral" framing (all operator-approved this session):
+ - invoke-model FIX-FORWARD deployed to live (v39): messages-content-array built in Resolve Routing and
+   reused by the Opus fallback so images survive a fallback; modality routing + Gemini provider label kept.
+   Verified end-to-end (image described correctly; Fable 5 primary success after the temperature hotfix).
+ - execute-llm-call return-path fix deployed to live: Return LLM Result is now the sole branch-free terminal
+   (cost-sync funnels into it). This was the bug originally slated to "fold into Block 2" — it is DONE NOW.
+   The repo already held the correct wiring; live had regressed. Block 2 therefore only needs the PD removal
+   on execute-llm-call, NOT the return-path fix.
+ - DATA HOTFIX (live model_routing): temperature set NULL for the Krytycznie ważne × multimodal_input
+   Fable 5 row (Fable 5 now 400s on `temperature`). Block 3's routing migration (015) MUST keep
+   temperature = NULL for that row when it re-seeds/collapses the table.
+
+ Reconciliation NOT fully done — drift is bidirectional, so blind repo←live dumps were avoided. See
+ architecture/workflow-repo-live-reconciliation.md for the per-workflow tracker. Reconciled this block:
+ invoke-model, execute-llm-call, research-the-web (repo==live behaviourally). Behaviourally-matching
+ already: decide-research, workspace-search (+ the stable workflows). DEFERRED (real drift, reconcile when
+ the owning block edits them live + re-exports): agent-orchestrator + assemble-context (Block 2, live-ahead
+ ADR-038 context-health + modality), context-gather + read-input (do-not-touch reading/context path; benign
+ IF/switch v3-strict bumps). Block 2 edits assemble-context/agent-orchestrator on the LIVE graph (which is
+ ahead of the stale repo for those two) — edit live, then re-export.
+
+ ---
+ BLOCK 2 — Strip PD plumbing that does not select routing rows (behavior-neutral)
+
+ Goal: remove the PD verifier and personal_data threading everywhere except the routing-row selection (left to Block
+ 3), with zero behavior change. Edit live via n8n MCP → re-export each.
+
+ Steps (keep modality/multimodal_input + Gemini detection intact):
+ - pd-verifier.json (id hzwmak7UBpuHaiTO) — delete workflow + repo file, after assemble-context stops calling it.
+ - assemble-context (id GGTBvFBgGSNbtUR6): remove node Call PD Verifier; rewire Call Context Gather → Call Workspace
+ Search (sole branch-free terminal preserved). In Build Prompt: remove the personal_data read + output field + the
+ pd_verifier_ok flag (keep the modality line + image_blocks_json). In Check Rules Loaded: drop condition r4
+ (pd_verifier_ok). In Alert Rules Missing details: drop the pd_verifier=… token. In Call Workspace Search + Call Decide
+ Research mappings: drop the personal_data value + schema[] entry.
+ - workspace-search (id eL3fJuRMpzVRuVUT): When Called remove personal_data; Extract Queries + Call Condense mappings
+ drop value + schema[].
+ - decide-research (id Ccc9y0AcLwL022FY): When Called remove personal_data; Build Gate Request model_override →
+ 'haxe-haiku-4-5-direct' (drop pd); Research Gate mapping drop personal_data; Resolve Research Inputs litellm fallback
+ → 'haxe-sonnet-4-6-direct'. (Leave its routing-SQL personal_data for Block 3.)
+ - execute-llm-call + agent-orchestrator: drop the personal_data input/mapping passthrough.
+ - fable-access-monitor: in the Alert details runbook SQL string, drop AND personal_data=false.
+ - Invoke Model still sends personal_data=$2 here; that's fine — it resolves to false (no PD verifier) and matches the
+ surviving false rows = current behavior. Block 3 removes it.
+
+ Definition of Done: smoke text + image + PDF tasks via the orchestrator Form/@-mention; all succeed; image task still
+ sets modality='multimodal_input', routes to Claude (unchanged), reading path intact; no new WARN/CRITICAL in the alert
+ channel; each edited workflow re-exported + committed.
+
+ Write-back: current.md — note PD Verifier removed and personal_data no longer threaded through context
+ assembly/search/research; routing-row selection still pending (Block 3). Update Block status. Commit.
+
+ Handoff prompt: "Block 2 done (PD plumbing stripped, behavior unchanged). /clear, then start Block 3: read the master
+ plan and run the routing cutover in one window."
+
+ ---
+ BLOCK 3 — Routing cutover: PD-blind SQL + migration + litellm (single window)
+
+ Goal: make routing PD-blind and collapse the table, keeping modality and Gemini. Do the workflow SQL edits and the
+ migration in one session (the transient 2-row window between them routes to an equivalent model, harmless, but keep it
+ short).
+
+ Steps:
+ 1. invoke-model (live): Lookup Routing query → select … from model_routing where impact in ($1,'__default__') and
+ modality = $2 and active = true order by (impact = $1) desc limit 1;  queryReplacement → ={{ [ $json.impact ||
+ '__default__', $json.modality || 'text' ] }}. Resolve Routing: drop pd + personal_data output. Parse Response: fbAlias
+ → 'haxe-opus-4-8-direct', keep the Gemini provider branch, fallback price gate (fell_back && !pd) → fell_back, drop
+ personal_data output. Fallback to Opus: model → literal 'haxe-opus-4-8-direct'. When Called: remove personal_data.
+ Re-export.
+ 2. decide-research (live): Lookup Research Routing query/queryReplacement drop personal_data=$2 (keep modality if
+ present). Re-export.
+ 3. Migration 015_global_model_routing.sql (014 is taken):
+ -- ADR-040: PD-blind global routing. Keeps modality. Gemini rows are personal_data=true and
+ -- have never served a task (PD verifier stub=false); image tasks route to the Claude
+ -- personal_data=false multimodal_input rows. Dropping all PD=true rows is zero-behavior-change.
+ -- Apply AFTER workflows stop sending personal_data (Block 3 step 1-2).
+
+ delete from model_routing where personal_data = true;   -- Bedrock-EU text + Gemini multimodal_input
+
+ drop index if exists model_routing_non_text_unique;      -- was keyed on personal_data (migration 014)
+ create unique index model_routing_non_text_unique
+   on model_routing (impact, modality) where modality != 'text';
+
+ alter table model_routing drop constraint model_routing_pkey;
+ alter table model_routing add primary key (impact, modality);
+ alter table model_routing drop column eu_only;
+ alter table model_routing drop column personal_data;
+
+ comment on table model_routing is
+   'Composite (impact, modality) -> model-call config + USD token prices. PD-blind global '
+   'routing: capability + modality only. text=Claude direct, image=image-gen tiers, '
+   'multimodal_input=Claude direct (Gemini retained as a callable alias for future opt-in). '
+   'ADR-013/023/024/030/036/038/040.';
+    After the delete, one row per (impact, modality) → index + PK valid. (Open decision #1: to activate Gemini instead,
+ keep the Gemini multimodal_input rows and delete the personal_data=false multimodal_input rows — see Open decisions.)
+ 4. litellm-config.yaml: remove the three *-bedrock aliases + commented fable-bedrock. Retain the two Gemini aliases;
+ recommended: rename -eu→none (haxe-gemini-flash, haxe-gemini-pro) and update the section comment (drop "GDPR"). If
+ renamed, the migration must also update model_routing.litellm_model — but since Block 3 keeps Claude (not Gemini) in
+ routing rows, no row references the Gemini alias, so the rename is litellm-only. Restart LiteLLM.
+
+ Definition of Done: smoke text + image + PDF; Lookup Routing returns exactly one row, query carries no personal_data;
+ image → modality='multimodal_input' → Claude direct, vision works; PDF → text → Claude; routing_default_used=false for
+ real tiers; no unexplained WARN/CRITICAL.
+
+ Write-back: current.md — reconcile both stale layers (original personal_data → Bedrock EU and the merged ADR-038/039
+ Gemini-GDPR sections) to: PD-blind (impact, modality) routing; Gemini = retained callable alias (dormant); append
+ forward-notes to the migration-008/014 narratives rather than deleting them. Update Block status. Commit.
+
+ Handoff prompt: "Block 3 done (routing is PD-blind, table collapsed, Gemini retained as alias). /clear, then start
+ Block 4: read the master plan and add erasure schema readiness."
+
+ ---
+ BLOCK 4 — Erasure schema readiness + artifact recording + referential audit
+
+ Goal: make agent_runs the erasure hub at zero behavioral risk; record the ClickUp comment id; map the graph. Then the
+ Step-6 output deliverable.
+
+ Steps:
+ 1. Migration 016_agent_runs_erasure_ready.sql:
+ alter table agent_runs
+   add column subject_key        text,
+   add column clickup_comment_id text,
+   add column drive_file_id      text;
+ create index idx_runs_subject_key on agent_runs (subject_key) where subject_key is not null;
+ comment on column agent_runs.subject_key is
+   'ADR-041: channel-natural counterparty id from envelope metadata, never content. '
+   'Nullable; populated only by PD-capable channels (email) once wired. Erasure hub key.';
+ comment on column agent_runs.clickup_comment_id is
+   'ADR-041: id of the ClickUp comment this run posted (post-reply). For erasure via CU API.';
+ comment on column agent_runs.drive_file_id is
+   'ADR-041: reserved for a Drive file id; no workflow writes it yet.';
+ 2. post-reply.json — Record Artifact (Postgres node) after the comment posts, side branch, onError:
+ continueErrorOutput:
+ update agent_runs set clickup_comment_id = $2
+  where id = (select id from agent_runs where clickup_task_id = $1 order by id desc limit 1);
+    queryReplacement = [ clickup_task_id, {{ $('Post Reply').first().json.id || $('Post Draft Comment').first().json.id
+ }} ]. On error or rowCount=0, fire Post Alert (v1) WARN (source=post-reply/record-artifact; task id + comment id).
+ Reply/status still complete (no loop: WARN→Alerts task, write→answer task). Re-export.
+ 3. Referential-graph audit (report only; no FKs/cascades):
+
+ ┌─────────────────────────────────────────────┬─────────────────────────────────────┬────────────────────────────┐
+ │                    Store                    │      Links back to agent_runs?      │            Note            │
+ ├─────────────────────────────────────────────┼─────────────────────────────────────┼────────────────────────────┤
+ │                                             │                                     │ No ON DELETE CASCADE →     │
+ │ email_sends                                 │ Yes — FK agent_run_id               │ future cascade blocked by  │
+ │                                             │                                     │ linked emails              │
+ ├─────────────────────────────────────────────┼─────────────────────────────────────┼────────────────────────────┤
+ │ agent_run_evaluations                       │ Yes — FK ON DELETE CASCADE          │ clean                      │
+ ├─────────────────────────────────────────────┼─────────────────────────────────────┼────────────────────────────┤
+ │ agent_proposals                             │ Yes — nullable FK                   │ weak/optional              │
+ │                                             │ source_agent_run_id                 │                            │
+ ├─────────────────────────────────────────────┼─────────────────────────────────────┼────────────────────────────┤
+ │ agent_proposal_evaluations                  │ Indirect — FK to agent_proposals    │ transitive via nullable    │
+ │                                             │                                     │ link                       │
+ ├─────────────────────────────────────────────┼─────────────────────────────────────┼────────────────────────────┤
+ │                                             │ No FK — only                        │ the one PD-capable store   │
+ │ conversation_sessions                       │ clickup_task_id/comment_root_id     │ that does NOT link back    │
+ │                                             │ text                                │                            │
+ ├─────────────────────────────────────────────┼─────────────────────────────────────┼────────────────────────────┤
+ │ model_routing, fx_rates, config,            │                                     │                            │
+ │ image_gen_params, research_parameters,      │ n/a                                 │ not PD-capable             │
+ │ schema_migrations                           │                                     │                            │
+ └─────────────────────────────────────────────┴─────────────────────────────────────┴────────────────────────────┘
+
+ Definition of Done: smoke text-only — agent_runs.clickup_comment_id populated for the run, WARN side-branch did not
+ fire; image + PDF regression still pass; migration applied; no unexplained alerts.
+ comment on column agent_runs.drive_file_id is
+   'ADR-041: reserved for a Drive file id; no workflow writes it yet.';
+ 2. post-reply.json — Record Artifact (Postgres node) after the comment posts, side branch, onError: continueErrorOutput:
+ update agent_runs set clickup_comment_id = $2
+  where id = (select id from agent_runs where clickup_task_id = $1 order by id desc limit 1);
+    queryReplacement = [ clickup_task_id, {{ $('Post Reply').first().json.id || $('Post Draft Comment').first().json.id }} ]. On error or rowCount=0, fire Post Alert (v1) WARN (source=post-reply/record-artifact; task id + comment id).
+ Reply/status still complete (no loop: WARN→Alerts task, write→answer task). Re-export.
+ 3. Referential-graph audit (report only; no FKs/cascades):
+
+ ┌───────────────────────────────────────────────────────────────────────────────────────────┬───────────────────────────────────────────────────┬────────────────────────────────────────────────────────────────┐
+ │                                           Store                                           │             Links back to agent_runs?             │                              Note                              │
+ ├───────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────┤
+ │ email_sends                                                                               │ Yes — FK agent_run_id                             │ No ON DELETE CASCADE → future cascade blocked by linked emails │
+ ├───────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────┤
+ │ agent_run_evaluations                                                                     │ Yes — FK ON DELETE CASCADE                        │ clean                                                          │
+ ├───────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────┤
+ │ agent_proposals                                                                           │ Yes — nullable FK source_agent_run_id             │ weak/optional                                                  │
+ ├───────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────┤
+ │ agent_proposal_evaluations                                                                │ Indirect — FK to agent_proposals                  │ transitive via nullable link                                   │
+ ├───────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────┤
+ │ conversation_sessions                                                                     │ No FK — only clickup_task_id/comment_root_id text │ the one PD-capable store that does NOT link back               │
+ ├───────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────┤
+ │ model_routing, fx_rates, config, image_gen_params, research_parameters, schema_migrations │ n/a                                               │ not PD-capable                                                 │
+ └───────────────────────────────────────────────────────────────────────────────────────────┴───────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────┘
+
+ Definition of Done: smoke text-only — agent_runs.clickup_comment_id populated for the run, WARN side-branch did not fire; image + PDF regression still pass; migration applied; no unexplained alerts.
+
+ Write-back: current.md — add the short data-handling section (PD-blind pipeline; subject_key on agent_runs as the erasure hub, schema-ready, activates with the email channel; retention posture in the compliance doc). Create
+ compliance/gdpr-processing-decisions.md (does not exist; prompt said "(provided)" but it isn't — I draft from ADR-040/041: lawful bases; transfer = DPA+SCCs+DPF; no-training; sub-processors Google/Anthropic/OpenAI; ROPA-style entry;
+ retention incl. Poland ~10-yr employment-records — confirm figure). Update Block status. Commit.
+
+ Output deliverable (Step 6): migration summary — columns added (subject_key+clickup_comment_id+drive_file_id, partial index on subject_key); artifact-id recording status (was nowhere on agent_runs; now ClickUp comment id via Record
+ Artifact, Drive id reserved/unwritten); the referential-graph map; the store that does not link back (conversation_sessions + email_sends no-cascade + nullable-proposal caveats); smoke results (image+PDF unchanged); anything ambiguous
+ left untouched.
+
+ ---
+ Do NOT build (explicit out-of-scope)
+
+ No subject_key population · no erasure runbook execution · no retention deletion job · no body-text PII classifier · no FKs or cascades (audit only).
+
+ Open decisions (recommendations baked in; confirm or adjust before the relevant block)
+
+ 1. multimodal_input route (Block 3): keep Claude (recommended — zero behavioral change; Gemini has never served a task; migration is a single delete where personal_data=true; Gemini stays a callable alias to opt into later by
+ repointing one row). Alternative: activate Gemini now (cheaper/stronger multimodal, but switches image tasks Claude→Gemini and the Pro tier is gemini-3.1-pro-preview; migration keeps Gemini rows + deletes the Claude multimodal_input
+ rows).
+ 2. Rename Gemini aliases -eu→none (Block 3) — recommended for accuracy; litellm-only under the Claude-route choice.
+ 3. Artifact recording (Block 4): latest-row UPDATE (recommended) vs. 5-workflow agent_run_id threading.
+ 4. drive_file_id (Block 4): reserve now (recommended) vs. defer.
+ 5. current.md (Blocks 3–4): reconcile both stale layers + add section (recommended) vs. literal minimal add.
+ 6. compliance/gdpr-processing-decisions.md (Block 4): I draft from the ADRs (recommended) vs. you provide.

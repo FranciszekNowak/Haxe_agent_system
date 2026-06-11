@@ -62,3 +62,9 @@ separate non-PD path).
 ## Date
 
 2026-06-10
+
+> **Update 2026-06-11 (superseded by ADR-040):** this ADR's premise — that a `personal_data`/EU axis
+> requires a GDPR-specific Gemini route — is reversed. DPA + SCCs make global model processing lawful,
+> so the PD/EU gating is removed and routing becomes PD-blind (capability + modality only). The Gemini
+> global-endpoint aliases introduced here are **retained** as global, non-PD capability aliases (dormant
+> until opted into). See ADR-040.

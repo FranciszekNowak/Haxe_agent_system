@@ -59,6 +59,22 @@ wrong. Surface failure modes. Don't accommodate sloppy thinking.
   milestones does not imply auto-push. Push when ending a work session or when the operator
   asks, after the milestone's verification has passed (see *Definition of done*).
 
+## Plans: block-by-block master-plan routine
+
+Large changes run as a sequence of self-contained **Blocks** against one durable **master plan**
+(the plan file). The master plan is the single source of truth across `/clear` boundaries.
+
+- **Every block starts by reading the master plan in full.** Do not rely on prior-session memory.
+- **A block does one verifiable unit of work**, scoped to leave the system working and verified
+  (its own Definition of Done) — never a half-cut-over path.
+- **Then it writes back** (mandatory before commit): update `architecture/current.md` and any ADRs
+  the block introduced/closed, update the master plan's block-status table, and commit the block.
+- **It ends by emitting a handoff prompt;** the operator `/clears` and starts the next block, which
+  again begins by reading the master plan.
+- Order blocks so each leaves a working, verified state. The per-block write-backs to
+  `current.md`/ADRs are the durable record of what changed; the master plan file is the artifact
+  that survives `/clear`.
+
 ## File conventions
 
 - All documentation in markdown
@@ -110,6 +126,13 @@ Date
   processing only that branch's items and dropping the rest — give aggregators
   exactly **one** input (merge upstream into a single stream first). Both traps were
   hit building `read-input-text` (ADR-036, Block 2).
+- **Always re-export and commit the workflow JSON after changing a workflow live.** n8n
+  edits happen on the live instance (n8n MCP/UI per ADR-018); the repo `n8n/workflows/*.json`
+  is the master **only if kept in sync**. After any live change: `n8n_get_workflow` (mode
+  `active`) → re-export → commit. Reconcile against live behaviour, preserving curated node
+  `notes` (which live often lacks) — don't dump raw API JSON over them. Drift bites: ADR-038's
+  multimodal routing was deployed live but never exported, leaving the repo stale and a later
+  plan built on wrong assumptions.
 
 ## Definition of done
 

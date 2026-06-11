@@ -15,6 +15,7 @@
             { "name": "prompt" },
             { "name": "impact" },
             { "name": "personal_data", "type": "boolean" },
+            { "name": "modality" },
             { "name": "task_type" },
             { "name": "clickup_task_id" },
             { "name": "triggered_by" },
@@ -35,9 +36,9 @@
       "position": [224, 304],
       "parameters": {
         "operation": "executeQuery",
-        "query": "select litellm_model, temperature, max_tokens, nudge,\n       price_in_usd_per_1k, price_out_usd_per_1k, impact\nfrom model_routing\nwhere impact in ($1, '__default__') and personal_data = $2 and active = true and modality = 'text'\norder by (impact = $1) desc\nlimit 1;",
+        "query": "select litellm_model, temperature, max_tokens, nudge,\n       price_in_usd_per_1k, price_out_usd_per_1k, impact\nfrom model_routing\nwhere impact in ($1, '__default__') and personal_data = $2 and modality = $3 and active = true\norder by (impact = $1) desc\nlimit 1;",
         "options": {
-          "queryReplacement": "={{ [ $json.impact || '__default__', $json.personal_data === true || $json.personal_data === 'true' ? true : false ] }}"
+          "queryReplacement": "={{ [ $json.impact || '__default__', $json.personal_data === true || $json.personal_data === 'true' ? true : false, $json.modality || 'text' ] }}"
         }
       },
       "credentials": { "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" } },
@@ -86,7 +87,7 @@
       "typeVersion": 2,
       "position": [896, 304],
       "parameters": {
-        "jsCode": "const routing = $('Resolve Routing').first().json;\n\n// Pick whichever LLM branch produced a real completion. On primary failure\n// (Call LiteLLM onError=continueErrorOutput) the Fallback to Opus node ran instead.\nlet okCall = null, okFb = null;\ntry { okCall = $('Call LiteLLM').first().json; } catch (e) {}\ntry { okFb = $('Fallback to Opus').first().json; } catch (e) {}\nconst hasBody = (x) => x && x.body && x.body.choices;\nlet resp = {}, fell_back = false;\nif (hasBody(okCall)) { resp = okCall; fell_back = false; }\nelse if (hasBody(okFb)) { resp = okFb; fell_back = true; }\nelse { resp = (okCall && okCall.body) ? okCall : (okFb || {}); }\n\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\nconst ch = headers['x-litellm-response-cost'];\nconst usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\n\nconst pd = routing.personal_data;\nconst fbAlias = pd ? 'haxe-opus-4-5-bedrock' : 'haxe-opus-4-8-direct';\nconst alias = fell_back ? fbAlias : (routing.litellm_model || '');\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : alias;\nconst provider = alias.includes('bedrock') ? 'litellm/bedrock-eu' : 'litellm/anthropic-direct';\n\n// On fallback the model differs from the routed one. LiteLLM's response-cost header\n// is authoritative; these price columns are only a dormant backup. Keep them roughly\n// correct for the common non-PD direct case (Opus 4.8); PD bedrock keeps routed prices.\nconst price_in = (fell_back && !pd) ? 0.015 : routing.price_in_usd_per_1k;\nconst price_out = (fell_back && !pd) ? 0.075 : routing.price_out_usd_per_1k;\n\nreturn [{ json: {\n  completion,\n  model_used,\n  provider,\n  input_tokens, output_tokens, usd_cost,\n  price_in_usd_per_1k: price_in,\n  price_out_usd_per_1k: price_out,\n  routing_default_used: !!routing.routing_default_used,\n  fell_back_to_opus: fell_back,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
+        "jsCode": "const routing = $('Resolve Routing').first().json;\n\n// Pick whichever LLM branch produced a real completion. On primary failure\n// (Call LiteLLM onError=continueErrorOutput) the Fallback to Opus node ran instead.\nlet okCall = null, okFb = null;\ntry { okCall = $('Call LiteLLM').first().json; } catch (e) {}\ntry { okFb = $('Fallback to Opus').first().json; } catch (e) {}\nconst hasBody = (x) => x && x.body && x.body.choices;\nlet resp = {}, fell_back = false;\nif (hasBody(okCall)) { resp = okCall; fell_back = false; }\nelse if (hasBody(okFb)) { resp = okFb; fell_back = true; }\nelse { resp = (okCall && okCall.body) ? okCall : (okFb || {}); }\n\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\nconst ch = headers['x-litellm-response-cost'];\nconst usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\n\nconst pd = routing.personal_data;\nconst fbAlias = pd ? 'haxe-opus-4-5-bedrock' : 'haxe-opus-4-8-direct';\nconst alias = fell_back ? fbAlias : (routing.litellm_model || '');\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : alias;\nconst provider = alias.includes('bedrock') ? 'litellm/bedrock-eu' : alias.includes('gemini') ? 'litellm/vertex-eu' : 'litellm/anthropic-direct';\n\n// On fallback the model differs from the routed one. LiteLLM's response-cost header\n// is authoritative; these price columns are only a dormant backup. Keep them roughly\n// correct for the common non-PD direct case (Opus 4.8); PD bedrock keeps routed prices.\nconst price_in = (fell_back && !pd) ? 0.015 : routing.price_in_usd_per_1k;\nconst price_out = (fell_back && !pd) ? 0.075 : routing.price_out_usd_per_1k;\n\nreturn [{ json: {\n  completion,\n  model_used,\n  provider,\n  input_tokens, output_tokens, usd_cost,\n  price_in_usd_per_1k: price_in,\n  price_out_usd_per_1k: price_out,\n  routing_default_used: !!routing.routing_default_used,\n  fell_back_to_opus: fell_back,\n  impact: routing.impact,\n  personal_data: routing.personal_data,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
       }
     },
     {
@@ -247,7 +248,7 @@
     "AWS Bedrock Chat Model (fallback)": { "ai_languageModel": [[{ "node": "Basic LLM Chain (fallback)", "type": "ai_languageModel", "index": 0 }]] },
     "Fallback to Opus": { "main": [[{ "node": "Parse Response", "type": "main", "index": 0 }]] }
   },
-  "settings": { "executionOrder": "v1", "binaryMode": "separate", "errorWorkflow": "81eplXMD1v5ONhzs" },
+  "settings": { "executionOrder": "v1", "errorWorkflow": "81eplXMD1v5ONhzs" },
   "staticData": null,
   "meta": null,
   "pinData": {},

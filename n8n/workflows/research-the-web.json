@@ -211,7 +211,7 @@
       "typeVersion": 2,
       "position": [1320, 420],
       "parameters": {
-        "jsCode": "const bf = $('Build Final').first().json;\nconst ctx = $('When Called').first().json;\nconst calls = Array.isArray(bf.calls) ? bf.calls : [];\nif (!calls.length) { return [{ json: { __noop: true } }]; }\nreturn calls.map(function (c) { return { json: {\n  clickup_task_id: ctx.clickup_task_id || null,\n  caller_user_id: ctx.caller_user_id || null,\n  process_type: ctx.process_type || null,\n  triggered_by: ctx.triggered_by || 'explicit_command',\n  invocation_type: ctx.invocation_type || 'explicit',\n  impact: ctx.impact || null,\n  model_used: c.model_used || null,\n  input_tokens: (c.input_tokens != null) ? c.input_tokens : null,\n  output_tokens: (c.output_tokens != null) ? c.output_tokens : null,\n  usd_cost: (c.usd_cost != null) ? c.usd_cost : null\n} }; });"
+        "jsCode": "const bf = $('Build Final').first().json;\nconst ctx = $('When Called').first().json;\nconst calls = Array.isArray(bf.calls) ? bf.calls : [];\nif (!calls.length) { return [{ json: { __noop: true } }]; }\nreturn calls.map(function (c) { return { json: {\n  clickup_task_id: ctx.clickup_task_id || null,\n  caller_user_id: ctx.caller_user_id || null,\n  process_type: ctx.process_type || null,\n  triggered_by: 'search_step',\n  invocation_type: ctx.invocation_type || 'explicit',\n  impact: ctx.impact || null,\n  model_used: c.model_used || null,\n  input_tokens: (c.input_tokens != null) ? c.input_tokens : null,\n  output_tokens: (c.output_tokens != null) ? c.output_tokens : null,\n  usd_cost: (c.usd_cost != null) ? c.usd_cost : null\n} }; });"
       }
     },
     {
