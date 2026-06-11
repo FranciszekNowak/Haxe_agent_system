@@ -71,6 +71,26 @@ that parent, matching the existing best-effort `Fetch Task Comments` (no extra a
   `Fetch Task Comments`; `Collect Replies` tracks a `reply_fetch_errors` count for future
   surfacing if needed.
 
+## Update 2026-06-11 — WARN alerts on comments/replies fetch failure
+
+Added explicit WARN alerts (via `Post Alert (v1)`) for the two fetch failure modes that were
+previously silent: `Comments Fetch Failed?` (no `comments` array from `Fetch Task Comments`) →
+`Alert Comments Failed` (`source: search/fetch-comments`), and `Reply Fetch Failed?`
+(`reply_fetch_errors > 0` from `Collect Replies`) → `Alert Replies Failed`
+(`source: search/fetch-replies`), both `onError: continueRegularOutput`.
+
+**Return-path trap (re-learned):** the first attempt wired these as dead-end side branches off
+`Fetch Task Comments` / `Collect Replies`. That added extra **leaf nodes**, and because
+`Workspace Search` is an `executeWorkflow` sub-workflow, its return became non-deterministic —
+n8n returned an IF node's empty `main[0]` (the alert branch, empty on the happy path) instead of
+`Final Output`, so `Call Workspace Search` got **0 items** and the "0-item nulls the chain" trap
+emptied the whole context (run aborted at `Context OK?` → CRITICAL, no reply). Fix: the alert IFs
+**reconverge inline** — `Comments Fetch Failed?` (both branches) → `Pick Threads`;
+`Reply Fetch Failed?` (both branches) → `Build Search Prompt`; alert nodes flow onward, never
+dead-end — so `Final Output` stays the **sole leaf** and the return is deterministic. Confirms the
+CLAUDE.md rule: a sub-workflow's return path must be a single branch-free terminal; side-effects
+either reconverge into the main line or move to the caller.
+
 ## Date
 
 2026-06-11
