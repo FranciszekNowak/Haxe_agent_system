@@ -1,7 +1,7 @@
 # Workflow repo↔live reconciliation tracker
 
 **Why this exists.** ADR-038's multimodal deploy (and other live edits) changed the running n8n
-graph without re-exporting the JSON, so `n8n/workflows/*.json` drifted from live. Block 1 (ADR-040)
+graph without re-exporting the JSON, so `n8n/workflows/*.json` drifted from live. Block 1 (ADR-043)
 re-baselined the repo against live. This file records the drift found and, for anything **not yet
 reconciled**, exactly what to fix and in which block — so a future block can finish the job without
 re-deriving the analysis.

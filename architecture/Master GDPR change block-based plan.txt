@@ -436,11 +436,20 @@
  drift-clean; all 17 workflows now match live. Contradicts Block 3's "all drift-clean" — flag: an
  unattributed live save of invoke-model happened at 14:12.
 
- STILL OPEN for operator: (a) ADR NUMBER COLLISION — 040/041 each name two committed ADRs
- (global-model-routing/erasure vs. the pre-existing thread-root-replies/routing-zero-row-guard +
- 042 gemini-thinking from commit 5e5e229). Not folded into Block 4; recommend a dedicated renumber
- (ours → 043/044) + reference sweep. (b) Confirm the Polish employment-records retention figure and
- the executed DPAs/SCCs + no-training terms per sub-processor (compliance doc §8).
+ ADR NUMBER COLLISION — RESOLVED (post-Block-4, operator-requested). Our two ADRs were renamed
+ global-model-routing 040→043 and erasure-and-retention 041→044, so decisions/ is now gap-free and
+ collision-free (040 thread-root-replies, 041 routing-zero-row-guard, 042 gemini-thinking, 043
+ global-routing, 044 erasure). References swept repo-wide (current.md, ADR-038/039 supersede notes,
+ ADR-043/044 internals, litellm-config.yaml, migrations 021/022 comments, the reconciliation
+ tracker) — carefully preserving the references that point at the PRE-EXISTING 040/041 (thread-root
+ reply/threaded-read in §15.6-15.7 + migration 019's 0-row guard). This historical planning narrative
+ (Blocks 1-3 text above) is left as-written — it spans multiple numbering epochs (the pre-renumber
+ 039/040 drafts, the post-Block-1 040/041) and is a record of what was planned at each time, not a
+ live cross-ref. The compliance doc was left untouched per operator instruction (its 2 ADR refs now
+ point at the old numbers — update when revisiting it).
+
+ STILL OPEN for operator: Confirm the Polish employment-records retention figure and the executed
+ DPAs/SCCs + no-training terms per sub-processor (compliance doc §8).
 
  ---
  Do NOT build (explicit out-of-scope)

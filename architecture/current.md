@@ -37,10 +37,10 @@ senior-management intervention.
    workflows. Redis provides rate-limiting, decoupling, priority, and retries.
 
 3. **Anthropic direct + Vertex AI (global)** — model inference via LiteLLM gateway. **PD-blind** routing
-   by `(impact, modality)` (ADR-040, migration 021): `modality='text'` → Anthropic direct (Claude);
+   by `(impact, modality)` (ADR-043, migration 021): `modality='text'` → Anthropic direct (Claude);
    `modality='multimodal_input'` → Vertex AI Gemini (global endpoint, DPA+SCCs; flash for low tiers, pro
    for high — ADR-042); `modality='image'` → image-gen tiers (Stability/Vertex/DALL-E). Bedrock EU and
-   the `personal_data`/`eu_only` axis were retired (migration 021). See ADR-030, ADR-040, ADR-042.
+   the `personal_data`/`eu_only` axis were retired (migration 021). See ADR-030, ADR-043, ADR-042.
 
 4. **Supabase (eu-west-1, Ireland)** — application database. Operational logs, threaded
    human feedback, process-change proposals, conversation session cache, email
@@ -67,7 +67,7 @@ senior-management intervention.
                               ↕
 ┌────────────────────────────────────────────────────────────────┐
 │  LAYER 3: LiteLLM Gateway → Anthropic direct / Vertex AI       │
-│  PD-blind, routed by (impact, modality) — ADR-040             │
+│  PD-blind, routed by (impact, modality) — ADR-043             │
 │  text → Anthropic direct (Haiku/Sonnet/Opus/Fable 5)          │
 │  multimodal_input → Vertex AI Gemini (flash/pro, global)      │
 │  image → Stability / Vertex / DALL-E (image-gen tiers)        │
@@ -139,7 +139,7 @@ they slot in additively. See the corresponding ADRs.
 
 - **Multi-provider routing (LIVE; PD-blind).** Model invocation is centralized behind
   `Invoke Model (v1)`; routing is data-driven via `model_routing (impact, modality)` — capability +
-  modality only, no `personal_data`/EU axis (ADR-040, migration 021). `modality='text'` → Anthropic
+  modality only, no `personal_data`/EU axis (ADR-043, migration 021). `modality='text'` → Anthropic
   direct; `modality='multimodal_input'` → Vertex AI Gemini (flash/pro by tier, ADR-042); `modality='image'`
   → image-gen tiers. The `PD Verifier (v1)` seam was removed in Block 2 and the `personal_data`/`eu_only`
   columns + Bedrock-EU rows were dropped in **Block 3** (migration 021); the table collapsed to one row per
@@ -149,7 +149,7 @@ they slot in additively. See the corresponding ADRs.
   tasks pass as vision content blocks to the model; Docling extracts text from non-image files
   (PDF/DOCX/XLSX) into the prompt — a PDF therefore routes as `modality='text'` → Claude. Image *input*
   (`modality='multimodal_input'`) routes to **Vertex AI Gemini** for all tasks (the active multimodal
-  route — flash for n/d/Niski/Średni, pro for Wysoki/Krytycznie; ADR-040 operator decision + ADR-042).
+  route — flash for n/d/Niski/Średni, pro for Wysoki/Krytycznie; ADR-043 operator decision + ADR-042).
   Image *generation* live via LiteLLM Stability/Vertex AI/DALL-E 3 tiers (ADR-036). ClickUp attachment
   upload deferred.
 
@@ -161,7 +161,7 @@ Two parallel feedback systems with identical machinery, different subject:
 
 ### 4.1 Artifacts (Tier 0)
 - `agent_runs` — one row per agent execution (context, trigger, model, cost, status).
-  Also the **erasure hub** (ADR-041, migration 022): nullable `subject_key` (the
+  Also the **erasure hub** (ADR-044, migration 022): nullable `subject_key` (the
   channel-natural counterparty id, populated only once the email channel is wired),
   `clickup_comment_id` (the id of the comment the run posted — recorded live by
   Post-back's `Record Artifact`), and a reserved `drive_file_id`. Nothing reads
@@ -286,7 +286,7 @@ a data location change.
 > 8 `multimodal_input` rows — 4 GDPR (Gemini EU, `personal_data=true`) + 4 non-GDPR (Anthropic direct,
 > `personal_data=false`). Apply AFTER `013_image_tiers_match_clickup.sql`.
 
-> **Block 1 — repo↔live re-sync + targeted fixes (2026-06-11, ADR-040/041).** The repo
+> **Block 1 — repo↔live re-sync + targeted fixes (2026-06-11, ADR-043/044).** The repo
 > `n8n/workflows/*.json` were re-baselined against the running graph (ADR-038's multimodal deploy had
 > never been exported). Drift was **bidirectional** — see `architecture/workflow-repo-live-reconciliation.md`
 > for the per-workflow tracker (what is reconciled vs deferred to Block 2). Behaviour changes landed this
@@ -303,7 +303,7 @@ a data location change.
 > Fable 5 row was replaced by Gemini Pro). The `personal_data`/EU apparatus removal itself is
 > still pending (Blocks 2–3).
 
-> **Block 2 — strip PD plumbing, behaviour-neutral (2026-06-11, ADR-040).** The `PD Verifier (v1)`
+> **Block 2 — strip PD plumbing, behaviour-neutral (2026-06-11, ADR-043).** The `PD Verifier (v1)`
 > sub-workflow (`hzwmak7UBpuHaiTO`) was **deleted** (workflow + repo file), and `personal_data` is no
 > longer threaded through context assembly, workspace search, or the research gate: removed from
 > `assemble-context` (the `Call PD Verifier` node + rewire `Context Gather → Workspace Search`, the
@@ -323,11 +323,11 @@ a data location change.
 > workflows; `check-workflow-drift.mjs` reports all 17 match live (assemble-context + agent-orchestrator
 > reconciled — they already carried the ADR-038 context-health/modality work).
 
-> **Block 3 — routing cutover to PD-blind global (2026-06-11, ADR-040/042).** `model_routing` collapsed
+> **Block 3 — routing cutover to PD-blind global (2026-06-11, ADR-043/042).** `model_routing` collapsed
 > to one row per `(impact, modality)` via migration `021_global_model_routing.sql`: dropped the Bedrock-EU
 > `text` rows and the Claude `multimodal_input` rows, **kept Gemini as the active multimodal route**
-> (operator decision — this *inverts* ADR-040's original "keep Claude, Gemini stays dormant" line; see the
-> ADR-040 Update note), renamed the Gemini aliases `-eu`→none (now global, not EU-pinned), re-keyed the PK
+> (operator decision — this *inverts* ADR-043's original "keep Claude, Gemini stays dormant" line; see the
+> ADR-043 Update note), renamed the Gemini aliases `-eu`→none (now global, not EU-pinned), re-keyed the PK
 > `(impact, personal_data, modality)` → `(impact, modality)`, and dropped the `personal_data`/`eu_only`
 > columns + the now-redundant `model_routing_non_text_unique` index. Result: 16 rows — 6 `text` (Claude
 > direct), 5 `image` (gen tiers), 5 `multimodal_input` (Gemini flash×3 / pro×2 per ADR-042). Workflows made
@@ -341,7 +341,7 @@ a data location change.
 > zero alerts on the clean run. Bedrock EU is now unused (AWS creds in `.env` are dead — a deployment
 > cleanup, intentionally not done here).
 
-> **Block 4 — erasure schema readiness + artifact recording (2026-06-11, ADR-041).** Migration
+> **Block 4 — erasure schema readiness + artifact recording (2026-06-11, ADR-044).** Migration
 > `022_agent_runs_erasure_ready.sql` adds three nullable `text` columns to `agent_runs` —
 > `subject_key` (partial-indexed `where subject_key is not null`), `clickup_comment_id`,
 > `drive_file_id` — making `agent_runs` the **erasure hub** at zero behavioral risk (nothing reads
@@ -485,7 +485,7 @@ Target: 7–9 weeks to v1.
   - `n8n-worker` (n8nio/n8n:2.22.5) — queue consumer; concurrency 5.
   - `litellm` (ghcr.io/berriai/litellm, v1.87.0 pinned by digest) — **deployed + active** (ADR-024/030).
     Internal-only LLM gateway (127.0.0.1:4000): signs Bedrock, returns exact token usage + USD cost header,
-    multi-provider. **IS the production model-call path** (§15). Chat aliases (PD-blind — ADR-040, migration 021):
+    multi-provider. **IS the production model-call path** (§15). Chat aliases (PD-blind — ADR-043, migration 021):
     four Anthropic direct (`haxe-haiku-4-5-direct`, `haxe-sonnet-4-6-direct`, `haxe-opus-4-8-direct`,
     `haxe-fable-5-direct`) + two Gemini global (`haxe-gemini-flash`, `haxe-gemini-pro`). The three Bedrock EU
     (`*-bedrock`) aliases were **removed in Block 3** (no routing row references them); the Gemini aliases were
@@ -680,7 +680,7 @@ State as of 2026-06-10:
   orchestrator.)
 - **Model layer — DONE.** Self-hosted LiteLLM gateway, **PD-blind** data-driven routing on `(impact,
   modality)` — `text` → Anthropic direct, `multimodal_input` → Vertex Gemini, `image` → image-gen tiers
-  (ADR-040, migration 021) — exact USD × daily NBP FX → `cost_pln`, logged to `agent_runs` and summed
+  (ADR-043, migration 021) — exact USD × daily NBP FX → `cost_pln`, logged to `agent_runs` and summed
   into `[AI] Koszt akcji [PLN]`.
 - **Output — DONE.** Draft comment @-mentions the reviewer and renders full markdown (headings,
   lists, code, tables) via a deterministic markdown→Quill-Delta converter; soft
@@ -938,7 +938,7 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   `input_warnings_*`. Folds attachment **text** into the prompt and fires the reader's `warnings` via
   `Post Alert (v1)` on a reconverging side branch (`Return Context` stays the sole terminal). Multimodal
   input (ADR-036/038/040 Block 5): images present → `modality='multimodal_input'` set on the context payload →
-  routing returns the **Gemini** alias for all multimodal tasks (`haxe-gemini-flash`/`-pro` by tier; ADR-040
+  routing returns the **Gemini** alias for all multimodal tasks (`haxe-gemini-flash`/`-pro` by tier; ADR-043
   made Gemini the active multimodal route, superseding both the former "PD guard drops images" stance and the
   Claude-direct vision path).
 - **Stage B — `Execute LLM Call (v1)`** (`n8n/workflows/execute-llm-call.json`, id `9qdJA4xnAGbxqkt9`,
@@ -1010,15 +1010,15 @@ returns `{ completion, model, provider }`). The native AWS Bedrock node + `Basic
 **retained disabled** as a fallback path (a generic AWS credential + HTTP Request cannot sign
 Bedrock — only the native node can; ADR-021).
 
-- **Provider routing (PD-blind — ADR-040/042):** one row per `(impact, modality)`, three legs by modality:
+- **Provider routing (PD-blind — ADR-043/042):** one row per `(impact, modality)`, three legs by modality:
   - `modality='text'` → **Anthropic direct**: `haxe-haiku-4-5-direct`, `haxe-sonnet-4-6-direct`,
     `haxe-opus-4-8-direct`, `haxe-fable-5-direct`. Auth: `ANTHROPIC_API_KEY`. (A PDF/DOCX task is read as
     text via Docling, so it routes here, not to multimodal_input.)
   - `modality='multimodal_input'` → **Vertex AI Gemini (global)**: `haxe-gemini-flash`
     (`vertex_ai/gemini-3.5-flash`) for `n/d`/`Niski`/`Średni`, `haxe-gemini-pro`
     (`vertex_ai/gemini-3.1-pro-preview`) for `Wysoki`/`Krytycznie ważne` (ADR-042). This is the **active**
-    multimodal route (operator decision, ADR-040). Auth: ADC via `/secrets/vertex-key.json`. Transfer
-    basis: Vertex AI DPA+SCCs (ADR-040). `Parse Response` detects Gemini aliases → sets provider
+    multimodal route (operator decision, ADR-043). Auth: ADC via `/secrets/vertex-key.json`. Transfer
+    basis: Vertex AI DPA+SCCs (ADR-043). `Parse Response` detects Gemini aliases → sets provider
     `'litellm/vertex'`. ⚠ Gemini 3.x uses **thinking tokens** billed on top of text: ~65 reasoning + 1 text
     tokens per one-word reply (Flash), ~133 + 1 (Pro); bounded per-model via `reasoning_effort` (ADR-042).
     Real task cost will exceed text-token count alone.
@@ -1075,7 +1075,7 @@ See ADR-022 (shape), ADR-023 (routing), ADR-024 (LiteLLM/cost), ADR-030 (multi-p
 
 `Search (v1)` sits between Context Gather and Build Prompt (ADR-031). (The former `PD Verifier (v1)`
 seam — id `hzwmak7UBpuHaiTO`, a stub always returning `personal_data: false` — was **deleted in Block 2**,
-ADR-040; the pipeline is PD-blind.)
+ADR-043; the pipeline is PD-blind.)
 
 - **`Search (v1)`** (id `eL3fJuRMpzVRuVUT`, 22 nodes) — always fetches the last **30 task
   comments**; if the triggering comment references external artifacts, extracts search queries
@@ -1114,7 +1114,7 @@ post never sets status or `[AI] Finalny…`.
   > Entity`), so the root is the only valid target. On reply failure → new top-level comment + WARN,
   > unchanged.
 
-- **Artifact recording (ADR-041, migration 022):** after the status field is set, a `Record Artifact`
+- **Artifact recording (ADR-044, migration 022):** after the status field is set, a `Record Artifact`
   Postgres node (side branch off `Set Status Zakończono` success) writes the posted comment id onto
   the task's latest `agent_runs.clickup_comment_id`. Best-effort + observable: a 0-row write or DB
   error fires a `post-reply/record-artifact` WARN; reply and status still complete. This is
@@ -1230,7 +1230,7 @@ The canonical design intent for the workflows still to build:
   leaf**, to avoid context pollution.
 - **Phase 3:** autonomous **status/field-change webhooks + the daily due-date producer** (both
   gated by `Czy dla AI = Tak`); the **Gmail Email Workflow**. (The PD/sensitivity-classifier seam is
-  retired — ADR-040 made the pipeline PD-blind; no classifier is planned.)
+  retired — ADR-043 made the pipeline PD-blind; no classifier is planned.)
 - **Phase 4:** the **Weekly Org Proposer** and the learning-loop proposers generally.
 - **`Session Cleanup`** hourly cron.
 - **ADR-026 identity split:** a read-only telemetry identity vs. the edit-capable agent token

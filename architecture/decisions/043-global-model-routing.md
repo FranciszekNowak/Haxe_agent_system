@@ -1,4 +1,4 @@
-# ADR-040: Global model routing on default DPA/SCCs; remove personal-data residency routing
+# ADR-043: Global model routing on default DPA/SCCs; remove personal-data residency routing
 
 Status: Accepted. Supersedes ADR-038 and ADR-039 (Vertex AI Gemini GDPR posture) in full, and the Block 6 Cases 1 and 2 guards in ADR-036.
 Date: 2026-06-10
@@ -51,4 +51,4 @@ Block 3 executed the PD-blind collapse with the **opposite** multimodal choice f
 
 In reality the `n/d` tier already routed to Gemini Flash (migration 019), and ADR-042 (same day) tuned Gemini Flash/Pro `reasoning_effort` and output caps specifically for the multimodal tiers. The operator therefore chose to **activate Gemini as the active `multimodal_input` route for every tier** — `haxe-gemini-flash` for `n/d`/`Niski`/`Średni`, `haxe-gemini-pro` for `Wysoki`/`Krytycznie ważne` (ADR-042). Migration `021` kept the Gemini rows and dropped the Claude vision rows; the Gemini aliases were renamed `-eu`→none (global endpoint, never EU-pinned).
 
-What still stands from the decision above: removing the `personal_data`/EU-residency axis, collapsing the table to `(impact, modality)`, dropping the Bedrock-EU tier, and the static controller-side compliance posture. Only the multimodal *destination* flipped Claude→Gemini — so Gemini is now the **active** multimodal route, not a dormant alias. The migration cited above as "016" landed as **`021`** (015–020 were consumed by intervening work); the erasure migration (ADR-041) is **`022`**.
+What still stands from the decision above: removing the `personal_data`/EU-residency axis, collapsing the table to `(impact, modality)`, dropping the Bedrock-EU tier, and the static controller-side compliance posture. Only the multimodal *destination* flipped Claude→Gemini — so Gemini is now the **active** multimodal route, not a dormant alias. The migration cited above as "016" landed as **`021`** (015–020 were consumed by intervening work); the erasure migration (ADR-044) is **`022`**.

@@ -1,13 +1,13 @@
 -- 021_global_model_routing.sql
--- ADR-040: PD-blind global routing. Collapses model_routing to (impact, modality) only.
+-- ADR-043: PD-blind global routing. Collapses model_routing to (impact, modality) only.
 -- Append-only. Apply AFTER the workflows stop sending personal_data (Block 3 steps 1-2:
 -- invoke-model Lookup Routing + decide-research Lookup Research Routing) and AFTER LiteLLM
 -- deploy #1 added the -eu-free Gemini aliases (so the rename below strands no row).
 --
 -- DPA + SCCs (+ DPF where certified) make non-EU processing lawful, so the personal_data/EU
--- residency axis is removed entirely (ADR-040). Routing is now capability + modality only.
+-- residency axis is removed entirely (ADR-043). Routing is now capability + modality only.
 --
--- multimodal_input route = Gemini (operator decision 2026-06-11; ADR-040 Update note, ADR-042):
+-- multimodal_input route = Gemini (operator decision 2026-06-11; ADR-043 Update note, ADR-042):
 --   flash for n/d/Niski/Średni, pro for Wysoki/Krytycznie. This is the live-tuned, active
 --   route (it has been serving image tasks since migration 019) — NOT the dormant-Claude
 --   alternative the original plan assumed. The Claude vision rows are therefore dropped and

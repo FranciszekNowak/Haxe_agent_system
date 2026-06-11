@@ -1,9 +1,9 @@
-# LiteLLM gateway config (ADR-024, ADR-030, ADR-040). Committed — contains NO secrets.
+# LiteLLM gateway config (ADR-024, ADR-030, ADR-043). Committed — contains NO secrets.
 # The Anthropic API key, Vertex/OpenAI/Stability/Tavily keys, and the master key are injected
 # from the VPS .env as environment variables (see docker-compose.yml `litellm` service +
 # .env.example).
 #
-# PD-blind global routing (ADR-040): there is no EU-residency / personal_data tier. Models are
+# PD-blind global routing (ADR-043): there is no EU-residency / personal_data tier. Models are
 # chosen by capability + modality only. The DPA + SCCs (+ DPF where certified) make non-EU
 # processing lawful, so the Bedrock-EU tier and the Gemini `-eu` alias suffix were removed
 # (migration 021). `model_name` is the alias stored in Supabase `model_routing.litellm_model`;
@@ -36,8 +36,8 @@ model_list:
       model: anthropic/claude-fable-5
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # ── Gemini via Vertex AI, global endpoint (multimodal_input route — ADR-040/042) ──────
-  # Transfer basis: Vertex AI DPA + SCCs (ADR-040; no EU-residency requirement, so vertex_location
+  # ── Gemini via Vertex AI, global endpoint (multimodal_input route — ADR-043/042) ──────
+  # Transfer basis: Vertex AI DPA + SCCs (ADR-043; no EU-residency requirement, so vertex_location
   # is the global endpoint and the alias is no longer `-eu`-pinned).
   # Auth: ADC via GOOGLE_APPLICATION_CREDENTIALS (mounted service-account key, docker-compose.yml).
   #

@@ -97,8 +97,8 @@ standard Data Processing Addendum covers Vertex AI inference at EU regions.
 > **Gemini 2.5 models use thinking tokens**: even a one-word reply consumes ~20 (Flash) or ~150
 > (Pro) reasoning tokens. Cost estimation must account for this overhead.
 
-> **Update 2026-06-11 (superseded by ADR-040):** the `personal_data`/EU-residency premise behind
+> **Update 2026-06-11 (superseded by ADR-043):** the `personal_data`/EU-residency premise behind
 > this ADR was reversed — a controller-side DPA + SCCs (+ DPF) make global processing of personal
 > data lawful, so the EU-vision route and PD gating are removed. The `haxe-gemini-*` aliases are
 > **retained** as global, non-PD multimodal capability aliases (only their PD/EU gating is dropped).
-> See ADR-040 (and ADR-041 for erasure/retention).
+> See ADR-043 (and ADR-044 for erasure/retention).

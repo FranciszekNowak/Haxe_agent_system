@@ -227,7 +227,7 @@
       "maxTries": 2,
       "waitBetweenTries": 2000,
       "onError": "continueErrorOutput",
-      "notes": "ADR-041 erasure-readiness: writes the posted ClickUp comment id onto the task's latest agent_runs row. Side branch off Set Status success — cannot affect the already-complete reply/status. CTE always returns one row (target_id, updated 0/1) so a 0-row UPDATE is detectable, not a silent 0-item drop."
+      "notes": "ADR-044 erasure-readiness: writes the posted ClickUp comment id onto the task's latest agent_runs row. Side branch off Set Status success — cannot affect the already-complete reply/status. CTE always returns one row (target_id, updated 0/1) so a 0-row UPDATE is detectable, not a silent 0-item drop."
     },
     {
       "id": "recorded",

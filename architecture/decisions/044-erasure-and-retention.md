@@ -1,11 +1,11 @@
-# ADR-041: Data subject erasure and retention posture
+# ADR-044: Data subject erasure and retention posture
 
-Status: Accepted. Builds on ADR-040 (global model routing, PD-blind pipeline). Does not change model routing or the multimodal reading path.
+Status: Accepted. Builds on ADR-043 (global model routing, PD-blind pipeline). Does not change model routing or the multimodal reading path.
 Date: 2026-06-10
 
 ## Context
 
-ADR-040 removed personal-data routing and made the pipeline PD-blind (migration 021). Two controller-side duties remain that do not depend on model location and are not satisfied by routing: the ability to erase a data subject's data on request (Art 17), and bounded, purposeful retention (Art 5(1)(e)). This ADR sets the minimal, proportionate mechanisms for both, scoped to our actual data: low-sensitivity operational data (customer service, B2B contacts) and employee wage and address data. None of it is special-category (Art 9) data.
+ADR-043 removed personal-data routing and made the pipeline PD-blind (migration 021). Two controller-side duties remain that do not depend on model location and are not satisfied by routing: the ability to erase a data subject's data on request (Art 17), and bounded, purposeful retention (Art 5(1)(e)). This ADR sets the minimal, proportionate mechanisms for both, scoped to our actual data: low-sensitivity operational data (customer service, B2B contacts) and employee wage and address data. None of it is special-category (Art 9) data.
 
 We are mid-build on multimodality (Docling to agent spine; image and PDF reading works). Nothing here changes that path.
 
@@ -44,4 +44,4 @@ Email is not wired yet, so subject_key population and the erasure runbook activa
 
 ## Relationship to other ADRs
 
-Builds on ADR-040. Does not alter model routing, the Docling reading path, the agent spine, or context gathering.
+Builds on ADR-043. Does not alter model routing, the Docling reading path, the agent spine, or context gathering.
