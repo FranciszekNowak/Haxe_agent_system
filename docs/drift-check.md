@@ -33,8 +33,27 @@ of relying on memory. They **report** drift — they do not auto-fix, because dr
   n8n public API (the interactively-authenticated MCP server is absent in headless/CI).
 
 Expected non-empty output is fine **only** when matched by a deliberate, documented deferral — see
-`architecture/workflow-repo-live-reconciliation.md`. As of Block 1 the check flags exactly the four
-deferred files (agent-orchestrator, assemble-context, context-gather, read-input).
+`architecture/workflow-repo-live-reconciliation.md`. As of 2026-06-11 the check flags **two** deferred
+files (assemble-context, context-gather); `agent-orchestrator` and `read-input` were reconciled to live
+(the no-attachment empty-return fix) and now match.
+
+## Re-exporting from live (fixing n8n drift)
+
+When the check flags a workflow you edited live as drifted (repo behind live), write it back with:
+
+```
+N8N_API_KEY=...  node scripts/export-workflows.mjs read-input.json agent-orchestrator.json
+```
+
+- **Explicit files only** — it never mass-exports, so it can't clobber a file whose drift direction you
+  haven't decided. Name exactly the files to overwrite.
+- Re-exports the **whole** workflow from live, not a patch: n8n's partial-update API auto-sanitises every
+  IF/Switch node's condition options on any edit (`v2→v3`, `loose→strict`), so a surgical hand-patch
+  silently leaves those untouched nodes drifted. A full re-export is the only reliable way to go green.
+- Mirrors the check's normalisation (strips `schema`/`cachedResultName`/`cachedResultUrl`, keeps live node
+  `notes`, compacts positions) and **preserves each repo file's existing `active` flag**.
+- Diffs are larger than the behavioural change (inline→expanded re-formatting) — trust the green check,
+  not a line count. Re-run `check-workflow-drift.mjs` afterwards to confirm.
 
 ## Supabase check (design)
 
