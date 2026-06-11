@@ -964,7 +964,19 @@ Bedrock — only the native node can; ADR-021).
   pending rename + application.
 - **Impact → tier (ADR-023):** `Niski`→Haiku 4.5, `Średni`→Sonnet 4.6, `Wysoki`→Opus,
   `Krytycznie ważne`→Opus at temp 0.2 / 16k tokens with a prepended deliberation nudge;
-  `n/d`/empty/unknown→Sonnet (fail-safe). "Max effort" is approximated via temperature +
+  `n/d`/empty/unknown→Sonnet (fail-safe).
+- **0-row routing guard (ADR-041):** `Lookup Routing`'s `onError:continueErrorOutput` catches DB
+  *errors* but **not** an empty result (0 rows is a success) — which previously let `Resolve Routing`
+  skip on 0 items and silently null the whole chain (no reply, no alert). Now `Lookup Routing` has
+  `alwaysOutputData:true` (so `Resolve Routing` always runs its safety-net) and a `routing_row_missing`
+  flag fires **`Alert Routing Missing` (CRITICAL, `invoke-model/routing`)** naming the unmatched
+  impact×modality×personal_data combo — loud but non-blocking (it reconverges to `Check Degradation`;
+  `Shape Output` stays the sole leaf). Migration 019 closed the specific gap that triggered it: the
+  `n/d - zadanie nie jest dla AI` tier had no `multimodal_input` row, so a not-for-AI task *with an
+  image* matched nothing. It now routes to `haxe-gemini-flash-eu` (both PD values, operator choice) at
+  `max_tokens=12000` — a reasoning model whose `max_tokens` caps reasoning+output, so 4000 truncated to
+  an empty completion. The PK is `(impact, personal_data, modality)`.
+  "Max effort" is approximated via temperature +
   max-tokens + the nudge (the native node exposes no reasoning-budget parameter). **Caveat:**
   newer Opus (4.6/4.7/4.8) is granted on Anthropic direct (`opus-4-8`) but **not** on the
   Bedrock account, so the Bedrock Opus tier uses 4.5 until access is requested on the Bedrock
