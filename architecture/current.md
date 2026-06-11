@@ -973,9 +973,20 @@ Bedrock — only the native node can; ADR-021).
   impact×modality×personal_data combo — loud but non-blocking (it reconverges to `Check Degradation`;
   `Shape Output` stays the sole leaf). Migration 019 closed the specific gap that triggered it: the
   `n/d - zadanie nie jest dla AI` tier had no `multimodal_input` row, so a not-for-AI task *with an
-  image* matched nothing. It now routes to `haxe-gemini-flash-eu` (both PD values, operator choice) at
-  `max_tokens=12000` — a reasoning model whose `max_tokens` caps reasoning+output, so 4000 truncated to
-  an empty completion. The PK is `(impact, personal_data, modality)`.
+  image* matched nothing. It now routes to `haxe-gemini-flash-eu` (both PD values, operator choice). The PK is
+  `(impact, personal_data, modality)`.
+- **`max_tokens` by tier (migration 020):** `max_tokens` is the **output/completion** cap only — it
+  does **not** limit input/context (the context window does). Reasoning models (Gemini 3.x, Fable 5)
+  count thinking tokens against it, which is why the former 4000 truncated gemini-flash to an empty
+  completion. Re-baselined per impact tier: **Niski 8k, Średni 16k, Wysoki + Krytycznie ważne 32k**;
+  `n/d` and `__default__` default to 8k; image-generation rows (`modality='image'`) untouched. NB the
+  in-code last-resort fallback in `Resolve Routing` (no row matched / DB down) is still hard-coded to 4000.
+- **Gemini thinking level (ADR-042):** Gemini 3.x are reasoning models whose **thinking tokens count as
+  output** and against `max_tokens`, and Flash **defaults to `thinkingLevel=high`** — which burned
+  3.8k–7.7k tokens and truncated the answer to empty at the 8k cap. Bounded via `reasoning_effort` in
+  `litellm-config.yaml` `litellm_params`: **flash → `low`** (lower tiers), **pro → `high`** (higher
+  tiers). LiteLLM maps `reasoning_effort` → `thinkingLevel`. Config is mounted into the `litellm`
+  container; deploy via `scp` + `docker compose up -d litellm`.
   "Max effort" is approximated via temperature +
   max-tokens + the nudge (the native node exposes no reasoning-budget parameter). **Caveat:**
   newer Opus (4.6/4.7/4.8) is granted on Anthropic direct (`opus-4-8`) but **not** on the
