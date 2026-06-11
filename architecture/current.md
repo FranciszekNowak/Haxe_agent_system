@@ -866,7 +866,9 @@ empty completion (both added 2026-06-11 after a zero-attachment task silently pr
 ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the stages:
 
 - **Stage A — `Assemble Context and Build Prompt (v1)`** (`n8n/workflows/assemble-context-and-build-prompt.json`,
-  id `GGTBvFBgGSNbtUR6`, 13 nodes): `Context Gather (v1)` → `PD Verifier (v1)` → Workspace Search →
+  id `GGTBvFBgGSNbtUR6`, 13 nodes): `Context Gather (v1)` → `PD Verifier (v1)` → Workspace Search
+  (now also fetches **threaded comment replies** — `GET /comment/{id}/reply` per top-30 comment with
+  `reply_count>0` — and interleaves them under their parent in `task_comments`, ADR-040) →
   Decide Research → Load Agent Rules → **`Read Input (v1)`** → `Build Prompt`. Returns the prompt payload +
   assembled context, plus **`image_blocks_json`** (input image refs for the vision model, non-PD) and
   `input_warnings_*`. Folds attachment **text** into the prompt and fires the reader's `warnings` via
@@ -1018,6 +1020,14 @@ post never sets status or `[AI] Finalny…`.
   (`Upsert Session New`). Both paths upsert via `ON CONFLICT (clickup_task_id, comment_root_id,
   caller_user_id) WHERE is_active = true`; upsert failure → WARN side branch, run continues.
 
+  > Update 2026-06-11 (supersedes, ADR-040): the **live** `Post Reply (v1)` does **not** use
+  > `conversation_sessions`/`Check Session` (that mechanism above is aspirational / never deployed).
+  > It nests via `POST /api/v2/comment/{triggering_comment_id}/reply`, where `triggering_comment_id`
+  > is the **thread root** computed by the producer's `Detect Mention` as `reply_to_comment_id`
+  > (§15.7) — replying to a reply is impossible (ClickUp threads are single-level → `Unsupported
+  > Entity`), so the root is the only valid target. On reply failure → new top-level comment + WARN,
+  > unchanged.
+
 ### 15.7 `CU Webhook Producer (v1)` — automatic triggering
 
 n8n id `eS66Sk6fweQ0EOPa` (ADR-029 + updates). A **workspace-wide** (team-level, no
@@ -1044,6 +1054,15 @@ webhook, `responseMode: onReceived` → instant 200. Flow:
   ClickUp API calls** (~12 ms; no `Get Comments`). It also extracts `triggering_comment_id` +
   `triggering_comment_text`, passed through to the spine and into `Build Prompt`. Caller/reviewer
   = the **mentioner**.
+- **Thread-root reply target (ADR-040).** `Detect Mention` also computes **`reply_to_comment_id`**
+  — the comment the spine should reply *into*. ClickUp threads are **single-level**, so replying to a
+  comment that is itself a reply returns `Unsupported Entity` and `Post Reply` would fall back to a
+  **new top-level comment** (answer lands in a new thread — the observed bug). For a reply,
+  `comment.parent` is the top-level (repliable) comment; for a top-level comment it is the task id —
+  so `reply_to_comment_id = parent ≠ taskId ? parent : own id`. `Run Agent Spine` feeds this into the
+  downstream `triggering_comment_id` channel (the reply target), while the comment's **own** id stays
+  the **webhook-dedup key** (`Claim Comment`, ADR-029) — they must differ so distinct mentions in one
+  thread aren't de-duplicated.
 - **Agent→agent chaining** is enabled (the `author != agent` skip was removed), bounded by a
   **circuit breaker**: `Recent Runs` counts `agent_runs` for the task in the last 10 min;
   `Under Limit?` blocks (+WARN via `Alert Loop Breaker`) at ≥ 8, preventing runaway self-mention

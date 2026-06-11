@@ -20,6 +20,12 @@
             },
             {
               "fieldLabel": "reviewer_user_id"
+            },
+            {
+              "fieldLabel": "triggering_comment_id"
+            },
+            {
+              "fieldLabel": "triggering_comment_text"
             }
           ]
         },

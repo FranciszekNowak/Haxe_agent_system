@@ -132,7 +132,7 @@
       "position": [840, 120],
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const AGENT_ID = 99811284;\nconst body = $('CU Webhook').first().json.body || {};\nconst taskId = body.task_id;\nconst items = (body.history_items || []).filter(h => h && h.field === 'comment' && h.comment);\nconst h = items[items.length - 1];\nlet matched = false, reviewer_user_id = '', caller_username = '';\nlet triggering_comment_id = '', triggering_comment_text = '';\nif (h) {\n  const ops = h.comment.comment || [];\n  const tagged = ops.some(b => b && b.type === 'tag' && b.user && Number(b.user.id) === AGENT_ID);\n  const author = h.comment.user || h.user || {};\n  if (tagged) {\n    matched = true;\n    reviewer_user_id = String(author.id || '');\n    caller_username = author.username || '';\n  }\n  triggering_comment_id = String(h.comment.id || h.id || '');\n  triggering_comment_text = h.comment.text_content\n    || ops.filter(op => op && op.type !== 'tag').map(op => op.text || '').join('')\n    || '';\n}\nreturn [{ json: { matched, taskId, reviewer_user_id, caller_username, triggering_comment_id, triggering_comment_text } }];"
+        "jsCode": "const AGENT_ID = 99811284;\nconst body = $('CU Webhook').first().json.body || {};\nconst taskId = body.task_id;\nconst items = (body.history_items || []).filter(h => h && h.field === 'comment' && h.comment);\nconst h = items[items.length - 1];\nlet matched = false, reviewer_user_id = '', caller_username = '';\nlet triggering_comment_id = '', reply_to_comment_id = '', triggering_comment_text = '';\nif (h) {\n  const ops = h.comment.comment || [];\n  const tagged = ops.some(b => b && b.type === 'tag' && b.user && Number(b.user.id) === AGENT_ID);\n  const author = h.comment.user || h.user || {};\n  if (tagged) {\n    matched = true;\n    reviewer_user_id = String(author.id || '');\n    caller_username = author.username || '';\n  }\n  triggering_comment_id = String(h.comment.id || h.id || '');\n  // ClickUp threads are single-level: POSTing /comment/{id}/reply to a comment that is ITSELF a reply\n  // returns 'Unsupported Entity' -> fallback would post a NEW top-level comment (answer lands in a new thread).\n  // For a reply, h.comment.parent is the top-level (repliable) comment id; for a top-level comment it is the task id.\n  // Reply to the thread ROOT to stay in the caller's thread. Keep triggering_comment_id (own id) as the dedup key.\n  const parent = String(h.comment.parent || '');\n  reply_to_comment_id = (parent && parent !== String(taskId)) ? parent : triggering_comment_id;\n  triggering_comment_text = h.comment.text_content\n    || ops.filter(op => op && op.type !== 'tag').map(op => op.text || '').join('')\n    || '';\n}\nreturn [{ json: { matched, taskId, reviewer_user_id, caller_username, triggering_comment_id, reply_to_comment_id, triggering_comment_text } }];"
       }
     },
     {
@@ -239,7 +239,7 @@
             "caller_username": "={{ $('Detect Mention').first().json.caller_username }}",
             "triggered_by": "explicit_mention",
             "invocation_type": "explicit",
-            "triggering_comment_id": "={{ $('Detect Mention').first().json.triggering_comment_id }}",
+            "triggering_comment_id": "={{ $('Detect Mention').first().json.reply_to_comment_id }}",
             "triggering_comment_text": "={{ $('Detect Mention').first().json.triggering_comment_text }}"
           },
           "matchingColumns": [],
