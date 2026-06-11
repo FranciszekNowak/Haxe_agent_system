@@ -14,6 +14,23 @@ the VPS was never updated after ADR-030 added `ANTHROPIC_API_KEY` to the litellm
 
 ---
 
+## Nginx reverse proxy (host-level)
+
+`agents.haxe.ai` terminates at a **host-level nginx** (not a container; managed by Certbot),
+config at `/etc/nginx/conf.d/agents.conf`, proxying `location /` → `http://localhost:5678`
+(n8n-main, loopback-bound). Not in the repo / not scp-deployed — edit on the VPS directly.
+
+- **Proxy timeouts (2026-06-11):** `proxy_read_timeout 300s; proxy_send_timeout 300s;` in the
+  `location /` block (raised from nginx's 60s default). The default 504'd **synchronous** long
+  runs — n8n UI "Execute workflow" and Form-trigger test harness — at 60s even though the run
+  finished server-side. The **production agent path is unaffected either way**: the ClickUp
+  webhook uses `responseMode: onReceived` (instant 200, async spine), so it never holds the
+  connection. Purely a UI/testing quality-of-life setting.
+- **Edit + reload:** `sudo nano /etc/nginx/conf.d/agents.conf` → `sudo nginx -t` (must pass) →
+  `sudo systemctl reload nginx` (or `sudo nginx -s reload`). Reload is graceful (no dropped conns).
+  Back up first (`sudo cp agents.conf agents.conf.bak.$(date +%F-%H%M%S)`); roll back by restoring
+  the backup if `nginx -t` fails.
+
 ## Container management — critical distinctions
 
 ### `restart` vs `up -d` (read this first)
