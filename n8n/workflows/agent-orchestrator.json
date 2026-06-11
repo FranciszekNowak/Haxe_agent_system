@@ -171,7 +171,6 @@
           "value": {
             "prompt": "={{ $json.prompt }}",
             "impact": "={{ $json.impact }}",
-            "personal_data": "={{ $json.personal_data }}",
             "modality": "={{ $json.modality || 'text' }}",
             "task_type": "={{ $json.task_type }}",
             "clickup_task_id": "={{ $json.clickup_task_id }}",

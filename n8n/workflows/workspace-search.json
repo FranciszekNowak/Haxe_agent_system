@@ -8,7 +8,7 @@
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
       "position": [0, 0],
-      "notes": "Inputs: current_task (object), triggering_comment_text (string), caller_user_id (string), personal_data (boolean), clickup_task_id (string). Returns: {task_comments, additional_context, sources_used, sources_filtered_out}.",
+      "notes": "Inputs: current_task (object), triggering_comment_text (string), caller_user_id (string), clickup_task_id (string). Returns: {task_comments, additional_context, sources_used, sources_filtered_out}.",
       "parameters": {
         "workflowInputs": {
           "values": [
@@ -21,10 +21,6 @@
             },
             {
               "name": "caller_user_id"
-            },
-            {
-              "name": "personal_data",
-              "type": "boolean"
             },
             {
               "name": "clickup_task_id"
@@ -83,7 +79,6 @@
           "value": {
             "prompt": "={{ $json.search_prompt }}",
             "impact": "Niski",
-            "personal_data": "={{ $('When Called').first().json.personal_data === true }}",
             "task_type": "search_analysis",
             "clickup_task_id": "={{ $('When Called').first().json.clickup_task_id || '' }}",
             "triggered_by": "search_step",
@@ -455,7 +450,6 @@
           "value": {
             "prompt": "={{ $json.condense_prompt }}",
             "impact": "Niski",
-            "personal_data": "={{ $('When Called').first().json.personal_data === true }}",
             "task_type": "search_condense",
             "clickup_task_id": "={{ $('When Called').first().json.clickup_task_id || '' }}",
             "triggered_by": "search_step",

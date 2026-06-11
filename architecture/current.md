@@ -135,14 +135,14 @@ For **due-date triggered** autonomous runs, caller is determined as:
 Two future capabilities are designed-for but NOT built. Seams are preserved so
 they slot in additively. See the corresponding ADRs.
 
-- **Sensitivity-gated multi-provider routing (routing LIVE, classifier deferred).** Model
-  invocation is centralized behind `Invoke Model (v1)`; routing is data-driven via
-  `model_routing (impact, personal_data)` composite PK (ADR-030). `personal_data=false`
-  → Anthropic direct; `personal_data=true` (GDPR) → Bedrock EU. The sensitivity
-  classifier seam exists: `PD Verifier (v1)` always returns `false` until the Phase 3
-  classifier (regex rules + optional Haiku call) replaces it — no pipeline changes
-  needed. Fail-safe preserved: DB-down falls back to `haxe-sonnet-4-6-direct` + WARN.
-  See ADR-031 for the PD Verifier contract.
+- **Multi-provider routing (LIVE; going PD-blind).** Model invocation is centralized behind
+  `Invoke Model (v1)`; routing is data-driven via `model_routing (impact, personal_data, modality)`
+  (ADR-030). `personal_data=false` → Anthropic direct; the `personal_data=true` (GDPR) rows → Bedrock
+  EU / Vertex Gemini still exist but are never selected. The `PD Verifier (v1)` sensitivity-classifier
+  seam was **removed in Block 2** (ADR-040): the pipeline no longer threads `personal_data`, so every
+  task resolves to the `personal_data=false` rows. Collapsing the table to `(impact, modality)` and
+  dropping the `personal_data`/`eu_only` columns is **Block 3**. Fail-safe preserved: DB-down falls
+  back to `haxe-sonnet-4-6-direct` + WARN.
 
 - **Multimodal I/O (input + image-gen pipelines LIVE, ADR-036/038).** Image attachments from ClickUp tasks
   pass as vision content blocks to the model; Docling extracts text from non-image files (PDF/DOCX/XLSX)
@@ -295,6 +295,26 @@ a data location change.
 > must preserve `temperature = NULL` for that row. The `personal_data`/EU apparatus removal itself is
 > still pending (Blocks 2–3).
 
+> **Block 2 — strip PD plumbing, behaviour-neutral (2026-06-11, ADR-040).** The `PD Verifier (v1)`
+> sub-workflow (`hzwmak7UBpuHaiTO`) was **deleted** (workflow + repo file), and `personal_data` is no
+> longer threaded through context assembly, workspace search, or the research gate: removed from
+> `assemble-context` (the `Call PD Verifier` node + rewire `Context Gather → Workspace Search`, the
+> `personal_data` mappings to Search/Decide-Research, the `personal_data`/`pd_verifier_ok` outputs of
+> `Build Prompt`, the `r4` rule + `pd_verifier=` token of the context-health check), `workspace-search`
+> (input + both Invoke-Model mappings), `decide-research` (input, gate `model_override` and research
+> fallback hard-set to the non-PD `-direct` aliases, gate mapping), `execute-llm-call` and
+> `agent-orchestrator` (the `personal_data` passthrough). `fable-access-monitor`'s runbook SQL dropped
+> `AND personal_data=false`. **Behaviour-neutral:** the PD verifier was a stub always returning `false`,
+> and every surviving consumer that still sees `personal_data` (Invoke Model's `Lookup Routing`, decide-
+> research's `Lookup Research Routing`) guards with `=== true`, so an absent value resolves to `false` =
+> today's routing. **Deliberately left for Block 3:** the routing-row selection itself — `Invoke Model`
+> and `Lookup Research Routing` still carry `personal_data = $2` in SQL (inert; resolves `false`), and the
+> `model_routing` `personal_data`/`eu_only` columns + Gemini-EU rows remain. Verified end-to-end: a
+> `multimodal_input` smoke task routed unchanged to `haxe-gemini-flash-eu`, vision intact, reply posted,
+> no `personal_data`/`pd_verifier_ok` in the Build-Prompt output, no alerts. Re-exported all six edited
+> workflows; `check-workflow-drift.mjs` reports all 17 match live (assemble-context + agent-orchestrator
+> reconciled — they already carried the ADR-038 context-health/modality work).
+
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
 is needed; append-only threaded feedback with "current stance" derived via
@@ -402,7 +422,7 @@ current.md is updated via targeted diffs, not full-file rewrites, to avoid silen
 
 - **Phase 0** — infrastructure (git, AWS, 1Password, Supabase, VPS, Docker stack, Nginx + TLS). **COMPLETE** (infra hardened, password auth disabled, both machines keyed).
 - **Phase 1** — ClickUp foundation. **IN PROGRESS** — see *Phase 1 status* below. The agent CU account, the six `[AI]` custom fields, and the global agent-rules + operator-preferences docs are live; research is complete (NPD process mapped; observations doc) and the core model + KM-maintenance design confirmed. Remaining: full Agent System Space build-out (process templates with checklist-in-description + doc leaves) and the rest of the team's preference docs.
-- **Phase 2** — the spine. **IN PROGRESS (core path COMPLETE)** — the generic read→route→infer→post-back pipeline (thin `Agent Orchestrator (v1)` → Stage A `Assemble Context and Build Prompt` → B `Execute LLM Call` → C `Post Reply`; ADR-036), signature-verified @-mention triggering (`CU Webhook Producer (v1)`, ADR-029), thread-aware replies via `conversation_sessions`, and the `PD Verifier (v1)` seam + `Search (v1)` + Layer-B caller-scoped reads (ADR-031) are all live and verified end-to-end. See *Phase 2 status* below and §15. Remaining: selective `linked_doc_leaves`; autonomous status/due-date triggers (Phase 3).
+- **Phase 2** — the spine. **IN PROGRESS (core path COMPLETE)** — the generic read→route→infer→post-back pipeline (thin `Agent Orchestrator (v1)` → Stage A `Assemble Context and Build Prompt` → B `Execute LLM Call` → C `Post Reply`; ADR-036), signature-verified @-mention triggering (`CU Webhook Producer (v1)`, ADR-029), thread-aware replies via `conversation_sessions`, and `Search (v1)` + Layer-B caller-scoped reads (ADR-031) are all live and verified end-to-end. See *Phase 2 status* below and §15. Remaining: selective `linked_doc_leaves`; autonomous status/due-date triggers (Phase 3).
 - **Phase 3** — email + due-date triggering + queue tuning.
 - **Phase 4** — learning loop (proposers).
 - **Phase 5** — team rollout.
@@ -610,7 +630,7 @@ State as of 2026-06-10:
   8 nodes) sets status then calls three stage subworkflows in sequence — **A** `Assemble Context and
   Build Prompt (v1)` → **B** `Execute LLM Call (v1)` → **C** `Post Reply (v1)` — each with its own
   execution log and a shared **Reset Status + Alert** on any stage failure (ADR-032/036). Stage A
-  composes `Context Gather (v1)` → `PD Verifier (v1)` (stub) → `Search (v1)` → `Build Prompt`; B runs
+  composes `Context Gather (v1)` → `Search (v1)` → `Build Prompt`; B runs
   `Invoke Model (v1)`; C posts the thread-aware draft and owns the ClickUp side-effects. (The earlier
   monolithic 26-node `agent-spine.json` was decomposed in place — `a8XKaijkMFNBpRBa` is now the
   orchestrator.)
@@ -832,13 +852,12 @@ the canonical form going forward.
 | Workflow | Role | State |
 |---|---|---|
 | **`Agent Orchestrator (v1)`** (was "Agent Spine"/"Main Orchestrator", id `a8XKaijkMFNBpRBa`) | Thin orchestrator: set status → A → B → C + shared Reset+Alert | **LIVE** |
-| **`Assemble Context and Build Prompt (v1)`** (Stage A) | Context Gather + PD Verifier + Search + Build Prompt | **LIVE** |
+| **`Assemble Context and Build Prompt (v1)`** (Stage A) | Context Gather + Search + Build Prompt | **LIVE** |
 | **`Execute LLM Call (v1)`** (Stage B) | Invoke Model → drafted reply + cost | **LIVE** |
 | **`Post Reply (v1)`** (Stage C) | Post draft comment, cost field, status flip (owns CU side-effects) | **LIVE** |
 | **`Context Gather (v1)`** | Assemble labelled task context (task + ancestor chain + fields) | **LIVE** |
 | **`Invoke Model (v1)`** | Centralized model-call seam: route → LiteLLM → exact PLN cost → log | **LIVE** |
 | **`Search (v1)`** | Comment + external-artifact retrieval, Layer-B scoped | **LIVE** |
-| **`PD Verifier (v1)`** | Sensitivity-classifier seam (stub → Phase 3 classifier) | **LIVE (stub)** |
 | **`CU Webhook Producer (v1)`** | Comment-webhook trigger → verify → detect mention → call spine | **LIVE (@-mention)** |
 | **`Post Alert (v1)`** | Centralized alert seam → ClickUp Alerts task | **LIVE** |
 | **`Error Handler (v1)`** | Global `errorWorkflow`: throws → CRITICAL + status rollback | **LIVE** |
@@ -866,7 +885,7 @@ empty completion (both added 2026-06-11 after a zero-attachment task silently pr
 ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the stages:
 
 - **Stage A — `Assemble Context and Build Prompt (v1)`** (`n8n/workflows/assemble-context-and-build-prompt.json`,
-  id `GGTBvFBgGSNbtUR6`, 13 nodes): `Context Gather (v1)` → `PD Verifier (v1)` → Workspace Search
+  id `GGTBvFBgGSNbtUR6`, 12 nodes): `Context Gather (v1)` → Workspace Search
   (now also fetches **threaded comment replies** — `GET /comment/{id}/reply` per top-30 comment with
   `reply_count>0` — and interleaves them under their parent in `task_comments`, ADR-040) →
   Decide Research → Load Agent Rules → **`Read Input (v1)`** → `Build Prompt`. Returns the prompt payload +
@@ -1007,13 +1026,12 @@ Bedrock — only the native node can; ADR-021).
 
 See ADR-022 (shape), ADR-023 (routing), ADR-024 (LiteLLM/cost), ADR-030 (multi-provider).
 
-### 15.5 `Search (v1)` + `PD Verifier (v1)`
+### 15.5 `Search (v1)`
 
-Two sub-workflows sit between Context Gather and Build Prompt (ADR-031).
+`Search (v1)` sits between Context Gather and Build Prompt (ADR-031). (The former `PD Verifier (v1)`
+seam — id `hzwmak7UBpuHaiTO`, a stub always returning `personal_data: false` — was **deleted in Block 2**,
+ADR-040; the pipeline is PD-blind.)
 
-- **`PD Verifier (v1)`** (id `hzwmak7UBpuHaiTO`) — stub returning `personal_data: false`. The
-  seam for the Phase 3 sensitivity classifier (regex rules + optional Haiku call); replacing
-  the stub requires no changes to Agent Spine or Search.
 - **`Search (v1)`** (id `eL3fJuRMpzVRuVUT`, 22 nodes) — always fetches the last **30 task
   comments**; if the triggering comment references external artifacts, extracts search queries
   via a Haiku sub-call (`triggered_by=search_step`, logged as an `agent_runs` sub-row), searches
@@ -1160,8 +1178,8 @@ The canonical design intent for the workflows still to build:
 - **In Phase 2:** selective `linked_doc_leaves` resolution (Docs v3) — only the **current step's
   leaf**, to avoid context pollution.
 - **Phase 3:** autonomous **status/field-change webhooks + the daily due-date producer** (both
-  gated by `Czy dla AI = Tak`); the **Gmail Email Workflow**; the sensitivity classifier behind
-  `PD Verifier (v1)`.
+  gated by `Czy dla AI = Tak`); the **Gmail Email Workflow**. (The PD/sensitivity-classifier seam is
+  retired — ADR-040 made the pipeline PD-blind; no classifier is planned.)
 - **Phase 4:** the **Weekly Org Proposer** and the learning-loop proposers generally.
 - **`Session Cleanup`** hourly cron.
 - **ADR-026 identity split:** a read-only telemetry identity vs. the edit-capable agent token

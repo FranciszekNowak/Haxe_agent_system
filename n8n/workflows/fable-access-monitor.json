@@ -65,7 +65,7 @@
             "severity": "CRITICAL",
             "source": "fable-access-monitor",
             "message": "Model Fable 5 (haxe-fable-5-direct) jest niedostępny przez bramę LiteLLM — zadania 'Krytycznie ważne' (bez danych osobowych) zawodzą.",
-            "details": "=Prawdopodobna przyczyna po 2026-06-23: koniec darmowego okna / wyczerpane kredyty Fable. Działanie: (1) doładuj kredyty Anthropic, albo (2) przełącz routing z powrotem na Opus 4.8 — routing czytany na żywo, restart NIE jest potrzebny: UPDATE model_routing SET litellm_model='haxe-opus-4-8-direct', price_in_usd_per_1k=0.015, price_out_usd_per_1k=0.075 WHERE impact='Krytycznie ważne' AND personal_data=false AND modality='text'; — Błąd bramy: {{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+            "details": "=Prawdopodobna przyczyna po 2026-06-23: koniec darmowego okna / wyczerpane kredyty Fable. Działanie: (1) doładuj kredyty Anthropic, albo (2) przełącz routing z powrotem na Opus 4.8 — routing czytany na żywo, restart NIE jest potrzebny: UPDATE model_routing SET litellm_model='haxe-opus-4-8-direct', price_in_usd_per_1k=0.015, price_out_usd_per_1k=0.075 WHERE impact='Krytycznie ważne' AND modality='text'; — Błąd bramy: {{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
           },
           "matchingColumns": [],
           "schema": [

@@ -25,7 +25,7 @@
  ├─────┼────────────────────────────────────────────────────────────┼────────┤
  │ 1   │ Sync repo↔live, ADR renumber, CLAUDE.md routine            │ ☑ done │
  ├─────┼────────────────────────────────────────────────────────────┼────────┤
- │ 2   │ Strip PD plumbing (behavior-neutral)                       │ ☐ todo │
+ │ 2   │ Strip PD plumbing (behavior-neutral)                       │ ☑ done │
  ├─────┼────────────────────────────────────────────────────────────┼────────┤
  │ 3   │ Routing cutover: SQL + migration + litellm (single window) │ ☐ todo │
  ├─────┼────────────────────────────────────────────────────────────┼────────┤
@@ -163,6 +163,47 @@
 
  Handoff prompt: "Block 2 done (PD plumbing stripped, behavior unchanged). /clear, then start Block 3: read the master
  plan and run the routing cutover in one window."
+
+ --- BLOCK 2 COMPLETION NOTE (2026-06-11) ---
+
+ Done exactly as scoped, behaviour-neutral. Edits on the LIVE graph, re-exported, repo↔live drift check
+ (`scripts/check-workflow-drift.mjs`) reports ALL 17 workflows match.
+
+ - pd-verifier (hzwmak7UBpuHaiTO): DELETED (workflow + repo file) after assemble-context stopped calling it.
+ - assemble-context (GGTBvFBgGSNbtUR6): removed Call PD Verifier node + rewired Context Gather → Workspace
+   Search; dropped personal_data from the Workspace-Search & Decide-Research mappings; dropped the
+   personal_data + pd_verifier_ok lines and output fields from Build Prompt; removed Check Rules Loaded r4;
+   dropped the pd_verifier= token from the context-health alert. Now 12 nodes.
+ - workspace-search (eL3fJuRMpzVRuVUT): dropped personal_data input + BOTH Invoke-Model mappings
+   (Extract Queries AND Call Condense).
+ - decide-research (Ccc9y0AcLwL022FY): dropped personal_data input; Build Gate Request model_override →
+   literal 'haxe-haiku-4-5-direct'; Resolve Research Inputs fallback → literal 'haxe-sonnet-4-6-direct';
+   dropped Research Gate mapping. LEFT for Block 3 (intentional, inert): Lookup Research Routing SQL still
+   carries `personal_data = $2` (resolves false).
+ - execute-llm-call (9qdJA4xnAGbxqkt9) + agent-orchestrator (a8XKaijkMFNBpRBa): dropped the personal_data
+   input/mapping passthrough.
+ - fable-access-monitor (Moh1coo5pPmuSTmD): dropped `AND personal_data=false` from the runbook SQL string.
+
+ Behaviour-neutrality hinge (verified): invoke-model's Lookup Routing queryReplacement is
+ `... $json.personal_data === true || $json.personal_data === 'true' ? true : false`, so an absent value
+ → false → same `personal_data=false` rows as the stub produced. invoke-model itself was NOT touched
+ (Block 3).
+
+ DIVERGENCE / discovery (for Block 3): the live multimodal route is ALREADY serving tasks via
+ `haxe-gemini-flash-eu` — contrary to this plan's premise that "Gemini rows have never served a task /
+ image tasks route to Claude direct today." Migration 019 (current.md) added a `n/d - zadanie nie jest dla
+ AI` × `multimodal_input` row → gemini-flash-eu for BOTH personal_data values; the smoke task
+ (869dm1z8y, an image task) routed to gemini-flash-eu both before and after Block 2. So Block 3's Open
+ Decision #1 is live: "keep Claude for multimodal_input" would SWITCH current image behaviour
+ Gemini→Claude (NOT zero-change as the plan assumes). Re-evaluate #1 against the actual live
+ model_routing rows before writing migration 016 — confirm whether image tasks should stay on Gemini.
+
+ Verification: smoke on task 869dm1z8y (multimodal/@image) via the orchestrator Form — full spine ran,
+ modality='multimodal_input' → haxe-gemini-flash-eu (unchanged), vision correct, threaded reply posted,
+ Build Prompt output carried NO personal_data/pd_verifier_ok, zero WARN/CRITICAL on the clean run.
+ (A separate 3× CRITICAL burst at 13:03 came from a malformed FIRST test call with an empty taskId —
+ ClickUp auth error in Context Gather, the do-not-touch path — not a Block-2 regression; flagged to
+ operator for alert-channel cleanup.)
 
  ---
  BLOCK 3 — Routing cutover: PD-blind SQL + migration + litellm (single window)

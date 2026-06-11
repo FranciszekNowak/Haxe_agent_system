@@ -13,7 +13,6 @@
           "values": [
             { "name": "prompt" },
             { "name": "impact" },
-            { "name": "personal_data" },
             { "name": "modality" },
             { "name": "task_type" },
             { "name": "clickup_task_id" },
@@ -43,7 +42,6 @@
           "value": {
             "prompt": "={{ $json.prompt }}",
             "impact": "={{ $json.impact }}",
-            "personal_data": "={{ $json.personal_data }}",
             "modality": "={{ $json.modality || 'text' }}",
             "task_type": "={{ $json.task_type }}",
             "clickup_task_id": "={{ $json.clickup_task_id }}",
@@ -57,7 +55,6 @@
           "schema": [
             { "id": "prompt", "displayName": "prompt", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "impact", "displayName": "impact", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "personal_data", "displayName": "personal_data", "type": "boolean", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "modality", "displayName": "modality", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "task_type", "displayName": "task_type", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
             { "id": "clickup_task_id", "displayName": "clickup_task_id", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },

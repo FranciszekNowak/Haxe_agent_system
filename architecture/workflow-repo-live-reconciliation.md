@@ -31,16 +31,22 @@ Method: `node tmp-drift-check.mjs`-style behavioural diff (ignore `notes`, `posi
 These have **real behavioural drift** left in the repo. Each is re-exported when its owning block edits
 it live (per the "always re-export after a live change" rule in CLAUDE.md).
 
-### agent-orchestrator → **Block 2**
+### agent-orchestrator → **RECONCILED in Block 2 (2026-06-11)**
 - `Call Execute LLM`: live adds `modality` → invoke-model mapping (`={{ $json.modality || 'text' }}`) + schema entry. **live-ahead.**
 - `Alert Status Failed`: live sets `onError: continueRegularOutput`. **live-ahead.**
-- Block 2 already edits this workflow (drop `personal_data` passthrough); re-export then to capture both.
+- **Resolution:** the repo file already carried the `modality` mapping and `Alert Status Failed`
+  `onError` (the tracker over-stated the drift). Block 2 dropped the `personal_data` passthrough on both
+  sides; `check-workflow-drift.mjs` now reports repo == live.
 
-### assemble-context-and-build-prompt → **Block 2**
+### assemble-context-and-build-prompt → **RECONCILED in Block 2 (2026-06-11)**
 - `Build Prompt` (jsCode): live adds the `modality` line + `image_blocks_json` + a `pd_verifier_ok` flag. **live-ahead.**
 - `Check Rules Loaded`: live adds context-health conditions (context_gather/workspace_search/pd_verifier) + v3/strict. **live-ahead.**
 - `Alert Rules Missing`: live repurposed to a context-health degradation alert (`source=assemble-context/context-health`). **live-ahead.**
-- Block 2 edits this workflow heavily (remove PD verifier call, drop `pd_verifier_ok`, drop r4 condition). Re-export after Block 2's edits — do **not** hand-reconcile now; it would be overwritten.
+- **Resolution:** the repo file already carried the ADR-038 context-health/modality work (modality line,
+  `image_blocks_json`, the `*_ok` flags, the context-health alert) — the tracker over-stated the drift.
+  Block 2 removed the PD verifier call (+ rewire), the `personal_data` mappings, the `pd_verifier_ok`
+  flag, and the `r4`/`pd_verifier=` context-health bits on both sides; `check-workflow-drift.mjs` now
+  reports repo == live (12 nodes).
 
 ### context-gather → when next edited (low priority; **do-not-touch scope**)
 - `IF L0..L4 has parent`: live upgraded conditions to `typeValidation: strict`, `version: 3` (n8n bump). **live-ahead, benign.**
