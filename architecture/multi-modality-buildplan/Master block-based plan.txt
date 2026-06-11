@@ -119,8 +119,8 @@
    The repo already held the correct wiring; live had regressed. Block 2 therefore only needs the PD removal
    on execute-llm-call, NOT the return-path fix.
  - DATA HOTFIX (live model_routing): temperature set NULL for the Krytycznie ważne × multimodal_input
-   Fable 5 row (Fable 5 now 400s on `temperature`). Block 3's routing migration (015) MUST keep
-   temperature = NULL for that row when it re-seeds/collapses the table.
+   Fable 5 row (Fable 5 now 400s on `temperature`). Codified as migration 015 in Block 1; Block 3's
+   routing migration (now 016) MUST keep temperature = NULL for that row when it re-seeds/collapses the table.
 
  Reconciliation NOT fully done — drift is bidirectional, so blind repo←live dumps were avoided. See
  architecture/workflow-repo-live-reconciliation.md for the per-workflow tracker. Reconciled this block:
@@ -180,7 +180,7 @@
  Re-export.
  2. decide-research (live): Lookup Research Routing query/queryReplacement drop personal_data=$2 (keep modality if
  present). Re-export.
- 3. Migration 015_global_model_routing.sql (014 is taken):
+ 3. Migration 016_global_model_routing.sql (015 is the Fable 5 multimodal temperature hotfix, applied in Block 1):
  -- ADR-040: PD-blind global routing. Keeps modality. Gemini rows are personal_data=true and
  -- have never served a task (PD verifier stub=false); image tasks route to the Claude
  -- personal_data=false multimodal_input rows. Dropping all PD=true rows is zero-behavior-change.
@@ -227,7 +227,7 @@
  Step-6 output deliverable.
 
  Steps:
- 1. Migration 016_agent_runs_erasure_ready.sql:
+ 1. Migration 017_agent_runs_erasure_ready.sql:
  alter table agent_runs
    add column subject_key        text,
    add column clickup_comment_id text,

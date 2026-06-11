@@ -290,8 +290,10 @@ a data location change.
 > cost-sync funnels into it) — fixes a non-deterministic sub-workflow return that intermittently dropped
 > the answer and posted no reply. **(3)** Data hotfix: `model_routing` `temperature` set NULL for the
 > `Krytycznie ważne` × `multimodal_input` Fable 5 row (Fable 5 now rejects `temperature` → 400); the
-> `text` row was already NULL. Block 3's routing migration must preserve `temperature = NULL` for that
-> row. The `personal_data`/EU apparatus removal itself is still pending (Blocks 2–3).
+> `text` row was already NULL. Codified as **migration `015_fable5_multimodal_temperature_null.sql`**
+> (so the migrations stay the source of truth, not a forward-note); Block 3's routing migration (now 016)
+> must preserve `temperature = NULL` for that row. The `personal_data`/EU apparatus removal itself is
+> still pending (Blocks 2–3).
 
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning

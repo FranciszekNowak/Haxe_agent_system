@@ -22,7 +22,7 @@ Delete:
 - Block 6 Case 1: the PD image-strip branch, the `pd_images_dropped` field, the "PD Image Notice?" IF node, and the "Post PD Notice" comment node.
 - Block 6 Case 2: the Bedrock image-strip branch ("Check Bedrock Stripped", "WARN Bedrock Images", the `[BRAK]` injection in Build Messages).
 - EU-vision routing and the `personal_data`/EU **gating** on the model fleet (not the Gemini aliases themselves — see Keep). Drop only the region-pinned alias variants (`europe-west4` / `eu`) that existed solely for in-region residency.
-- The EU-vs-global split in `model_routing`, including any `eu_resident` or `personal_data` columns or logic. Migration 014's `multimodal_input` rows are collapsed PD-blind (Block 3 / migration 015): the `personal_data=true` Gemini rows are dropped and image routing keeps the Claude `multimodal_input` rows, with Gemini retained as a callable alias to opt into later.
+- The EU-vs-global split in `model_routing`, including any `eu_resident` or `personal_data` columns or logic. Migration 014's `multimodal_input` rows are collapsed PD-blind (Block 3 / migration 016): the `personal_data=true` Gemini rows are dropped and image routing keeps the Claude `multimodal_input` rows, with Gemini retained as a callable alias to opt into later.
 
 Keep:
 - The `haxe-gemini-*` aliases as **global, non-PD multimodal capability aliases** (cheaper / stronger vision), dormant until opted into — only their PD/EU gating is removed, not the aliases. They stay defined in LiteLLM and remain a callable route a single `model_routing` row can point at later.
