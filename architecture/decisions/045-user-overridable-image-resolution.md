@@ -1,0 +1,55 @@
+# ADR-045: User-overridable image resolution
+
+## Context
+
+Block 9 (ADR-036) added image generation as an output modality of `Invoke Model (v1)`. By default an
+image's size is derived from the impact tier's `image_gen_params.resolution`, and a per-block `aspect`
+may be emitted by the drafting model (frozen output-block contract: `{"mode":"generate","aspect":"1:1",…}`).
+
+Operators also want to request a **specific resolution** for a given image — overriding both the tier
+default and the model's choice — e.g. a wide hero banner or a tall PDP shot. The full feature has two
+halves:
+
+1. **Model-end (the size actually used by the API call).** Cheap, self-contained in `Invoke Model`.
+2. **Extraction (where a human expresses the desired resolution, and how it reaches the model call).**
+   Unresolved: the surface could be a new `[AI]` ClickUp field, an inline `~command`/mention syntax, or
+   simply the model's per-block `aspect`. This depends on context-gathering and the Block 11 resolver,
+   neither of which is built yet.
+
+Leaving a bare "TODO: user resolution" note in `current.md` is exactly the kind of forward-note that rots
+into drift (CLAUDE.md warns against this). So the model-end is **built now** and the extraction half is
+**captured here + tracked as a master-plan block**, not left as a buried note.
+
+## Decision
+
+**Build the model-end override seam in Block 9 (done).** `Invoke Model (v1)` accepts optional inputs
+`requested_size` (an explicit `"WxH"` string, e.g. `1024x1536`) and `aspect` (`"W:H"`). `Resolve Routing`
+applies a fixed **precedence**:
+
+> **`requested_size` (user) > model-emitted `aspect` (per generate block) > tier default `resolution`.**
+
+Base edge is 1024 px (safe across `gpt-image-2` and gemini at 1K); the tier `resolution` value `'max'`
+maps to `gpt-image-2`'s `quality=high` parameter, **not** a 1536² size (which the API rejects). An
+explicit override sets `size_overridden=true` for observability. Verified live: `requested_size=1024x1536`
+reached the provider call and produced a portrait image.
+
+**Defer + track the extraction half.** How a human specifies the resolution and how context-gathering
+surfaces it is **not** decided here. It is tracked as **Block 13** in the multimodal master plan
+("resolution extraction in context-gathering"), so it is scheduled work rather than a rotting note. The
+likely shapes (to be decided when Block 13 is taken): a new `[AI]` ClickUp custom field read by
+`Context Gather (v1)`; or inline syntax parsed at assembly; or simply relying on the model's per-block
+`aspect`. Whichever is chosen, it threads the value down to `Invoke Model`'s already-built `requested_size`
+input — no further model-end work needed.
+
+## Consequences
+
+- The seam is real today: the moment any upstream stage passes `requested_size`, it is honored — Block 13
+  only has to decide the human-facing surface and wire context-gathering to the existing input.
+- `size_overridden` is carried through `Normalize Model Result` for audit/observability (not yet persisted
+  to a column; persistence, if wanted, is part of Block 13).
+- No new migration, no routing change — purely an input + precedence in `Resolve Routing`.
+- `current.md` §context-gathering carries a one-line pointer to this ADR + Block 13 (a pointer, not a TODO).
+
+## Date
+
+2026-06-12

@@ -1,11 +1,14 @@
 Multimodal I/O — bite-sized build plan (ADR-036 Phases 2–5)
 
-Rewritten 2026-06-12 to match live state; status updated 2026-06-12 (Block 6 + Block 8 DONE). Phase A
+Rewritten 2026-06-12 to match live state; status updated 2026-06-12 (Blocks 6, 8, 9 DONE). Phase A
 (INPUT) is COMPLETE through Block 6 (verified); the PD/EU apparatus this plan once carried has been
 removed (ADR-043, migration 021); the erasure-readiness schema landed (ADR-044, migration 022). Block 8
 (the Phase B provisioning gate) is DONE — image providers are live + verified (gemini-image Nano
-Banana/Pro + OpenAI gpt-image-2, migration 023). What remains is the Phase B generation PIPELINE:
-Blocks 9–12.
+Banana/Pro + OpenAI gpt-image-2, migration 023). Block 9 is DONE — image generation was NOT built as a
+separate workflow; it was folded into `Invoke Model (v1)` as a new output modality
+(`requested_modality_of_output='image'`, set per-block by the Block 11 resolver), migration 024, all 5
+tiers verified live (ADR-036 Block 9 + ADR-045). What remains is the Phase B generation PIPELINE:
+Blocks 10–12 (+ tracked Block 13, resolution extraction).
 
 Context
 
@@ -205,8 +208,21 @@ Block 8 — GATE: provision + verify image providers through LiteLLM; refresh se
   WARNs added in Block 9); a missing cost header → static price still logs a row (never a zero-cost
   silent run).
 
-Block 9 — invoke-image-model (tiered, multi-provider, step-down fallback)
+Block 9 — image generation as an output modality of Invoke Model (v1)  [DONE 2026-06-12]
 
+- DONE (operator redirect — NOT a separate invoke-image-model workflow): folded into `Invoke Model (v1)`
+  (`XcOIVdZnVCCWNPeb`) as output modality `requested_modality_of_output='image'` (set per output block by
+  the Block 11 resolver: 'text' for the text part, 'image' per generate block). `Resolve Routing → Output
+  Is Image?` forks an image branch (`Call Image Gen → single gemini-flash fallback hop → Parse Image`) that
+  converges with the text branch at a new `Normalize Model Result` node, keeping `Shape Output` the sole
+  branch-free leaf. Routing `(impact, modality='image')` + `image_gen_params` join (n/d → __default__).
+  Cost: live header → token-math (migration 024 filled price_out: flash 0.030 / pro 0.120 / gpt-image-2
+  0.030) → per-image floor; header-miss → WARN `invoke-model/image-cost-header-missing`. Size precedence
+  requested_size > aspect > tier default (`'max'` → gpt-image-2 quality, not 1536² size). The spec's 3-tier
+  step-down ladder was simplified to a single fallback hop (mirrors the text Opus fallback). Verified live:
+  all 5 tiers generate + route correctly, degrade WARN + image-still-returned, size-override, text/vision
+  regression clean, priced agent_runs rows; 0 CRITICAL. gpt-image-2 ~176 s → image timeout 240 s. See
+  ADR-036 (Block 9) + ADR-045. The ORIGINAL plan below is superseded by the folded-in design.
 - Context: The image analogue of Invoke Model — one prompt → one image, tiered by impact, with a
   step-down ladder. The resolver (Block 11) calls this once per generate block.
 - Grounding: spec §3.3 (invoke-image-model) + §3.4 (tiering ladder); ADR-035 (Log Model Run is the
@@ -296,6 +312,20 @@ Block 12 — End-to-end: drafting model emits the block list; full A→B→C mul
   the one Reset+Alert path; Alerts task never read.
 - Write-back: ADR-036 → Phases 2–5 COMPLETE with the full Consequences; current.md §15 rewritten to the
   three-stage multimodal form; §11/§15 phase status updated. Final commit.
+
+Block 13 — resolution extraction in context-gathering (tracked, not yet scheduled)
+
+- Context: Block 9 built the MODEL-END of user-overridable image resolution — `Invoke Model (v1)` honors
+  an optional `requested_size` (precedence: requested_size > model aspect > tier default), verified live.
+  What remains is the EXTRACTION surface: where a human expresses a desired resolution and how
+  context-gathering threads it down to the existing `requested_size` input. See ADR-045.
+- Grounding: ADR-045 (decision + open extraction surface); ADR-036 Block 9 (the built seam).
+- Do (when taken): decide the surface — a new `[AI]` ClickUp custom field read by `Context Gather (v1)`,
+  inline `~command`/mention syntax parsed at assembly, or simply relying on the model's per-block `aspect`
+  — then wire it to thread `requested_size` through Stage A → Stage B → `Invoke Model`. No model-end work
+  needed (the input already exists). Optionally persist `size_overridden` if an audit column is wanted.
+- Live test: a task specifying a custom resolution → the generated image comes back at that size
+  (`size_overridden=true` in the run), tier default used when unspecified.
 
 ---
 Verification philosophy (every block)

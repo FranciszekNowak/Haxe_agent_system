@@ -368,6 +368,15 @@ a data location change.
 > All three verified live through the LiteLLM gateway with accurate cost headers. The generation *pipeline*
 > (Blocks 9–12) is still unbuilt — these rows have no caller yet.
 
+> **Block 9 — image token prices filled (2026-06-12, ADR-036/045).** Migration `024_image_token_prices.sql`
+> UPDATEs the five `modality='image'` rows' `price_out_usd_per_1k` (flash 0.030 / pro 0.120 / gpt-image-2
+> 0.030 — each = Block 8's measured cost ÷ output tokens) + a small `price_in` backup, so the **shared cost
+> path (Log Model Run) prices an image by token-math identically to text** when the live header is absent
+> (header still primary; `fallback_price_per_unit` is the last-resort floor). PK/columns unchanged. This is
+> the data half of Block 9, which folded image generation into `Invoke Model (v1)` as an output modality
+> (see §15.4); the rows now have a caller. Migration 023's "Blocks 9–12 unbuilt / no caller" note is
+> superseded for Block 9.
+
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
 is needed; append-only threaded feedback with "current stance" derived via
@@ -1006,20 +1015,31 @@ content) — config docs and leaf docs alike. Embedded doc links arrive in a tas
 `linked_doc_leaves` resolves by regex-extract → Docs v3 GET → flatten (the earlier "no access"
 was a task-node link-rendering / pre-grant artifact).
 
+> **Open (tracked):** user-overridable image resolution. Block 9 built the model-end seam — `Invoke Model`
+> honors a `requested_size` (precedence requested_size > model `aspect` > tier default). What's unresolved is
+> the *extraction* surface (a new `[AI]` field read here, inline syntax, or the model's per-block `aspect`)
+> and threading it down to that input. Decision + plan: **ADR-045**; scheduled as master-plan **Block 13**.
+
 ### 15.4 `Invoke Model (v1)` — routing + exact cost
 
 `n8n/workflows/invoke-model.json`, n8n id `XcOIVdZnVCCWNPeb`. The ADR-013 model-call seam,
 running on the self-hosted **LiteLLM gateway** (`litellm` container, `127.0.0.1:4000`, v1.87.0
-pinned by digest; ADR-024/030). Typed Execute-Workflow contract (`prompt` / `impact` /
-`modality` / `task_type`). Node chain:
+pinned by digest; ADR-024/030). Typed Execute-Workflow contract (`prompt` / `impact` / `modality` /
+`task_type`; **plus `requested_modality_of_output`** (default `text`; `image` selects image generation —
+Block 9, ADR-036) and optional `requested_size`/`aspect`). Node chain:
 
-`Lookup Routing` (Supabase `model_routing`, composite PK `(impact, modality)`,
-`__default__` fail-safe row, DB-error tolerant) → `Resolve Routing` (in-code Sonnet last-resort
-+ deliberation-nudge prepend) → `Call LiteLLM` (HTTP, header-auth credential, full response) →
-`Get FX Rate` → `Compute Cost` → `Insert agent_runs` → `Shape Output` (single terminal,
-returns `{ completion, model, provider }`). The native AWS Bedrock node + `Basic LLM Chain` are
-**retained disabled** as a fallback path (a generic AWS credential + HTTP Request cannot sign
-Bedrock — only the native node can; ADR-021).
+`Lookup Routing` (Supabase `model_routing`, composite PK `(impact, modality)`, `__default__` fail-safe row,
+`LEFT JOIN image_gen_params` for `resolution`, DB-error tolerant) → `Resolve Routing` (in-code Sonnet
+last-resort + deliberation-nudge prepend; builds the image request when `requested_modality_of_output='image'`)
+→ **`Output Is Image?`** forks: **text** → `Call LiteLLM` →(Opus fallback → text-only retry, ADR-037/Block 6)→
+`Parse Response`; **image (Block 9)** → `Call Image Gen` (`/v1/images/generations`, 240 s timeout) →(onError:
+one `Fallback Image Gen` hop to `gemini-2.5-flash-image`)→ `Parse Image`. Both branches converge at
+**`Normalize Model Result`** (one uniform schema) → `Call Log Model Run` (the sole `agent_runs` writer + FX/PLN,
+ADR-035) → degradation chain (`Image Unprocessable?` / `Image Degraded?` / `Cost Header Missing?` /
+`Routing Missing?` / `Check Degradation`, each WARN reconverging) → **`Shape Output`** (sole branch-free leaf;
+union return `{ completion | b64_json, output_modality, model, provider, cost_pln, usd_cost, size, degraded, … }`).
+The native AWS Bedrock node + `Basic LLM Chain` are **retained disabled** as a fallback path (a generic AWS
+credential + HTTP Request cannot sign Bedrock — only the native node can; ADR-021).
 
 - **Provider routing (PD-blind — ADR-043/042):** one row per `(impact, modality)`, three legs by modality:
   - `modality='text'` → **Anthropic direct**: `haxe-haiku-4-5-direct`, `haxe-sonnet-4-6-direct`,
@@ -1035,13 +1055,16 @@ Bedrock — only the native node can; ADR-021).
     Real task cost will exceed text-token count alone.
   - `modality='image'` → **image generation tiers** — Niski/__default__ `vertex_ai/gemini-2.5-flash-image`,
     Średni `vertex_ai/gemini-3-pro-image-preview`, Wysoki/Krytycznie `openai/gpt-image-2` (ADR-036 Block 8,
-    migration 023; all three verified live via `/v1/images/generations`). gemini-image returns an accurate
-    `x-litellm-response-cost`; gpt-image-2 too for standard sizes ($30/1M image tokens) — a static
-    `fallback_price_per_unit` floor covers the exotic-size #26863 edge.
+    migration 023; all three verified live via `/v1/images/generations`). **Generation is LIVE (Block 9):**
+    the image branch above produces one image per call, priced via live header → token-math (migration 024
+    filled `price_out`: flash 0.030 / pro 0.120 / gpt-image-2 0.030, each = Block 8 measured cost ÷ output
+    tokens) → per-image `fallback_price_per_unit` floor; a header-miss fires `invoke-model/image-cost-header-missing`,
+    a fallback hop fires `invoke-model/image-degrade`. gpt-image-2 high ≈ 176 s (timeout 240 s); gemini ≈ 5 s.
   `agent_runs.model_used` stores the versioned model ID from the LiteLLM response body. Migrations 008
   (composite PK), 013 (image tiers), 014 (Gemini multimodal), 020 (max_tokens by tier), **021 — PD-blind
-  collapse to `(impact, modality)`, Bedrock rows dropped, Gemini aliases renamed `-eu`→none**, and **023 —
-  image-gen tiers refreshed to gemini-image + gpt-image-2 (Block 8)** — all applied.
+  collapse to `(impact, modality)`, Bedrock rows dropped, Gemini aliases renamed `-eu`→none**, **023 —
+  image-gen tiers refreshed to gemini-image + gpt-image-2 (Block 8)**, and **024 — image token prices filled
+  for Block 9 token-math** — all applied.
 - **Impact → tier (ADR-023):** `Niski`→Haiku 4.5, `Średni`→Sonnet 4.6, `Wysoki`→Opus,
   `Krytycznie ważne`→Opus at temp 0.2 / 16k tokens with a prepended deliberation nudge;
   `n/d`/empty/unknown→Sonnet (fail-safe).

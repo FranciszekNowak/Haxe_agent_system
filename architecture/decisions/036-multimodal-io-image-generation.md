@@ -530,6 +530,49 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
   attachment-level text + directly-attached images, with robust unprocessable-image degradation (Blocks
   1–6).** Still owed for *fully* multimodal input: Block 10 (host embedded in-document images + pdf/pptx
   page renders → vision model). Then Phase B (image generation).
+- **Block 9 — image generation as a new OUTPUT MODALITY of `Invoke Model (v1)` (2026-06-12).** Operator
+  decision (reversing this plan's "separate invoke-image-model sub-workflow"): image gen is "the same
+  setup with a fork after routing," so it was folded INTO `Invoke Model (v1)` (`XcOIVdZnVCCWNPeb`), reusing
+  its routing lookup, the Log Model Run cost seam, Post Alert, and the single-branch-free-terminal return
+  discipline. **New input `requested_modality_of_output`** (default `'text'`) — set **per output block by
+  the future Block 11 resolver** (`'text'` for the text part of a reply, `'image'` for each `generate`
+  block); plus optional `requested_size`/`aspect`. **Graph:** `Resolve Routing → Output Is Image?` forks;
+  the image branch is `Call Image Gen → (onError) Fallback Image Gen → Parse Image`, and **both branches
+  converge at a new `Normalize Model Result` Code node** (one uniform schema), so `Shape Output` stays the
+  sole leaf (return determinism intact — verified node-by-node in a degraded run). A **single image-fallback
+  hop** to `vertex_ai/gemini-2.5-flash-image` mirrors the text path's single Opus fallback (the spec's
+  3-tier step-down ladder was dropped — simpler, keeps the live text hot path uncluttered). **Routing** is
+  `(impact, modality='image')` (no PD axis) with a `LEFT JOIN image_gen_params` for `resolution`; an `n/d`
+  impact (no image row) falls back to `__default__` via the `impact in ($1,'__default__')` clause. **Cost**
+  layers: live `x-litellm-response-cost` header → token-math (migration `024_image_token_prices.sql` filled
+  `price_out_usd_per_1k`: flash 0.030, pro 0.120, gpt-image-2 0.030 — each derived from Block 8's measured
+  cost ÷ output-tokens, so token-math reproduces the header to the cent) → per-image `fallback_price_per_unit`
+  floor; **any header miss fires WARN `invoke-model/image-cost-header-missing`** regardless of which layer
+  priced it. **Size precedence:** `requested_size` > model `aspect` > tier default (base 1024, safe across
+  providers; `'max'` maps to gpt-image-2 `quality=high`, NOT a 1536² size that the API rejects). **Return
+  contract note (frozen-contract exception):** these models return base64, not a hosted URL, and Block 10's
+  temp-staging isn't a Block 9 prereq — so `Invoke Model` returns `b64_json` across the boundary; the Block
+  11 resolver is the designated temp-writer. **Batch rejected:** image API `n>1` only varies ONE prompt;
+  distinct-prompt generations can't share a call, and the async Batch API is wrong for an interactive reply
+  — the real latency lever is parallel fan-out in the Block 11 resolver. **Verified live** (temporary
+  webhook harness driving `Invoke Model` directly; harness + builder scripts torn down): all five tiers
+  generate + route correctly — Niski/`__default__`/n-d → `gemini-2.5-flash-image` ($0.0387), Średni →
+  `gemini-3-pro-image-preview` ($0.1344), Wysoki/Krytycznie → `gpt-image-2` ($0.2108, 7024 out-tokens) —
+  each a real ~1.2–1.5 MB image with a priced `agent_runs` row (`triggered_by='image_gen'`, FX→PLN); the
+  forced-degrade path (gpt-image-2 timeout → gemini-flash fallback) fired `invoke-model/image-degrade` and
+  still returned the image; the `requested_size=1024x1536` override reached the API; **text + vision
+  regression clean** (haiku text reply + vision flow unchanged through the rewired Normalize); 0 CRITICAL,
+  all test WARNs explained. **Operational note:** `gpt-image-2` at `high` takes **~176 s**, so `Call Image
+  Gen`'s timeout was raised to **240 000 ms** and its retry dropped (retrying a slow-but-succeeding call just
+  burns another timeout); the gemini tiers return in ~5 s. The top tier is functional but slow — a Block-8
+  provider characteristic, not a Block 9 defect. **Silent-failure coverage:** image provider error → caught
+  → single fallback hop → `image-degrade` WARN, image still returned; total failure → `success:false` so the
+  Block 11 caller drops the block (no throw); 2xx-without-image → gated on `b64_json` presence → fallback;
+  cost header missing/zero → token-math or floor + `image-cost-header-missing` WARN (the header-miss branch
+  was verified by node-level wiring + token-math arithmetic equivalence, not a forced live header omission —
+  LiteLLM returned an accurate header on every call). **`requested_size` extraction surface is deferred +
+  tracked** (ADR-045 + master-plan Block 13). The generation pipeline still owes Blocks 10–12 (delivery,
+  resolver/assembler, end-to-end drafting-model block list).
 
 ---
 
@@ -542,3 +585,4 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
 2026-06-10 (Block 5 — input wired into spine; multimodal model call verified; Stage B + Decide Research return-path bugs fixed)
 2026-06-12 (Block 6 — unprocessable-image robustness: reactive Opus→text-only safety net + `multimodal/image-unprocessable` WARN; Phase A INPUT closed; PD/Bedrock image stance superseded per ADR-043)
 2026-06-12 (Block 8 — image-gen providers provisioned + verified live through LiteLLM: Vertex gemini-image (Nano Banana/Pro) + OpenAI gpt-image-2; migration 023 + litellm-config; Imagen/dall-e-3/Stability retired; Phase B gate open, generation pipeline Blocks 9–12 still to build)
+2026-06-12 (Block 9 — image generation folded into `Invoke Model (v1)` as output modality `requested_modality_of_output='image'`; routing `(impact, modality='image')` + single gemini-flash fallback hop; cost via header→token-math (migration 024)→floor; all 5 tiers + degrade + size-override + text/vision regression verified live; gpt-image-2 ~176 s so image timeout raised to 240 s)
