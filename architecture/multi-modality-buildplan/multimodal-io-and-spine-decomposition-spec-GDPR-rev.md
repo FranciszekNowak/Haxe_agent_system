@@ -270,12 +270,23 @@ in step 4 is unnecessary. Until verified, keep attach-then-reference. Also verif
 mockup images persist on the task after the draft is removed (acceptable — they are legitimate mockup
 content). Temp-on-disk assumes single-host n8n (paths shared across the B and C executions).
 
-### 3.7 Unprocessable-image guard (model-call boundary, Stage B) — input robustness, Phase A close-out
+### 3.7 Unprocessable-image guard (model-call boundary, Stage B) — input robustness, Phase A close-out — **DONE (Block 6, 2026-06-12)**
 
 If the assembled input `messages[]` contain an image block and the routed model cannot consume it —
 either the selected model is not vision-capable, or the image is corrupt/unreadable (provider returns
 a 4xx on the image) — drop the image, substitute `[BRAK: obraz nieczytelny na bieżącym providerze]`,
 WARN (`multimodal/image-unprocessable`), and continue text-only so the whole call does not sink.
+
+**Live implementation (Block 6, `invoke-model.json`).** Built as a reactive text-only safety net rather
+than a pre-flight check, so it needs no `vision_capable` flag and no HTTP-status parsing: `Call LiteLLM`
+(routed model, with images) →err→ `Fallback to Opus` (Opus, with images — recovers transient errors
+without losing the image) →err→ **`Retry Text-Only`** (Opus, images stripped + the `[BRAK]` marker). A
+genuinely-bad image 4xxs both image-bearing calls and is rescued text-only; a real non-image failure
+fails all three → CRITICAL (not masked). Decisions locked: **whole-set drop** (all images dropped on a
+4xx, not per-image isolation — only junk images 4xx) and **reactive-only, no `vision_capable` column**
+(the non-vision case is the same 4xx path). Verified live on `869dhad2q` (Krytycznie ważne → Gemini Pro;
+3 junk+real images → 4xx → text-only draft + one `multimodal/image-unprocessable` WARN, no CRITICAL, one
+priced Opus cost row). See ADR-036 Consequences (Block 6).
 
 **This is generic robustness, not a residency or personal-data control.** The PD/Bedrock image
 guards described in older copies (and in ADR-036's original "GDPR / Bedrock image stance" section)
@@ -389,8 +400,9 @@ done — do **not** re-add a `personal_data` or `eu_only` column.
 Phase A (input) + spine decomposition are DONE (migrations through 022; Docling live; reader live;
 input wired into the spine and verified end-to-end). Remaining:
 
-1. **Block 6** — input-image robustness fallback (§3.7): unprocessable/non-vision image → WARN +
-   `[BRAK]` + text-only, the call never sinks. Closes Phase A.
+1. ~~**Block 6** — input-image robustness fallback (§3.7): unprocessable/non-vision image → WARN +
+   `[BRAK]` + text-only, the call never sinks. Closes Phase A.~~ **DONE 2026-06-12** (reactive
+   Opus→text-only safety net in `invoke-model.json`; verified live). **Phase A INPUT is complete.**
 2. **Block 8 (GATE)** — provision + verify image providers through LiteLLM; refresh dated seeds;
    accept provider DPAs/SCCs (account-level, residency-agnostic per ADR-043); one
    `image_generation` call per tier returns an image + a cost header (or static price).

@@ -80,7 +80,7 @@
       "typeVersion": 2,
       "position": [448, 304],
       "parameters": {
-        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\nconst override = (orig.model_override != null && String(orig.model_override).trim() !== '') ? String(orig.model_override).trim() : null;\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nlet routing_row_missing = false;\nif (override) {\n  row = { litellm_model: override, temperature: null, max_tokens: 4000, nudge: null, price_in_usd_per_1k: 0, price_out_usd_per_1k: 0, impact: '__override__' };\n} else if (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n  routing_row_missing = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\nconst temperature = (row.temperature != null && row.temperature !== '') ? Number(row.temperature) : null;\n\n// Multimodal (ADR-036 Block 5): content is ALWAYS an array (one schema, not two). Image refs\n// (ClickUp URLs from read-input) are appended as image_url parts; LiteLLM fetches them. No images\n// -> a single text part, semantically identical to a bare string through LiteLLM.\nlet imgs = [];\ntry { imgs = JSON.parse(orig.image_blocks_json || '[]'); } catch (e) { imgs = []; }\nif (!Array.isArray(imgs)) imgs = [];\nconst content = [{ type: 'text', text: prompt }].concat(\n  imgs.filter(b => b && b.ref).map(b => ({ type: 'image_url', image_url: { url: b.ref } }))\n);\nconst messages = [{ role: 'user', content }];\n\nreturn [{ json: {\n  litellm_model: row.litellm_model,\n  temperature,\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  messages,\n  image_count: imgs.length,\n  impact,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used,\n  routing_row_missing\n} }];"
+        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\nconst override = (orig.model_override != null && String(orig.model_override).trim() !== '') ? String(orig.model_override).trim() : null;\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nlet routing_row_missing = false;\nif (override) {\n  row = { litellm_model: override, temperature: null, max_tokens: 4000, nudge: null, price_in_usd_per_1k: 0, price_out_usd_per_1k: 0, impact: '__override__' };\n} else if (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n  routing_row_missing = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\nconst temperature = (row.temperature != null && row.temperature !== '') ? Number(row.temperature) : null;\n\n// Multimodal (ADR-036 Block 5): content is ALWAYS an array (one schema, not two). Image refs\n// (ClickUp URLs from read-input) are appended as image_url parts; LiteLLM fetches them. No images\n// -> a single text part, semantically identical to a bare string through LiteLLM.\nlet imgs = [];\ntry { imgs = JSON.parse(orig.image_blocks_json || '[]'); } catch (e) { imgs = []; }\nif (!Array.isArray(imgs)) imgs = [];\nconst content = [{ type: 'text', text: prompt }].concat(\n  imgs.filter(b => b && b.ref).map(b => ({ type: 'image_url', image_url: { url: b.ref } }))\n);\nconst messages = [{ role: 'user', content }];\n\n// Block 6 (ADR-036): a text-only variant for the unprocessable-image safety net (Retry Text-Only).\n// When images were present, append a visible Polish [BRAK] marker so the model — and the human\n// reading the draft — knows an image existed but could not be read on the current provider.\nconst brak = imgs.length > 0 ? '\\n\\n[BRAK: obraz nieczytelny na bieżącym providerze]' : '';\nconst messages_text_only = [{ role: 'user', content: [{ type: 'text', text: prompt + brak }] }];\n\nreturn [{ json: {\n  litellm_model: row.litellm_model,\n  temperature,\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  messages,\n  messages_text_only,\n  had_images: imgs.length > 0,\n  image_count: imgs.length,\n  impact,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used,\n  routing_row_missing\n} }];"
       }
     },
     {
@@ -126,7 +126,7 @@
       "typeVersion": 2,
       "position": [896, 304],
       "parameters": {
-        "jsCode": "const routing = $('Resolve Routing').first().json;\n\n// Pick whichever LLM branch produced a real completion. On primary failure\n// (Call LiteLLM onError=continueErrorOutput) the Fallback to Opus node ran instead.\nlet okCall = null, okFb = null;\ntry { okCall = $('Call LiteLLM').first().json; } catch (e) {}\ntry { okFb = $('Fallback to Opus').first().json; } catch (e) {}\nconst hasBody = (x) => x && x.body && x.body.choices;\nlet resp = {}, fell_back = false;\nif (hasBody(okCall)) { resp = okCall; fell_back = false; }\nelse if (hasBody(okFb)) { resp = okFb; fell_back = true; }\nelse { resp = (okCall && okCall.body) ? okCall : (okFb || {}); }\n\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\nconst ch = headers['x-litellm-response-cost'];\nconst usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\n\nconst fbAlias = 'haxe-opus-4-8-direct';\nconst alias = fell_back ? fbAlias : (routing.litellm_model || '');\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : alias;\nconst provider = alias.includes('gemini') ? 'litellm/vertex' : 'litellm/anthropic-direct';\n\n// On fallback the model differs from the routed one. LiteLLM's response-cost header\n// is authoritative; these price columns are only a dormant backup. Keep them roughly\n// correct for the common direct fallback case (Opus 4.8).\nconst price_in = fell_back ? 0.015 : routing.price_in_usd_per_1k;\nconst price_out = fell_back ? 0.075 : routing.price_out_usd_per_1k;\n\nreturn [{ json: {\n  completion,\n  model_used,\n  provider,\n  input_tokens, output_tokens, usd_cost,\n  price_in_usd_per_1k: price_in,\n  price_out_usd_per_1k: price_out,\n  routing_default_used: !!routing.routing_default_used,\n  routing_row_missing: !!routing.routing_row_missing,\n  fell_back_to_opus: fell_back,\n  impact: routing.impact,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
+        "jsCode": "const routing = $('Resolve Routing').first().json;\n\n// Pick whichever LLM branch produced a real completion. Order: primary -> Opus fallback (transient\n// error, ADR-037, image kept) -> Retry Text-Only (Block 6: image stripped after a 4xx on the image).\nlet okCall = null, okFb = null, okRetry = null;\ntry { okCall = $('Call LiteLLM').first().json; } catch (e) {}\ntry { okFb = $('Fallback to Opus').first().json; } catch (e) {}\ntry { okRetry = $('Retry Text-Only').first().json; } catch (e) {}\nconst hasBody = (x) => x && x.body && x.body.choices;\nlet resp = {}, fell_back = false, image_unprocessable = false;\nif (hasBody(okCall)) { resp = okCall; }\nelse if (hasBody(okFb)) { resp = okFb; fell_back = true; }\nelse if (hasBody(okRetry)) { resp = okRetry; image_unprocessable = true; }\nelse { resp = (okCall && okCall.body) ? okCall : ((okFb && okFb.body) ? okFb : (okRetry || {})); }\n\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\nconst ch = headers['x-litellm-response-cost'];\nconst usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\n\n// Both the Opus fallback and the text-only retry run on opus-4-8-direct.\nconst onOpus = fell_back || image_unprocessable;\nconst fbAlias = 'haxe-opus-4-8-direct';\nconst alias = onOpus ? fbAlias : (routing.litellm_model || '');\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : alias;\nconst provider = alias.includes('gemini') ? 'litellm/vertex' : 'litellm/anthropic-direct';\n\n// On any Opus path the model differs from the routed one. LiteLLM's response-cost header is\n// authoritative; these price columns are only a dormant backup. Keep them roughly correct for Opus 4.8.\nconst price_in = onOpus ? 0.015 : routing.price_in_usd_per_1k;\nconst price_out = onOpus ? 0.075 : routing.price_out_usd_per_1k;\n\nreturn [{ json: {\n  completion,\n  model_used,\n  provider,\n  input_tokens, output_tokens, usd_cost,\n  price_in_usd_per_1k: price_in,\n  price_out_usd_per_1k: price_out,\n  routing_default_used: !!routing.routing_default_used,\n  routing_row_missing: !!routing.routing_row_missing,\n  fell_back_to_opus: fell_back,\n  image_unprocessable,\n  images_dropped: image_unprocessable ? (routing.image_count || 0) : 0,\n  impact: routing.impact,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
       }
     },
     {
@@ -175,10 +175,10 @@
       "parameters": {
         "conditions": {
           "options": {
-            "version": 3,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "strict"
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
           },
           "conditions": [
             {
@@ -232,7 +232,7 @@
       "name": "Alert Degradation",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1568, 200],
+      "position": [1568, 208],
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -316,7 +316,7 @@
       "name": "AWS Bedrock Chat Model (fallback)",
       "type": "@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
       "typeVersion": 1.1,
-      "position": [672, 768],
+      "position": [160, 880],
       "disabled": true,
       "parameters": {
         "modelSource": "inferenceProfile",
@@ -335,7 +335,7 @@
       "name": "Basic LLM Chain (fallback)",
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "typeVersion": 1.9,
-      "position": [672, 624],
+      "position": [160, 720],
       "disabled": true,
       "parameters": {
         "promptType": "define",
@@ -348,7 +348,7 @@
       "name": "Fallback to Opus",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [672, 496],
+      "position": [688, 544],
       "notes": "Auto-fallback (ADR-037): primary model call failed -> retry once on Opus, to opus-4-8-direct. Uses the same multimodal messages from Resolve Routing (ADR-036 Block 5). Success feeds Parse Response with fell_back=true -> WARN. If Opus ALSO fails it throws -> Execute LLM Call CRITICAL.",
       "parameters": {
         "method": "POST",
@@ -374,6 +374,7 @@
           "name": "LiteLLM master key"
         }
       },
+      "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
       "waitBetweenTries": 2000
@@ -383,15 +384,15 @@
       "name": "Routing Missing?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [1232, 460],
+      "position": [1232, 464],
       "notes": "0-row routing guard: true when Lookup Routing matched nothing and Resolve Routing fell back to its safety-net model (routing_row_missing). True -> CRITICAL alert. Both branches reconverge to Check Degradation so Shape Output stays the sole leaf (sub-workflow return determinism).",
       "parameters": {
         "conditions": {
           "options": {
-            "version": 3,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "strict"
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
           },
           "combinator": "and",
           "conditions": [
@@ -415,7 +416,7 @@
       "name": "Alert Routing Missing",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1232, 620],
+      "position": [1232, 672],
       "notes": "CRITICAL via Post Alert (v1): the model_routing table has no row for this impact/modality/PD combo. The run still replies via Resolve Routing's safety-net model, so this is loud-but-non-blocking. Reconverges to Check Degradation (not a leaf).",
       "parameters": {
         "workflowId": {
@@ -430,6 +431,102 @@
             "source": "invoke-model/routing",
             "message": "Brak trasy w model_routing dla tej kombinacji (impact × modalność) — użyto modelu zapasowego. Uzupełnij model_routing.",
             "details": "=task={{ $('Parse Response').first().json.clickup_task_id }}; impact={{ $('Parse Response').first().json.impact }}; modalność={{ $('When Called').first().json.modality }}; model_zapasowy={{ $('Parse Response').first().json.model_used }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "57b75e27-c53c-4436-bddb-45f388bd8657",
+      "name": "Retry Text-Only",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [688, 784],
+      "notes": "Block 6 (ADR-036): final safety net. Reached only when BOTH the routed model AND the Opus fallback failed AND images were present (a corrupt/1x1/unprocessable image 4xxs every image-bearing call). Retries text-only on Opus with images stripped + a [BRAK] marker (messages_text_only from Resolve Routing) -> Parse Response sets image_unprocessable -> WARN multimodal/image-unprocessable. No onError here: if THIS also fails it throws -> Execute LLM Call CRITICAL, so a genuine non-image failure is NOT masked.",
+      "parameters": {
+        "method": "POST",
+        "url": "http://litellm:4000/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'haxe-opus-4-8-direct', messages: $('Resolve Routing').first().json.messages_text_only, max_tokens: $('Resolve Routing').first().json.max_tokens }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "396fqTZqWdFosVpT",
+          "name": "LiteLLM master key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "86dc2f02-ec8c-4889-bf05-f779dc57fff6",
+      "name": "Image Unprocessable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1232, 140],
+      "notes": "Block 6: true when the routed model could not consume the input image and the run degraded to a text-only retry. True -> WARN multimodal/image-unprocessable. Both branches reconverge into Call Log Model Run so Shape Output stays the sole branch-free leaf (sub-workflow return determinism), mirroring Routing Missing? -> Check Degradation.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "iu1",
+              "leftValue": "={{ $('Parse Response').first().json.image_unprocessable }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "cceb469b-eb94-4cc3-9f38-d45df2c91f10",
+      "name": "Alert Image Unprocessable",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1440, 140],
+      "notes": "Block 6 WARN via Post Alert (v1): a corrupt/non-vision input image was dropped and the answer was produced text-only. Loud-but-non-blocking; reconverges to Call Log Model Run (not a leaf).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "multimodal/image-unprocessable",
+            "message": "Obraz nieczytelny na bieżącym providerze — odpowiedź wygenerowana tylko z tekstu.",
+            "details": "=task={{ $('Parse Response').first().json.clickup_task_id }}; images_dropped={{ $('Parse Response').first().json.images_dropped }}; impact={{ $('Parse Response').first().json.impact }}; model={{ $('Parse Response').first().json.model_used }}"
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,
@@ -499,17 +596,6 @@
         ]
       ]
     },
-    "Parse Response": {
-      "main": [
-        [
-          {
-            "node": "Call Log Model Run",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Check Degradation": {
       "main": [
         [
@@ -558,14 +644,10 @@
             "type": "main",
             "index": 0
           }
-        ]
-      ]
-    },
-    "Call Log Model Run": {
-      "main": [
+        ],
         [
           {
-            "node": "Routing Missing?",
+            "node": "Retry Text-Only",
             "type": "main",
             "index": 0
           }
@@ -595,6 +677,68 @@
         [
           {
             "node": "Check Degradation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image Unprocessable?": {
+      "main": [
+        [
+          {
+            "node": "Alert Image Unprocessable",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Routing Missing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Text-Only": {
+      "main": [
+        [
+          {
+            "node": "Parse Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Response": {
+      "main": [
+        [
+          {
+            "node": "Call Log Model Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Log Model Run": {
+      "main": [
+        [
+          {
+            "node": "Image Unprocessable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Image Unprocessable": {
+      "main": [
+        [
+          {
+            "node": "Routing Missing?",
             "type": "main",
             "index": 0
           }

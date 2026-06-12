@@ -150,6 +150,14 @@ When `personal_data=true` AND the input contains image blocks, SW1 (Stage A):
 
 This replaces the earlier spec 3.7 silent guard. No silent drops.
 
+> **Update 2026-06-12 (Block 6, supersedes this entire "GDPR / Bedrock image stance" section).**
+> The PD-blind/global cutover (ADR-043, migration 021) deleted `personal_data`/`eu_only` and the
+> Bedrock-EU route. There is **no `personal_data` branch, no `multimodal/image-dropped-pd` WARN, no
+> Bedrock alias, and no EU branch** anywhere in the pipeline. The unprocessable-image guard (spec
+> §3.7) is now **generic robustness, not a residency/PD control** — see the Block 6 entry in
+> Consequences below for the live mechanism (reactive Opus→text-only safety net + a
+> `multimodal/image-unprocessable` WARN).
+
 ### Step-down fallback
 
 Image tier failure → retry at the next lower tier + WARN (`multimodal/tier-degrade`). At
@@ -439,11 +447,57 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
     cost field written; `Context OK?`/`If LLM Succeeded?` took the success path and neither CRITICAL
     false-fired. _Silent-failure coverage:_ the previously-uncovered "context/reader returned empty" mode is
     now a loud CRITICAL on a non-blocking side branch.
-- Phase 2–5: consequences recorded when each phase is verified end-to-end. **Phase A (INPUT) verified for
-  attachment-level text + directly-attached images through Block 5;** still owed for *fully* multimodal
-  input: Block 6 (image guards: Bedrock image-input + PD notice + unprocessable-image degradation) and
-  Block 10 (host embedded in-document images + pdf/pptx page renders → vision model). Then Phase B (image
-  generation).
+- **Block 6 (unprocessable-image robustness, `invoke-model.json`) — 2026-06-12.** Phase A INPUT is now
+  **closed**. The Block-5 gap (a 1×1/corrupt image 400s the whole request → primary *and* Opus fallback
+  fail → CRITICAL, no draft) is fixed with a **reactive text-only safety net**, PD-blind per ADR-043 — no
+  Bedrock/PD/EU branch (the old "GDPR / Bedrock image stance" section above is superseded; see its dated
+  update). Decisions locked with the operator: **whole-set reactive degrade** (on a failed image call,
+  drop *all* images + a `[BRAK]` marker, not per-image isolation — only junk images 4xx, so a co-attached
+  good image is rarely lost) and **reactive-only, no `vision_capable` column** (every routed model is
+  vision-capable today; a non-vision model 4xxs into the same path).
+  **Mechanism (all in `invoke-model.json`; Stage B wrapper unchanged).** The existing fallback chain is
+  extended into a final net: `Call LiteLLM` (routed model, **with** images) →err→ `Fallback to Opus`
+  (Opus, **with** images — ADR-037, recovers *transient* errors without losing the image) →err→ **NEW
+  `Retry Text-Only`** (Opus, images **stripped** + `[BRAK: obraz nieczytelny na bieżącym providerze]`
+  appended). This chain *itself* discriminates the cases with **no HTTP-status parsing**: a transient 5xx
+  on a good image is recovered by Opus with the image intact; a genuinely-bad image 4xxs on both
+  image-bearing calls and is rescued text-only; a real non-image failure fails all three and still
+  surfaces as **CRITICAL** (not masked — `Retry Text-Only` has no `onError`, so it throws onward).
+  `Resolve Routing` now also emits `messages_text_only` (+ `had_images`); `Parse Response` adds
+  `$('Retry Text-Only')` as a third success source and sets `image_unprocessable=true`
+  (`fell_back_to_opus` stays false, so the generic degradation WARN does **not** double-fire);
+  `Image Unprocessable?` IF → `Alert Image Unprocessable` (WARN, `source=multimodal/image-unprocessable`)
+  reconverges into `Routing Missing?` so `Shape Output` stays the **sole branch-free leaf**.
+  **One bug found + fixed during node-by-node verification (the reconvergence data-provenance trap):** the
+  first wiring put the image-WARN node *before* `Call Log Model Run` (which reads its fields via **relative
+  `$json`**, unlike every other node here which uses absolute `$('Parse Response')` refs), so on the
+  image-unprocessable branch its input item became the Post Alert return → it logged a **null `agent_runs`
+  row** and the null cost tripped a spurious `cost_missing` degradation WARN. **Fix:** reordered to
+  `Parse Response → Call Log Model Run → Image Unprocessable? → [Alert →] Routing Missing?` (log first,
+  then reconverge the alert), restoring the direct Parse-Response feed.
+  **Verified live (orchestrator Form trigger → full A→B→C on `869dhad2q`, impact `Krytycznie ważne` →
+  `haxe-gemini-pro`; exec 1569 / Invoke Model).** 3 images (2× 1×1 junk + 1 real) → Gemini 4xx → Opus 4xx
+  → `Retry Text-Only` succeeded (≈40 s) → a 4888-char **text-only Polish draft posted** by Stage C
+  (@-mention intact), status flipped, **one** `multimodal/image-unprocessable` WARN on Alerts `869dj2z2c`,
+  **no CRITICAL**, `Call Log Model Run` logged **one priced row** (0.579 PLN, `cost_missing=false`),
+  `Check Degradation` took the clean branch (no second WARN). The draft itself acknowledged *"wersja
+  robocza powstała wyłącznie z danych tekstowych — 3 dołączone obrazy są nieczytelne (uszkodzone pliki
+  1×1)"*. Happy-path regression (exec 1561, text-only Haiku call): `had_images=false`, `Retry Text-Only`
+  **not executed**, no image WARN, cost logged — the new nodes are transparent to normal/successful calls.
+  The **non-vision case is covered by construction** (identical 4xx path; no non-vision model exists to
+  test directly). A co-fired `assemble-context/input-reader` WARN (the task's intentional `broken.docx`)
+  is pre-existing Block 3 behavior, not Block 6.
+  **Silent-failure coverage (reliability mandate).** _Covered:_ unprocessable input image (corrupt 4xx /
+  non-vision-model 4xx) → loud `multimodal/image-unprocessable` WARN + visible Polish `[BRAK]` substitute
+  + text-only draft; the call **never sinks** to CRITICAL/no-draft. _Not masked:_ a genuine non-image
+  failure still fails all three calls → CRITICAL. _Cost:_ logged exactly once via `Log Model Run (v1)`
+  even on the text-only retry; `Sum Task Cost` stays correct (no double-count, no zero-cost silent run).
+  _Knowingly DEFERRED:_ per-image isolation (whole-set drop accepted); fully multimodal input (embedded +
+  page-render images) → Block 10 hosting.
+- Phase 2–5: consequences recorded when each phase is verified end-to-end. **Phase A (INPUT) COMPLETE —
+  attachment-level text + directly-attached images, with robust unprocessable-image degradation (Blocks
+  1–6).** Still owed for *fully* multimodal input: Block 10 (host embedded in-document images + pdf/pptx
+  page renders → vision model). Then Phase B (image generation).
 
 ---
 
@@ -454,3 +508,4 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
 2026-06-10 (Block 2 — `Read Input Text (v1)` verified live)
 2026-06-10 (Block 3 — unified `Read Input (v1)` verified live; readers unified, router retired)
 2026-06-10 (Block 5 — input wired into spine; multimodal model call verified; Stage B + Decide Research return-path bugs fixed)
+2026-06-12 (Block 6 — unprocessable-image robustness: reactive Opus→text-only safety net + `multimodal/image-unprocessable` WARN; Phase A INPUT closed; PD/Bedrock image stance superseded per ADR-043)

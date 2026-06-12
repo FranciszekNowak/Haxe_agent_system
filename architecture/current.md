@@ -1065,11 +1065,23 @@ Bedrock — only the native node can; ADR-021).
   **one shape — always an array**: `[{type:'text', text:prompt}]` plus `{type:'image_url', image_url:{url:
   <clickup_url>}}` parts when the caller passes `image_blocks_json` (input image refs from `Read Input
   (v1)`). LiteLLM fetches the URLs (no bytes cross workflow boundaries; ADR-036 reference-not-bytes). The
-  `-direct` Claude aliases are vision-capable, so no routing/`modality` change. `Call LiteLLM` and
-  `Fallback to Opus` both send these messages. ⚠ A provider-unprocessable image (e.g. 1×1 px) currently
-  400s the whole call → graceful text-only fallback is deferred to Block 6.
+  routed multimodal model is **Gemini** (flash/pro by tier, ADR-042/043); `Call LiteLLM` sends the
+  image-bearing messages, `Fallback to Opus` retries them on Opus.
+- **Unprocessable-image robustness (ADR-036 Block 6, PD-blind per ADR-043) — DONE.** A corrupt/1×1 input
+  image (or a hypothetical non-vision routed model) 4xxs the whole request. A **final text-only safety
+  net** closes it: `Call LiteLLM` (with images) →err→ `Fallback to Opus` (with images — recovers
+  *transient* errors, image kept) →err→ **`Retry Text-Only`** (Opus, images **stripped** + a `[BRAK: obraz
+  nieczytelny na bieżącym providerze]` marker). The chain discriminates by construction (no HTTP-status
+  parsing): a transient error on a good image is recovered with the image; a genuinely-bad image fails both
+  image-bearing calls and is rescued text-only (`Parse Response` sets `image_unprocessable=true`, fires a
+  WARN `multimodal/image-unprocessable`, the draft still posts); a real non-image failure fails all three →
+  CRITICAL (not masked). `Retry Text-Only` success still flows through `Call Log Model Run` (one priced
+  Opus row); the WARN reconverges into `Routing Missing?` so `Shape Output` stays the sole leaf. Decision:
+  **whole-set drop** (all images dropped on a 4xx, not per-image isolation) and **no `vision_capable`
+  column** (reactive 4xx catches the non-vision case too). Verified live on `869dhad2q` (3 junk+real
+  images → Gemini/Opus 4xx → text-only Polish draft + one WARN, no CRITICAL, cost logged).
 
-See ADR-022 (shape), ADR-023 (routing), ADR-024 (LiteLLM/cost), ADR-030 (multi-provider).
+See ADR-022 (shape), ADR-023 (routing), ADR-024 (LiteLLM/cost), ADR-030 (multi-provider), ADR-036 (Block 6).
 
 ### 15.5 `Search (v1)`
 
