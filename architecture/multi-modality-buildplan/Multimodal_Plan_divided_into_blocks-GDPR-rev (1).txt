@@ -1,334 +1,316 @@
- Multimodal I/O — bite-sized build plan (ADR-036 Phases 2–5)
+Multimodal I/O — bite-sized build plan (ADR-036 Phases 2–5)
 
- Context
+Rewritten 2026-06-12 to match live state. Phase A (INPUT) + the spine decomposition are DONE and
+verified; the PD/EU apparatus this plan once carried has been removed (ADR-043, migration 021); the
+erasure-readiness schema landed (ADR-044, migration 022). Only Block 6 (input robustness) and Phase B
+(image generation, Blocks 8–12) remain.
 
- ADR-036 "Phase 1" (schema + gateway aliases + spine decomposition) is done and on-disk;
- the substance of the multimodal spec (architecture/multi-modality-buildplan/multimodal-io-and-spine-decomposition-spec
- (2).md)
- is not built. This plan turns that spec into small, independently-shippable blocks.
+Context
 
- What is already real (do not rebuild):
- - Migrations 012/013: model_routing.modality/eu_only/fallback_price_per_unit,
- PK (impact, personal_data, modality), Polish-keyed image rows
- (Niski→SD3.5, Średni→imagegeneration@006, Wysoki/Krytycznie ważne→dall-e-3, __default__),
- image_gen_params, config table, agent_runs.triggered_by += image_gen.
+The generic ClickUp→LLM→ClickUp spine is live and decomposed into a thin Agent Orchestrator (v1)
+→ Stage A (Assemble Context and Build Prompt) → Stage B (Execute LLM Call) → Stage C (Post Reply),
+with a Context-OK / LLM-Succeeded guard pair and a shared Reset+Alert path. The multimodal INPUT
+flesh on that skeleton is built: Docling extraction is live, the unified Read Input (v1) reader is
+live, and input (attachment text + directly-attached images) is wired into the spine and verified
+end-to-end. What remains is one input-robustness safety net (Block 6) and the entire OUTPUT /
+generation half (Blocks 8–12).
 
- >>> SUPERSEDED re GDPR 2026-06-11 (ADR-039): the pipeline is now personal-data-blind and global.
- >>> The `personal_data` PK component and the `eu_only` column are DEAD; routing keys off
- >>> `(impact, modality)` ONLY. Migrations 012/013 stay on disk (append-only history); a later
- >>> append-only migration drops `personal_data` from the PK and retires `eu_only`. No PD verifier,
- >>> no EU route, no residency flag, no image stripping. Lawfulness rests on each provider's default
- >>> DPA + SCCs (+ DPF where certified) + no-training, all at the account level; compliance is
- >>> controller-side (privacy notice / ROPA / transfer impact assessment), not in n8n. The only
- >>> data-subject hook is ADR-040's nullable `subject_key` on agent_runs, schema-ready but dormant
- >>> until the email channel is wired. See ADR-039 (global routing) + ADR-040 (erasure/retention).
+What is already real (do not rebuild):
+- Migrations 012/013 (image tiers + ClickUp-key alignment), 014 (multimodal_input seeds), 015 (Fable
+  5 temperature null), 019 (n/d multimodal route), 020 (max_tokens by tier), 021 (PD-blind global
+  collapse), 022 (erasure-ready). All applied to haxe-agent-prod.
+- model_routing is keyed (impact, modality) ONLY — text → Claude direct, image → image-gen tiers
+  (Stability/Vertex/DALL-E, DATED seeds), multimodal_input → Gemini (haxe-gemini-flash for
+  n/d/Niski/Średni, haxe-gemini-pro for Wysoki/Krytycznie ważne; ADR-042/043). image_gen_params +
+  config (image_host=comment_native, tmp_root=/tmp/agent-runs, tmp_ttl_hours=24) seeded.
+- litellm-config.yaml: image aliases + Gemini aliases (global, renamed off -eu) + haxe-fable-5-direct.
+  docker-compose.yml: Docling service (digest-pinned, LIVE).
+- Spine decomposed: agent-orchestrator.json (a8XKaijkMFNBpRBa, thin) → assemble-context-and-build-
+  prompt.json (GGTBvFBgGSNbtUR6, Stage A) → execute-llm-call.json (9qdJA4xnAGbxqkt9, Stage B) →
+  post-reply.json (t17moGs7Vxo5ZcFv, Stage C), with the guard gate + shared error/status handling.
+- read-input.json (Read Input (v1), zgGpONulGMohQQqI): the UNIFIED reader. The two-reader split
+  (read-input-text / read-input-visual / input-router) was retired (never built).
+- invoke-model.json: messages-content always an array; vision via remote image_url (LiteLLM fetches
+  the ClickUp URL — no bytes cross an n8n boundary).
+- Fable 5 routing + Opus auto-fallback + access monitor (ADR-037); routing 0-row guard (ADR-041);
+  Gemini thinking-level + output tiers (ADR-042); thread-root replies + threaded-comment read (ADR-040).
+- Erasure hub: agent_runs.subject_key (nullable, indexed, dormant), clickup_comment_id (recorded per
+  run by Post Reply's Record Artifact node), drive_file_id (reserved). ADR-044, migration 022.
+- Sample fixtures committed under architecture/multi-modality-buildplan/Test files/
+  (HBG Sharp.docx, Karta Techniczna…HX705.pdf, Idalia…pptx, Sorino…png ×3, an xlsx, an HTML zip).
 
- - litellm-config.yaml: image aliases + haxe-fable-5-direct. docker-compose.yml: Docling service (pinned).
- - Spine is already decomposed into agent-orchestrator.json (thin) → Stage A
- assemble-context-and-build-prompt.json → Stage B execute-llm-call.json → Stage C post-reply.json,
- with a guard gate + shared error/status handling. This is spec §4, text-only.
- - Fable 5 routing + Opus auto-fallback + access monitor (ADR-037).
- - Sample fixtures committed under architecture/multi-modality-buildplan/Test files/
- (HBG Sharp.docx, Karta Techniczna…HX705.pdf, Idalia…pptx, Sorino…png ×3, an xlsx, an HTML zip).
+>>> GDPR POSTURE (ADR-043 + ADR-044), DEFINITIVE — supersedes every PD/EU line in older copies:
+>>> the pipeline is personal-data-blind and global. There is NO personal_data flag, NO PD verifier,
+>>> NO EU/Bedrock route, NO eu_only column, NO image stripping — all deleted (migration 021, GDPR
+>>> master plan Blocks 1–4, done 2026-06-11). Routing keys off (impact, modality) ONLY. Lawfulness
+>>> rests on each provider's default DPA + SCCs (+ DPF where certified) + no-training, all at the
+>>> account level; compliance is controller-side (privacy notice / ROPA / transfer impact assessment
+>>> in compliance/gdpr-processing-decisions.md), not in n8n. The only data-subject machinery is
+>>> ADR-044's nullable subject_key on agent_runs — schema-ready but dormant until the email channel
+>>> is wired, and NOT part of the multimodal flow. Do NOT reintroduce any PD/EU branch in any block.
 
- What is NOT built = the entire input/output multimodal flesh on that skeleton: the three readers,
- input-router, invoke-image-model, image-resolver, the multimodal assembler, the block-contract
- wiring into A/B/C, the comment_native delivery (temp staging / upload / rollback / TTL sweep), and the
- input-image robustness fallback (text-only when a model can't consume an image).
+ADR / migration numbering (older copies are stale, fix on sight):
+- Global routing = ADR-043 (NOT 039). Erasure/retention = ADR-044 (NOT 040). The renumber happened
+  after a collision with the pre-existing ADR-040 (thread-root replies) and ADR-041 (routing zero-row
+  guard). ADR-039 is the (superseded) Vertex Gemini posture; ADR-038 the (superseded) EU-region route.
+- The "later migration that drops personal_data from the PK and retires eu_only" = migration 021 —
+  DONE. The erasure schema = migration 022 — DONE. There is no "migration 010."
 
- Known doc drift to fix in-flight: current.md §11/§15 still describe a monolithic 26-node
- agent-spine.json. Reality is the decomposed orchestrator above. Block 1's write-back corrects this.
+What is NOT built = Block 6 (input-image robustness fallback) on the INPUT side, and the entire
+OUTPUT/generation half: invoke-image-model, image-resolver, the multimodal assembler, the
+comment_native delivery primitives (temp staging / upload / rollback / TTL sweep), and the Stage-B/C
+wiring that flips the drafting model to the output block contract.
 
- How to run this plan
+Known doc state: current.md §15 already describes the decomposed orchestrator + Stage A/B/C reality
+(the old monolithic-spine drift was corrected in Block 1). New blocks append to ADR-036 Consequences
++ current.md §15.
 
- You (Franciszek) will /clear and paste one block at a time into Claude Code, telling it to keep this
- whole file open as the broader picture.
+How to run this plan
 
- Every block must first ground itself by reading, in order:
- 1. This plan's top matter — Context, Frozen block contract, and Rules every block inherits (above).
- 2. The build spec: architecture/multi-modality-buildplan/multimodal-io-and-spine-decomposition-spec (2).md
- — the cited section(s) named in the block's Grounding line (e.g. spec §2.1).
- 3. architecture/current.md §15 (live workflow state) + architecture/decisions/036-multimodal-io-image-generation.md.
+You (Franciszek) /clear and paste one block at a time into Claude Code, telling it to keep this whole
+file open as the broader picture.
 
- Each block opens with a one-line Context (where we are in the arc) and a Grounding pointer (which spec
- section it implements). Every block is self-contained and ends the same way:
+Every block must first ground itself by reading, in order:
+1. This plan's top matter — Context, GDPR posture, Frozen block contract, and Rules every block
+   inherits (above + below).
+2. The build spec: architecture/multi-modality-buildplan/multimodal-io-and-spine-decomposition-spec-
+   GDPR-rev.md — the cited section(s) named in the block's Grounding line (e.g. spec §3.3).
+3. architecture/current.md §15 (live workflow state) + §5 (DB) + architecture/decisions/036-
+   multimodal-io-image-generation.md (Consequences = the running block log).
+
+Each block opens with a one-line Context + a Grounding pointer. Every block is self-contained and
+ends the same way:
 
  ▎ Live-test (node-by-node, per CLAUDE.md Definition of Done) → write back (ADR-036 append + current.md
  ▎ targeted diff) → commit → STOP and prompt: "Block N done + verified + written back. /clear and paste Block N+1."
 
- Rules every block inherits (state them, don't re-derive):
- - Build n8n via the n8n MCP (ADR-018); export JSON to n8n/workflows/. Don't hand-edit exported JSON.
- - All alerts route through Post Alert (v1) (YSCdHlmdf3p9XEUx); never post ad-hoc. Severity + source + actionable
- details.
- - The sole agent_runs writer and cost owner is Log Model Run (v1) (ztSIUkp9ytbG1xpE, ADR-035) —
- image_gen rows go through it too. Do not write agent_runs or do FX/PLN math anywhere else.
- (The spec predates ADR-035 and shows per-node inserts; override the spec here.)
- - Loop guard: never read/post-watch the Alerts task 869dj2z2c.
- - Supabase migrations are append-only; new number each time. n8n workflows verified live, not "looks right".
- - State which silent-failure modes each block covers (reliability mandate).
- - GDPR posture (ADR-039): personal-data-blind, global models everywhere. No personal_data branch,
- no EU route, no image stripping anywhere in any block. Don't reintroduce them.
+Rules every block inherits (state them, don't re-derive):
+- Build n8n via the n8n MCP (ADR-018); export JSON to n8n/workflows/. Don't hand-edit exported JSON.
+  After ANY live change, re-export + commit (run node scripts/check-workflow-drift.mjs to confirm
+  repo↔live is clean — see docs/drift-check.md).
+- All alerts route through Post Alert (v1) (YSCdHlmdf3p9XEUx); never post ad-hoc. Severity + source +
+  actionable details.
+- The sole agent_runs writer and cost owner is Log Model Run (v1) (ztSIUkp9ytbG1xpE, ADR-035) —
+  image_gen rows go through it too. Do NOT write agent_runs or do FX/PLN math anywhere else. (The spec
+  predates ADR-035 and shows per-node inserts; override the spec here.)
+- Every Call-Workflow sub-workflow must end in ONE branch-free terminal; parallel side-effect branches
+  (cost sync, degradation alerts) reconverge into it, never race it (the return-determinism trap that
+  bit Stage B + Decide Research in Block 5).
+- Loop guard: never read/post-watch the Alerts task 869dj2z2c.
+- Supabase migrations are append-only; new number each time. The PK/column cleanup is DONE — never
+  re-add a personal_data or eu_only column. n8n workflows verified live, not "looks right."
+- State which silent-failure modes each block covers (reliability mandate).
+- GDPR posture (ADR-043): personal-data-blind, global models everywhere. No PD branch, no EU route, no
+  image stripping in any block. Don't reintroduce them.
 
- Frozen block contract (the one shared reference)
+Frozen block contract (the one shared reference)
 
- Input blocks (emitted by readers, ordered):
- { "type": "text",  "order": 0, "md": "..." }
- { "type": "image", "order": 1, "ref": "<clickup_url>", "mime": "image/png",
-   "source": "input", "source_ref": "<attachment_id>", "alt": "..." }
- Output blocks (emitted by the drafting model):
- { "type": "text",  "md": "..." }
- { "type": "image", "mode": "embed_input", "ref": "<handle>", "caption": "...", "alt": "..." }
- { "type": "image", "mode": "generate",    "prompt": "...", "aspect": "1:1", "caption": "...", "alt": "..." }
- ref is always a URL or temp path — never raw bytes across a workflow boundary.
+Input blocks (emitted by Read Input (v1), ordered):
+{ "type": "text",  "order": 0, "md": "..." }
+{ "type": "image", "order": 1, "ref": "<clickup_url>", "mime": "image/png",
+  "source": "input", "source_ref": "<attachment_id>", "alt": "..." }
+Output blocks (emitted by the drafting model — Phase B):
+{ "type": "text",  "md": "..." }
+{ "type": "image", "mode": "embed_input", "ref": "<handle>", "caption": "...", "alt": "..." }
+{ "type": "image", "mode": "generate",    "prompt": "...", "aspect": "1:1", "caption": "...", "alt": "..." }
+ref is always a URL or temp path — never raw bytes across a workflow boundary.
 
- Sequencing & gating
+Sequencing & gating
 
- - Blocks 1–7 (INPUT) need only Docling — no external image accounts. Build these first; they deliver
- standalone value (the agent reads attached specs/photos).
- - Blocks 8–12 (OUTPUT/GENERATION) are gated by Block 8 (image-provider provisioning). Block 1 and
- Block 8 are verify-then-act, which is how this plan self-resolves the open "is Docling up / are providers
- ready" questions — by doing them, not by deciding up front.
- - Each block names a test surface (default: a ClickUp task in Lista testy AI, e.g. 869dhad2q, with the
- relevant sample fixtures attached). Two adjacent input blocks can share one window if you want fewer /clears.
+- Block 6 (INPUT robustness) needs no external accounts — do it next; it closes Phase A.
+- Blocks 8–12 (OUTPUT/GENERATION) are gated by Block 8 (image-provider provisioning). Block 8 is
+  verify-then-act: it self-resolves "are providers ready / are the dated seeds still best?" by doing
+  it, not deciding up front.
+- Each block names a test surface (default: a ClickUp task in Lista testy AI, e.g. 869dhad2q, with the
+  relevant sample fixtures attached). Block numbers are preserved from the original plan to keep
+  ADR-036's cross-references valid — THERE IS NO BLOCK 7, and Blocks 1–5 are done (recap below).
 
- ---
- PHASE A — INPUT (read attachments as context)
+---
+PHASE A — INPUT (read attachments as context) — DONE through Block 5; Block 6 remains
 
- Block 1 — Deploy & verify Docling on the VPS; fix the spine doc-drift
+Blocks 1–5 recap (DONE + VERIFIED — see ADR-036 Consequences for the full record):
+- Block 1 — Docling deployed + verified on the VPS (digest-pinned, GET /health=200, placeholder mode
+  confirmed); spine doc-drift in current.md corrected to the decomposed orchestrator.
+- Block 2 — read-input-text built, then folded into Block 3.
+- Block 3 — UNIFIED Read Input (v1): Switch(Classify) → [image URL-passthrough past Docling | Fetch →
+  Docling] → Merge → Aggregate (sole terminal). Merge verified non-stalling both directions; images
+  verified to skip Fetch+Docling; global order preserved across block types. Router + visual reader
+  RETIRED (never built).
+- Block 4 — input-router: RETIRED (dissolved into the unified reader; never built).
+- Block 5 — input wired into the live spine: Stage A calls Read Input (v1), folds attachment text into
+  the prompt, emits image_blocks_json, threads it orchestrator → Stage B → Invoke Model; Invoke Model
+  builds one-schema always-array multimodal messages; vision verified end-to-end. Two PRE-EXISTING
+  spine return-determinism bugs (Stage B cost-branch race; Decide Research deliver-branch race) found +
+  fixed. A later follow-up (2026-06-11) fixed the zero-attachment empty-return bug (reader _passthrough
+  sentinel + orchestrator Context-OK / LLM-Succeeded CRITICAL guards). The interim PD image guard from
+  Block 5 (image-dropped-pd) was REMOVED by the GDPR master plan (Blocks 2–3) — PD-blind now.
 
- - Context: First multimodal step. Docling is the single extractor that turns attached docs/images into
- markdown for every reader downstream. It's committed to compose but likely not yet running. Nothing reads it yet.
- - Grounding: spec §2 (single-extractor premise), §7 step 2; infrastructure/deployment.md §Docling.
- - Prereq: none. Reuse: infrastructure/deployment.md §Docling runbook.
- - Do: SSH in; if docling isn't running, docker compose up -d docling; GET /health=200; pin the digest.
- - Live test: POST /v1/convert/file with HBG Sharp.docx and Karta Techniczna…HX705.pdf → markdown with
- layout/tables. Confirm RAM headroom (docker stats, ≥4 GB free for layout models).
- - Write-back: ADR-036 Consequences — Docling LIVE + digest. current.md: mark Docling live, and correct
- §11/§15 to the decomposed orchestrator+A/B/C reality (the monolithic-spine drift).
- - Silent-failure modes: Docling OOM/unhealthy → it's an infra check now; later readers add a per-file WARN.
+Block 6 — Input-image robustness fallback (text-only when a model can't consume an image)
 
- Block 2 — read-input-text (xlsx, docx, csv, txt) → input text blocks
+- Context: The safety net that closes the INPUT path. Under ADR-043 the pipeline is PD-blind and
+  global, so the old Bedrock-residency guard and the PD image stance are GONE. What remains is pure
+  robustness: a routed model that is not vision-capable, or a corrupt/unreadable image, must degrade
+  visibly to text-only — never sink the whole call, never hallucinate.
+- Grounding: spec §3.7 (unprocessable-image guard); ADR-043 (PD-blind/global supersedes the old
+  Bedrock + PD image stance and ADR-036's "GDPR / Bedrock image stance" section).
+- Prereq: Block 5 (done). Reuse: invoke-model.json messages-array path.
+- Concrete failure to close: a single 1×1px / corrupt PNG currently makes the provider reject the
+  WHOLE request (400) → both the primary call and the Opus fallback fail → CRITICAL, no draft
+  (observed on 869dhad2q, which still has 1×1 test-junk attachments). Real photos are unaffected.
+- Do: at the Stage B model-call boundary — if messages[] contain an image block AND (the routed model
+  is not vision-capable OR the provider returns a 4xx on the image): WARN
+  multimodal/image-unprocessable, drop the offending image, substitute [BRAK: obraz nieczytelny na
+  bieżącym providerze], continue text-only. NOTE the routed multimodal model is now Gemini
+  (flash/pro), not Claude — the vision-capability check applies to whatever model routing returns.
+  No personal_data branch, no Bedrock branch, no EU branch.
+- Live test: send a task with a corrupt/1×1 image plus a normal image to the routed vision model →
+  the corrupt image yields WARN + Polish [BRAK] + text-only continuation, the normal image is still
+  read; force routing to a non-vision model → same graceful degrade. No silent drop, no 400 sinking
+  the run. Inspect every node + the Alerts task 869dj2z2c.
+- Write-back: ADR-036 append (Block 6 = robustness fallback only; Bedrock/PD guards removed per
+  ADR-043); current.md §15 Stage B note. Update the spec §3.7 status to DONE.
+- Silent-failure modes covered: unprocessable input image (non-vision model / corrupt 4xx) → loud WARN
+  + visible Polish substitute + text-only, never a silent drop, the call does not sink.
+- Closes Phase A: the agent reads docs + directly-attached images robustly. Natural stopping point if
+  Phase B is blocked. (Fully-multimodal input — images embedded IN documents + pdf/pptx page renders —
+  is deferred to Block 10's hosting primitives.)
 
- - Context: First of two readers. Converts text-bearing attachments into the shared input block contract via
- Docling (Block 1). The router (Block 4) and Stage A (Block 5) consume what this emits.
- - Grounding: spec §2.1 (read-input-text) + §1 (block contract) + §7 step 4.
- - Prereq: Block 1. Contract: input blocks above. Reuse: ADR-019 credential-aware-fetch shape.
- - Do: fetch attachment binary locally (binaryMode:"separate") → Docling /v1/convert/file → ordered
- text blocks. Scoped simplification: embedded in-doc images emit a WARN
- (multimodal/embedded-image-skipped) and are dropped for now (hosting them needs the Block 10 temp/upload
- flow — defer). onError=continueRegularOutput → {type:"text", md:"[BRAK: extraction_failed <file>]"} +
- WARN multimodal/extraction-failed.
- - Live test: run against HBG Sharp.docx, the xlsx, and a deliberately corrupt file; inspect every node —
- good files → text blocks; corrupt → [BRAK…] + WARN, run continues.
- - Write-back: ADR-036 append; current.md §15 new subworkflow row.
+---
+PHASE B — OUTPUT / IMAGE GENERATION (gated on Block 8)
 
- Block 3 — extend read-input-text → unified `read-input` (pdf, pptx, images)
+Block 8 — GATE: provision + verify image providers through LiteLLM; refresh seeds
 
- >>> DONE + VERIFIED 2026-06-10. Built as `Read Input (v1)` (id zgGpONulGMohQQqI), file
- >>> n8n/workflows/read-input.json. Blocks 2+3+4 collapsed into ONE reader; read-input-visual +
- >>> input-router retired (never built). Switch(Classify)→[image passthrough | Docling]→Merge→Aggregate.
- >>> Merge verified non-stalling in BOTH empty-branch directions (execs 857/859); images verified to skip
- >>> Fetch+Docling (exec 858). Next: Block 5 wires it into Stage A + fires `warnings`. See ADR-036 Block 3.
+- Context: The gate that unblocks all of Phase B. The DB/gateway image aliases exist but the external
+  accounts + keys don't, and the seeded models (SD3.5 / imagegeneration@006 / dall-e-3, seeded
+  2026-06-09) are dated. Nothing in Phase B can be verified until this is real.
+- Grounding: spec §3.4 (impact tiering / model table) + §9 open decisions 2 & 4; ADR-036 image seeds;
+  migrations 012/013 (PK now (impact, modality) per ADR-043, migration 021).
+- Prereq: Phase A complete (Block 6). This block self-answers "are providers ready?".
+- Do: verify availability/pricing (2026-06) of the seeded models; refresh dated seeds to current best
+  if desired (the spec lists candidates). Create accounts (Stability/OpenAI/Vertex or chosen SOTA)
+  with billing; add keys to VPS .env and .env.example; accept provider DPAs/SCCs (all providers, text
+  and image, EU or not, on commercial/API terms with no-training — residency is NOT a routing concern
+  per ADR-043; this is an account-level check + a line in compliance/gdpr-processing-decisions.md);
+  redeploy compose / restart litellm. If seeds change, write a NEW append-only migration updating the
+  model_routing modality='image' rows / fallback_price_per_unit. Do NOT touch the PK or re-add
+  personal_data/eu_only (already dropped in migration 021).
+- Live test: one image_generation call per tier through the gateway returns an image + an
+  x-litellm-response-cost header (or record a static fallback_price_per_unit per provider that omits it).
+- Write-back: ADR-036 Consequences — providers live, final model map + prices; new migration (if any)
+  noted in current.md §5. Update compliance doc sub-processor list if a new provider was added.
+- Silent-failure modes covered: provider credit/availability cliff caught here at the gate (per-call
+  WARNs added in Block 9); a missing cost header → static price still logs a row (never a zero-cost
+  silent run).
 
- >>> REVISED 2026-06-10 (see ADR-036 "Input readers unified" + Block 2 consequences): the two-reader
- >>> split (read-input-text / read-input-visual / input-router) is RETIRED. Build ONE unified `read-input`
- >>> reader instead — extend Block 2's read-input-text rather than building a second workflow. Build Block
- >>> becomes type-aware (image attachment → image block from its ClickUp URL; Docling-extractable → text
- >>> block; failure → [BRAK]+warning). Restore self-fetch ({clickup_task_id} in; reader explodes + assigns
- >>> global `order` itself); classification dissolves so Block 4 (input-router) largely disappears. Reader
- >>> stays pure; Stage A fires the returned `warnings` via Post Alert (v1).
- >>> IMAGES BRANCH PAST DOCLING (decided 2026-06-10 — latency is already ~1-2 min/answer; don't fetch+OCR
- >>> photos just to discard the OCR): Explode → Switch(is-image?) → [image → build image block from URL] /
- >>> [extractable → Fetch → Docling → build text block] → Merge → Aggregate → return. This converging
- >>> branch is SAFE re: the sub-workflow-return gotcha (Aggregate stays the sole terminal). MUST verify at
- >>> build: (1) Aggregate keeps ONE input — converge via Merge, never wire both branches into the
- >>> run-once-for-all Aggregate; (2) Merge does not stall when one branch is empty (all-text or all-image
- >>> task). See ADR-036 for the fallback if Merge stalls.
- >>> The text below is the ORIGINAL (superseded) framing, kept for the fixtures/test surface only.
+Block 9 — invoke-image-model (tiered, multi-provider, step-down fallback)
 
- - Context: Second reader. Handles visual-primary attachments. Key shortcut: images already on the task are
- already ClickUp-hosted, so they become image blocks by URL with no upload — the only true image blocks the
- input path needs before generation exists.
- - Grounding: spec §2.2 (read-input-visual) + §1 + §7 step 4.
- - Prereq: Block 1. Reuse: Block 2 pattern.
- - Do: fetch binary locally. Already-attached task images → emit image blocks whose ref is the existing
- ClickUp URL (no re-upload — they're already hosted). PDF/pptx → Docling text + OCR text blocks;
- scoped simplification: rendered page-images are deferred (need Block 10 hosting) — text/OCR only for now.
- Same onError/WARN discipline.
- - Live test: Karta Techniczna…HX705.pdf, Idalia…pptx, and Sorino…png → the pngs become image blocks
- referencing their ClickUp URLs; the pdf/pptx yield text blocks.
- - Write-back: ADR-036 append; current.md §15 row.
+- Context: The image analogue of Invoke Model — one prompt → one image, tiered by impact, with a
+  step-down ladder. The resolver (Block 11) calls this once per generate block.
+- Grounding: spec §3.3 (invoke-image-model) + §3.4 (tiering ladder); ADR-035 (Log Model Run is the
+  only writer).
+- Prereq: Block 8. Reuse: invoke-model.json cost-seam pattern; Log Model Run (v1) for the row.
+- Do: inputs prompt/impact; look up model_routing by (impact, modality='image') — direct (impact,
+  modality) lookup, no PD component; call LiteLLM image_generation; on provider error step down one
+  impact tier + WARN multimodal/tier-degrade; at the lowest tier, fail the block (caller drops + notes).
+  Log one row per attempt via Log Model Run — triggered_by='image_gen', model, impact; cost from the
+  x-litellm-response-cost header or fallback_price_per_unit. No eu_only filter on the step-down ladder.
+- Live test: one generation per tier; force a top-tier error → step-down + WARN; confirm priced
+  image_gen rows in agent_runs with correct model/impact.
+- Write-back: ADR-036 append; current.md §15 row + §5 image_gen logging note.
+- Silent-failure modes covered: tier degrade → loud WARN (so a human sees a below-tier render); total
+  gen failure → block fails up to the resolver (which drops + notes + WARN, comment still posts); every
+  attempt cost-logged in one place.
 
- Block 4 — input-router
+Block 10 — comment_native delivery primitives in Stage C (temp staging / upload / rollback / TTL); also
+            unblocks fully-multimodal INPUT — dummy image
 
- - Context: The dispatcher that lets Stage A treat "the task's attachments" as one ordered block list,
- hiding the two-reader split. The last piece before input wires into the live spine.
- - Grounding: spec §2.3 (input-router) + §1.
- - Prereq: Blocks 2–3.
- - Do: Switch on MIME/extension → dispatch each attachment to the right reader → concatenate into one ordered
- block list (stable order: source, then page). Returns to Context Gather.
- - Live test: a task with mixed attachments (docx + pdf + png) → single correctly-ordered block list.
- - Write-back: ADR-036 append; current.md §15 row.
+- Context: How a generated image actually reaches ClickUp. ClickUp's comment API can't read our disk,
+  so bytes must be uploaded to get a URL, then referenced. Built/tested with a dummy image so the
+  plumbing is proven before generation rides on it. C owns every ClickUp side-effect.
+  ALSO: these same temp-staging/upload primitives unblock FULLY multimodal INPUT — extend Read Input
+  (v1) to host (a) images embedded inside Docling-extracted docs (currently dropped as <!-- image -->
+  placeholders → multimodal/embedded-image-skipped WARN; observed on a product photo inside an .xlsx)
+  and (b) pdf/pptx page renders, then feed them into the SAME image_blocks_json path Block 5 built so
+  they reach the vision model. Goal: an input image is an input image, attached or embedded. Noise
+  caveat: the embedded-image-skipped WARN fires on any doc with a logo/icon/chart — when this lands,
+  host them or downgrade decorative skips to INFO so the alert channel isn't flooded.
+- Grounding: spec §3.6 (comment_native delivery) + §2.2 (deferred input cases) + §4 (Stage C row);
+  ADR-027/028 (post-back); ADR-044 (record external artifact ids on agent_runs).
+- Prereq: Block 8 (not 9 — test with a fixed local image). Reuse: post-reply.json (extend the existing
+  Record Artifact node to record uploaded attachment ids on agent_runs).
+- Do: per-run temp dir <config.tmp_root>/<run_id>/; upload manifest images to the task
+  (attach→ClickUp URL); rewrite Delta refs temp→URL; record artifact ids on agent_runs (extends ADR-044
+  Record Artifact); rollback uploaded attachments on post failure (leave task clean), retain temp for
+  retry; delete temp on success; TTL sweep cron (every 6 h, config.tmp_ttl_hours). Also verify the
+  lifecycle binding (attachment deleted-with-comment vs free-floating) and test the one-call
+  simplification (rich comment[] array / multipart-with-files) — if either works, collapse
+  attach-then-reference into one post and drop the rollback.
+- Live test: stage a fixed image → comment referencing it renders inline; forced post-failure →
+  rollback, task clean, temp retained; success → temp deleted; TTL sweep removes a stale dir. Record
+  the observed lifecycle binding + whether one-call works.
+- Write-back: ADR-036 Consequences — delivery decisions + observed bindings; current.md §15.6 update.
+- Silent-failure modes covered: orphaned attachments on post failure → rollback + retained temp;
+  crashed-run temp → TTL sweep; a failed artifact-id record → WARN side-branch (reply/status still
+  complete, no webhook loop).
 
- Block 5 — Wire input into Stage A (assemble-context-and-build-prompt + context-gather)
+Block 11 — image-resolver + multimodal assembler
 
- >>> DONE + VERIFIED 2026-06-10. Input wired into the live spine: Stage A calls Read Input (v1), folds
- >>> attachment text into the prompt, emits image_blocks_json (threaded → orchestrator → Stage B → Invoke
- >>> Model), and fires the reader's warnings via Post Alert. Invoke Model builds one-schema always-array
- >>> multimodal messages; vision verified via remote image_url on Haiku 4.5 (low) AND Fable 5 (high, with
- >>> research). Also fixed two PRE-EXISTING spine return-determinism bugs surfaced by the e2e test (Stage B
- >>> cost-branch race; Decide Research deliver-branch race) — see ADR-036 Block 5. Phase A (INPUT) COMPLETE.
- >>> Block 6 reduced to the input-image robustness fallback ONLY (graceful text-only when a provider can't
- >>> process an input image: 1×1/corrupt → 400 currently sinks the whole call). The Bedrock + PD image
- >>> guards are REMOVED per ADR-039 (PD-blind, global). Next: paste Block 6.
+- Context: The two deterministic pieces that turn the model's output block list into a postable
+  comment: the resolver fills each block's ref (place existing / generate new → temp), the assembler
+  interleaves them inline into Quill-Delta. Bridges Block 9 (generation) and Block 10 (delivery).
+- Grounding: spec §3.2 (image-resolver) + §3.5 (assembler) + §1 (output blocks).
+- Prereq: Blocks 9–10. Reuse: post-reply.json Build Comment (extend, don't replace).
+- Do: resolver walks output blocks — text pass-through; embed_input → resolve handle to existing ref
+  (no model/upload); generate → invoke-image-model, write to temp, set ref to temp path; parallel up to
+  the per-impact image_gen_params.max_images cap; bottom-tier failure → drop + caption note + WARN
+  multimodal/image-gen-failed. assembler renders text via md→Quill-Delta, inserts inline image embeds
+  at position by temp-path placeholder, appends the "Do weryfikacji — nie finalizuje" footer +
+  reviewer @-mention; returns { rendered_comment:{delta, image_refs}, temp_manifest, total_cost_pln }.
+- Live test: a hand-fed block list (text + embed_input + 2 generate) → resolved + assembled Delta with
+  temp refs; only final-list images appear in temp_manifest.
+- Write-back: ADR-036 append; current.md §15 rows + ADR-027/028 "assembler now multimodal" note.
+- Silent-failure modes covered: per-image gen failure → drop + caption note + WARN, comment still
+  posts; discarded generations stay in temp (never uploaded) and are purged by Block 10's lifecycle.
 
- - Context: The integration block — the readers now feed the real spine. After this, an @-mention on a task
- with attachments produces a draft that actually used the docs/photos. First user-visible multimodal value.
- - Grounding: spec §4 (Stage A row) + §10 step 2; current.md §15 Stage A.
- - Prereq: Block 4. Reuse: context-gather.json, assemble-context-and-build-prompt.json.
- - Do: Context Gather lists task attachments; Stage A calls input-router and returns input_blocks in its
- contract; Build Prompt puts text blocks into the prompt and passes image blocks to a vision-capable
- alias. (Input-image robustness is Block 6; here the routed model is vision-capable, so images pass.)
- - Live test (end-to-end): @-mention the agent on a test task with an attached spec doc and a photo;
- the posted draft must reflect the doc's content and visibly account for the photo. Check every node + the
- Alerts task.
- - Write-back: ADR-036 Phase-2-input verified; current.md §15 Stage A description updated.
+Block 12 — End-to-end: drafting model emits the block list; full A→B→C multimodal run
 
- Block 6 — Input-image robustness fallback (text-only when a model can't consume an image)
+- Context: The capstone — flip Stage B's drafting model from prose to the output block contract and run
+  the whole arc live: read spec + photos → emit text + generate blocks → resolve/generate → assemble →
+  upload → post one mockup-PDP comment, tiered by impact, nothing finalized. Proves the spec's worked
+  flow (§10).
+- Grounding: spec §3.1 (model emits block list) + §10 (worked flow) + §8 (verification checklist).
+- Prereq: Blocks 5–11. Reuse: everything above.
+- Do: Build Prompt instructs the routed vision model (Gemini for multimodal tasks) to return the output
+  block contract (embed_input when a real asset exists, generate for mockups). Stage B: invoke → output
+  blocks → image-resolver (generate to temp) → assembler (Delta temp refs) → Sum Task Cost. Stage C
+  uploads + rewrites + posts + records artifacts + cleans up (Block 10). Text-turn fallback is the
+  existing Opus fallback (no eu_only filter); image fallback is the impact step-down (Block 9).
+- Live test (the worked flow, spec §10): @-mention on a high-value task with a .docx spec + reference
+  photos, impact=Wysoki → a mockup-PDP comment with multiple generated images interleaved, one priced
+  image_gen row each, nothing finalized. Then the impact=Niski contrast (cheap model, low cap).
+  Cross-check SELECT count(*), sum(cost_pln) FROM agent_runs WHERE clickup_task_id=… against the CU
+  cost field. Verify three separate executions (A/B/C) each with its own log; every Call onError reaches
+  the one Reset+Alert path; Alerts task never read.
+- Write-back: ADR-036 → Phases 2–5 COMPLETE with the full Consequences; current.md §15 rewritten to the
+  three-stage multimodal form; §11/§15 phase status updated. Final commit.
 
- - Context: Safety net that closes the input path. Under ADR-039 the pipeline is personal-data-blind and
- global, so the old Bedrock-residency guard and the PD image stance are GONE. What remains is pure
- robustness: a routed model that is not vision-capable, or a corrupt/unreadable image, must degrade visibly
- to text-only — never sink the whole call, never hallucinate.
- - Grounding: spec §3.7 (unprocessable-image guard, rewritten); ADR-039 (PD-blind/global supersedes the old
- Bedrock + PD image stance).
- - Prereq: Block 5.
- - Do: at the Stage B model-call boundary — if messages[] contain an image block AND (the routed model is
- not vision-capable OR the provider returns a 4xx on the image, e.g. the 1×1/corrupt case that currently
- sinks the call): WARN multimodal/image-unprocessable, drop the image, substitute
- [BRAK: obraz nieczytelny na bieżącym providerze], continue text-only. No personal_data branch, no Bedrock
- branch, no EU branch.
- - Live test: send a task with a corrupt/1×1 image plus a normal image to a vision model → the corrupt image
- yields WARN + Polish [BRAK] + text-only continuation, the normal image is still read; force routing to a
- non-vision model → same graceful degrade. No silent drop, no 400 sinking the run.
- - Write-back: ADR-036 append (Block 6 reduced to the robustness fallback; Bedrock/PD guards removed per
- ADR-039); current.md — remove the GDPR/Bedrock image stance, note the robustness fallback.
- - Closes Phase A: the agent now reads docs + images robustly. Natural stopping point if Phase B is blocked.
+---
+Verification philosophy (every block)
 
- ---
- PHASE B — OUTPUT / IMAGE GENERATION (gated on Block 8)
+Per CLAUDE.md Definition of Done: trigger the real ClickUp flow (or the n8n manual trigger), inspect
+every node (not just a green run), and check the Alerts task 869dj2z2c — any WARN/CRITICAL during a
+test is a failure until explained. Claude attempts verification autonomously before handing any part
+back to you.
 
- Block 8 — GATE: provision + verify image providers through LiteLLM; finalize seeds
+Silent-failure coverage rolled up across blocks
 
- - Context: The gate that unblocks all of Phase B. The DB/gateway aliases exist but the external accounts +
- keys don't, and the seeded models are dated. Nothing in Phase B can be verified until this is real.
- - Grounding: spec §3.4 (impact tiering / model table), §0.1 (data handling), §9 open decisions 2 & 4;
- ADR-036 image seeds + migration 012/013 (PK now (impact, modality) per ADR-039).
- - Prereq: Phase A complete. This block self-answers "are providers ready?".
- - Do: verify availability/pricing (2026-06) of the seeded models; refresh dated seeds to current best
- (the spec lists candidates; dall-e-3/imagegeneration@006/SD3.5 are dated) if desired. Create accounts
- (Stability/OpenAI/Vertex or chosen SOTA) with billing; add keys to VPS .env and .env.example;
- accept provider DPAs/SCCs (all providers, text and image, EU or not, on commercial/API terms with
- no-training; residency is not a routing concern per ADR-039 — this is an account-level check);
- redeploy compose. If seeds change, write a new append-only migration updating model_routing image
- rows / fallback_price_per_unit (and, while there, drop `personal_data` from the PK and retire `eu_only`
- per ADR-039 if not already done).
- - Live test: one image_generation call per tier through the gateway returns an image + a
- x-litellm-response-cost header (or record a static fallback_price_per_unit).
- - Write-back: ADR-036 Consequences — providers live, final model map + prices; new migration noted in current.md §5.
-
- Block 9 — invoke-image-model (tiered, multi-provider, step-down fallback)
-
- - Context: The image analogue of Invoke Model — one prompt → one image, tiered by impact, with a
- step-down ladder. The resolver (Block 11) calls this once per generate block.
- - Grounding: spec §3.3 (invoke-image-model) + §3.4 (tiering ladder); ADR-035 (Log Model Run is the only writer).
- - Prereq: Block 8. Reuse: invoke-model.json cost-seam pattern; Log Model Run (v1) for the row.
- - Do: inputs prompt/impact; look up model_routing by (impact, modality='image'); call LiteLLM
- image_generation; on provider error step down one impact tier + WARN multimodal/tier-degrade; at the
- lowest tier, fail the block (caller drops + notes). Log one row per attempt via Log Model Run —
- triggered_by='image_gen', model, impact; cost from header or static table.
- - Live test: one generation per tier; force a top-tier error → step-down + WARN; confirm priced image_gen
- rows in agent_runs with correct model/impact.
- - Write-back: ADR-036 append; current.md §15 row + §5 image_gen logging note.
-
- Block 10 — comment_native delivery primitives in Stage C (temp staging / upload / rollback / TTL) — dummy image
-
- >>> ADD (INPUT side, noted 2026-06-10 after Block 5): these same temp-staging/upload primitives also
- >>> unblock FULLY multimodal INPUT — extend Read Input (v1) to host (a) images embedded inside
- >>> Docling-extracted docs (currently dropped as `<!-- image -->` placeholders → multimodal/
- >>> embedded-image-skipped WARN; observed on a product photo inside an .xlsx) and (b) pdf/pptx page
- >>> renders, then feed them into the SAME image_blocks_json path Block 5 built so they reach the vision
- >>> model. Goal: an input image is an input image, attached or embedded. Noise caveat: the
- >>> embedded-image-skipped WARN fires on any doc with a logo/icon/chart — when this lands, host them or
- >>> downgrade decorative skips to INFO so the alert channel isn't flooded. See ADR-036 (Block 5 entry).
-
- - Context: How a generated image actually reaches ClickUp. ClickUp's comment API can't read our disk, so bytes
- must be uploaded to get a URL, then referenced. Built/tested with a dummy image so the plumbing is proven
- before generation rides on it. C owns every ClickUp side-effect.
- - Grounding: spec §3.6 (comment_native delivery) + §4 (Stage C row) + §7 step 3; ADR-027/028 (post-back).
- - Prereq: Block 8 (not 9 — test with a fixed local image). Reuse: post-reply.json.
- - Do: per-run temp dir /tmp/agent-runs/<run_id>/; upload manifest images to the task (attach→ClickUp URL);
- rewrite Delta refs temp→URL; rollback uploaded attachments on post failure (leave task clean), retain
- temp for retry; delete temp on success; TTL sweep cron (every 6 h, tmp_ttl_hours from config).
- Also verify the lifecycle binding (attachment deleted-with-comment vs free-floating) and test the
- one-call simplification (rich comment[] array / multipart-with-files) — if either works, collapse
- attach-then-reference into one post and drop the rollback.
- - Live test: stage a fixed image → comment referencing it renders inline; forced post-failure → rollback,
- task clean, temp retained; success → temp deleted; TTL sweep removes a stale dir. Record the observed
- lifecycle binding + whether one-call works.
- - Write-back: ADR-036 Consequences — delivery decisions + observed bindings; current.md §15.6 update.
-
- Block 11 — image-resolver + multimodal assembler
-
- - Context: The two deterministic pieces that turn the model's output block list into a postable comment:
- the resolver fills each block's ref (place existing / generate new → temp), the assembler interleaves them
- inline into Quill-Delta. Bridges Block 9 (generation) and Block 10 (delivery).
- - Grounding: spec §3.2 (image-resolver) + §3.5 (assembler) + §1 (output blocks) + §7 step 6.
- - Prereq: Blocks 9–10. Reuse: post-reply.json Build Comment (extend, don't replace).
- - Do: resolver walks output blocks — text pass-through; embed_input → resolve handle to existing
- ref (no model/upload); generate → invoke-image-model, write to temp, set ref to temp path; parallel up to
- the per-impact image_gen_params.max_images cap; bottom-tier failure → drop + caption note + WARN
- multimodal/image-gen-failed. assembler renders text via md→Quill-Delta, inserts inline image embeds at
- position by temp-path placeholder, appends the "Do weryfikacji — nie finalizuje" footer + reviewer @-mention;
- returns { rendered_comment:{delta, image_refs}, temp_manifest, total_cost_pln }.
- - Live test: a hand-fed block list (text + embed_input + 2 generate) → resolved + assembled Delta with
- temp refs; only final-list images appear in temp_manifest.
- - Write-back: ADR-036 append; current.md §15 rows + ADR-027/028 "assembler now multimodal" note.
-
- Block 12 — End-to-end: drafting model emits the block list; full A→B→C multimodal run
-
- - Context: The capstone — flip Stage B's drafting model from prose to the output block contract and run the
- whole arc live: read spec + photos → emit text + generate blocks → resolve/generate → assemble → upload →
- post one mockup-PDP comment, tiered by impact, nothing finalized. Proves the spec's worked flow (§10).
- - Grounding: spec §3.1 (model emits block list) + §10 (worked flow) + §8 (full verification checklist).
- - Prereq: Blocks 5–11. Reuse: everything above.
- - Do: Build Prompt instructs the vision Claude alias to return the output block contract
- (embed_input when a real asset exists, generate for mockups). Stage B: invoke → output blocks →
- image-resolver (generate to temp) → assembler (Delta temp refs) → Sum Task Cost. Stage C uploads +
- rewrites + posts + cleans up (Block 10). Text-turn step-down mirrors images (retry one impact lower; bottom →
- Reset+Alert).
- - Live test (the worked flow, spec §10): @-mention on a high-value task with a .docx spec + reference
- photos, impact=Wysoki → a mockup-PDP comment with multiple generated images interleaved, one priced
- image_gen row each, nothing finalized. Then the impact=Niski contrast (cheap model, low cap). Cross-check
- SELECT count(*), sum(cost_pln) FROM agent_runs WHERE clickup_task_id=… against the CU cost field. Verify
- three separate executions (A/B/C) each with its own log; every Call onError reaches the one Reset+Alert path;
- Alerts task never read.
- - Write-back: ADR-036 → Phases 2–5 COMPLETE with the full Consequences; current.md §15 rewritten to the
- three-stage multimodal form; §11 phase status updated. Final commit.
-
- ---
- Verification philosophy (every block)
-
- Per CLAUDE.md Definition of Done: trigger the real ClickUp flow (or the n8n manual trigger), inspect every
- node (not just a green run), and check the Alerts task 869dj2z2c — any WARN/CRITICAL during a test is a
- failure until explained. Claude attempts verification autonomously before handing any part back to you.
-
- Silent-failure coverage rolled up across blocks
-
- - Extraction failure → [BRAK…] + WARN, run continues (B2/B3).
- - Unprocessable input image (non-vision model / corrupt) → WARN + visible Polish substitute + text-only,
- never a silent drop, the call does not sink (B6).
- - Image tier degrade / total gen failure → WARN + [Obraz niedostępny], comment still posts (B9/B11).
- - Provider credit/availability cliff → caught at the provisioning gate (B8) + per-call WARNs.
- - Orphaned attachments on post failure → rollback + retained temp; crashed-run temp → TTL sweep (B10).
- - Every model/image call cost-logged in one place (Log Model Run), summed without double-count (B9/B12).
+- Extraction failure → [BRAK…] + WARN, run continues (Block 3, DONE).
+- Context/reader returned empty (zero-attachment, any 0-item emit in the Assemble chain) → loud
+  CRITICAL on a non-blocking side branch (Block 5 follow-up, DONE).
+- Unprocessable input image (non-vision model / corrupt 4xx) → WARN + visible Polish substitute +
+  text-only, never a silent drop, the call does not sink (Block 6).
+- Image tier degrade / total gen failure → WARN + [Obraz niedostępny], comment still posts (B9/B11).
+- Provider credit/availability cliff → caught at the provisioning gate (B8) + per-call WARNs.
+- Orphaned attachments on post failure → rollback + retained temp; crashed-run temp → TTL sweep (B10).
+- Failed artifact-id record → WARN side-branch, reply/status still complete (B10, extends ADR-044).
+- Every model/image call cost-logged in one place (Log Model Run), summed without double-count (B9/B12).
