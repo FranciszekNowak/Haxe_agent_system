@@ -53,6 +53,12 @@ services:
       TZ: ${TZ}
       N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL}   # makes execution links in alerts clickable (ADR-025)
       WEBHOOK_URL: ${WEBHOOK_URL}                   # public base for generated webhook/form URLs (ADR-012)
+      # Execution-data pruning (ADR-036 Block 10): base64 images ride in execution data, so bound it.
+      # Prune deletes historical execution records (node I/O) older than MAX_AGE or beyond MAX_COUNT.
+      # Durable business record lives in Supabase agent_runs (NOT pruned); this only GCs n8n's debug payload.
+      EXECUTIONS_DATA_PRUNE: "true"                 # default true; explicit
+      EXECUTIONS_DATA_MAX_AGE: "168"                # hours = 7 days (was n8n default 336 = 14 days)
+      EXECUTIONS_DATA_PRUNE_MAX_COUNT: "5000"       # keep at most 5000 executions (was default 10000)
     volumes:
       - n8n-main-data:/home/node/.n8n
     networks:
@@ -84,6 +90,9 @@ services:
       N8N_CONCURRENCY_PRODUCTION_LIMIT: ${N8N_WORKER_CONCURRENCY}
       N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL}   # execution links in alerts (ADR-025)
       WEBHOOK_URL: ${WEBHOOK_URL}                   # public base for generated webhook/form URLs (ADR-012)
+      EXECUTIONS_DATA_PRUNE: "true"                 # pruning runs on main; set here too for parity (ADR-036 Block 10)
+      EXECUTIONS_DATA_MAX_AGE: "168"                # hours = 7 days
+      EXECUTIONS_DATA_PRUNE_MAX_COUNT: "5000"
     networks:
       - n8n-internal
     depends_on:
