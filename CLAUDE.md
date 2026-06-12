@@ -15,7 +15,6 @@ governed by:
 - Process knowledge in ClickUp (single source of truth for operational rules)
 - Agents run as a ClickUp Member account (only Members can mint the API token the pipeline needs), with caller-scoped permissions enforced in software, not by the CU account — see ADR-004
 - Recursive self-improvement via structured feedback loops from humans,
-- All inference via AWS Bedrock EU (Claude family) for GDPR compliance
 - Gmail-native email integration (drafts in Gmail, not separate CU comments)
 - Queue-based execution (Redis + n8n queue mode)
 - Conversation session caching for multi-turn efficiency,
