@@ -180,7 +180,14 @@ human gate). The drafting model for a task with input images is the **routed `mu
 model — currently Gemini** (`haxe-gemini-flash` for n/d/Niski/Średni, `haxe-gemini-pro` for
 Wysoki/Krytycznie ważne; ADR-042/ADR-043). For text-only tasks it is the Claude-direct `text` route.
 
-### 3.2 `image-resolver` (deterministic)
+### 3.2 `image-resolver` (deterministic) — **DONE (Block 11, 2026-06-12; `Image Resolver (v1)`, `znDqcfgXK6CNte20`)**
+
+> **Built as ADR-036 Block 11.** Reality vs. this section: (a) generated images travel as **base64 in
+> `image_manifest`**, not a temp-dir path (Block 10 in-memory pivot — there is no disk/temp on this n8n);
+> (b) generate calls run **sequentially** (`Call Invoke Model` mode=each), not in parallel — parallel
+> fan-out is the deferred latency lever; (c) the **per-impact count cap is retired** in favour of a single
+> global `config.image_count_ceiling=20` safety guard (see §3.4). The walk logic below otherwise holds.
+
 Walk output blocks in order:
 - `text` → pass through.
 - `image mode=embed_input` → resolve the handle to the existing image ref (no model, no upload).
@@ -211,9 +218,16 @@ Walk output blocks in order:
   in older copies of this spec, which predate ADR-035.
 
 ### 3.4 Impact tiering
-`impact` means product/launch value here. It selects model quality, image-count cap, and resolution
-together, and is also the fallback ladder. Keys are the **Polish ClickUp `[AI] Wpływ` tiers**
+`impact` means product/launch value here. It selects model quality and resolution, and is also the
+fallback ladder. Keys are the **Polish ClickUp `[AI] Wpływ` tiers**
 (`Niski`/`Średni`/`Wysoki`/`Krytycznie ważne`/`__default__`), aligned to the field in migration 013.
+
+> **Update 2026-06-12 (Block 11): the per-impact image-COUNT cap (`max images` column below) is RETIRED.**
+> It conflated *priority* with *content-need* (a Niski catalogue task can legitimately need many thumbnails).
+> Image count now follows the content; the only limit is a single global `config.image_count_ceiling=20`
+> runaway guard (migration 026). `image_gen_params.max_images` is kept in the table but **no longer read for
+> counting** (dead column); the `max images` column in the table below is historical. Impact still drives
+> **model + resolution** (the rest of this section stands).
 
 | impact (ClickUp tier) | model (LIVE — Block 8, migration 023) | max images | resolution | ~$/img |
 |---|---|---|---|---|
@@ -229,11 +243,16 @@ all deprecated/shutting down (Imagen retired ~2026-06-24) and were refreshed to 
 migration 023; all three models provisioned (existing Vertex cred + a new OpenAI key) and verified
 end-to-end through the LiteLLM gateway with accurate cost headers. The count/resolution caps are unchanged.
 
-### 3.5 `assembler` (extends `Post Reply`'s Build Comment, ADR-027/028)
-- Walk resolved blocks: render `text` via markdown→Quill-Delta; insert inline image embeds at
-  position, referencing the temp paths as placeholders (real ClickUp URLs aren't known until C uploads).
-- Append the "Do weryfikacji — nie finalizuje" footer and the reviewer @-mention.
-- Returns `{ rendered_comment: { delta, image_refs(temp paths) }, temp_manifest, total_cost_pln }`.
+### 3.5 `assembler` — **DONE (Block 11, 2026-06-12)** — folded into `Image Resolver (v1)`'s `Assemble Output` + `Post Reply`'s `Finalize Comment`
+- Walk resolved blocks: render `text` via markdown→Quill-Delta (same converter as `Build Comment`); insert
+  inline image ops at position. **Update:** placeholders are `{type:'image_ref',placeholder_id}` (not temp
+  paths) for generated images, resolved to real `{type:'attachment',{id,url}}` by Stage C after upload;
+  `embed_input` images are emitted as `{type:'attachment'}` directly (already on the task).
+- **Footer relocated to `Post Reply`'s `Finalize Comment`** (the text+image convergence) and is now
+  **per-modality with aggregate cost** (`tekst:`/`obraz:`; text+image PLN) — see §15.6 / ADR-036 Block 11.
+  The reviewer @-mention is prepended per path (`Build Comment` for text, `Rewrite Delta` for image).
+- The resolver returns `{ image_manifest(base64), rendered_delta, total_image_cost_pln, image_models, warnings }`
+  (no temp paths — Block 10 in-memory pivot).
 
 ### 3.6 Image delivery (comment_native)
 

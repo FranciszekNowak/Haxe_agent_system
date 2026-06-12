@@ -1161,6 +1161,14 @@ blockquotes, and **tables** — via a deterministic markdown→ClickUp-Quill-Del
 (`Build Comment`). A "do weryfikacji — nie finalizuje zadania" footer marks it non-final; the
 post never sets status or `[AI] Finalny…`.
 
+> Update 2026-06-12 (ADR-036 Block 11): the attribution footer now lives in **`Finalize Comment`**
+> (the convergence of the text + image paths), not `Build Comment`, and names the model **per modality**
+> with **aggregate** cost — text-only: `(model: X, koszt: …)`; multimodal: `(tekst: X, obraz: Y; koszt
+> łączny: text+image …)`. It reads two new `Post Reply` inputs, `image_models` + `total_image_cost_pln`,
+> from the resolver (below). `Build Comment` now renders only the body + web-sources (so web-sources
+> precedes the footer on the text path). The reviewer @mention is also added to the image path
+> (`Rewrite Delta`), reaching parity with the text path.
+
 - **Reviewer** = the **mentioner** (webhook path) / the manual triggerer (operator default,
   optional `reviewer_user_id` form field). The automatic assignee→creator rule is data-ready
   (Context Gather returns assignee/creator) and applies when the autonomous triggers land.
@@ -1204,6 +1212,24 @@ post never sets status or `[AI] Finalny…`.
   `post-reply/post-back` WARN listing the orphaned ids; per-image upload failure → `[obraz niedostępny]` +
   `post-reply/image-upload` WARN, the comment still posts. Verified live on `869dhad2q` (2 generated images
   rendered inline). The base64 manifest is the Stage-B→C contract Blocks 11/12 build on.
+
+- **Multimodal assembler — `Image Resolver (v1)` (ADR-036 Block 11, 2026-06-12; n8n `znDqcfgXK6CNte20`).** The
+  sub-workflow upstream of Stage C that *produces* the `image_manifest` + `rendered_delta` above from the drafting
+  model's output-block list. Inputs: `output_blocks_json` (text / `embed_input` / `generate` blocks), `impact`,
+  `input_image_refs_json` (from Read Input, for embed resolution), `clickup_task_id` + passthrough; it also forwards
+  `model`/`cost_pln` (the text-run attribution) to the caller. Graph: `When Called → Lookup Count Ceiling → Resolve
+  & Explode Blocks → Classify Block (Switch: text/embed/generate/drop) → {text↦Merge | Resolve Embed | Call Invoke
+  Model (mode=each, one call per generate) → Handle Gen Result | Build Dropped Block} → Merge Branches → Assemble
+  Output` (the sole branch-free terminal). It returns `{image_manifest, rendered_delta, total_image_cost_pln,
+  image_models, warnings}`. `embed_input` resolves to an existing attachment → `{type:'attachment'}` op directly (no
+  re-upload); `generate` → `Invoke Model` image call → manifest entry + `{type:'image_ref'}`; text → same
+  markdown→ops logic as `Build Comment`. **Image count is governed by a single global safety ceiling**
+  (`config.image_count_ceiling=20`, migration 026) — a runaway guard only, **not** a per-impact cap; the old
+  per-impact `image_gen_params.max_images` is dead for counting (impact still drives model + resolution). Block
+  metadata rides `Invoke Model`'s `task_type` as `block_meta::{…}`. Degradations (embed miss / gen failure /
+  ceiling) become placeholder ops + a `warnings[]` entry (Block 12 routes these to Post Alert). Verified live:
+  text + 1 embed + 2 generate → 3 images inline + per-modality footer, 0 alerts. **Owed (Block 12):** auto-wire
+  Stage B to call the resolver and forward its outputs into Post Reply.
 
 ### 15.7 `CU Webhook Producer (v1)` — automatic triggering
 

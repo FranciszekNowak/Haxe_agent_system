@@ -350,6 +350,12 @@
               "name": "success",
               "value": "={{ $('Normalize Model Result').first().json.success }}",
               "type": "boolean"
+            },
+            {
+              "id": "b14",
+              "name": "task_type",
+              "value": "={{ $('Normalize Model Result').first().json.task_type }}",
+              "type": "string"
             }
           ]
         },

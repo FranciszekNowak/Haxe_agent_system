@@ -621,6 +621,64 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
     task stays at `W trakcie` (no auto-reset). Same as the prior text-only path; a reset would require the
     orchestrator to treat post-failure as a stage error.
 
+- **Block 11 — image-resolver + multimodal assembler (`Image Resolver (v1)`, `znDqcfgXK6CNte20`) — 2026-06-12.**
+  New sub-workflow that sits between the drafting model's output-block list and Stage C: it resolves `embed_input`
+  blocks to existing ClickUp attachments, calls `Invoke Model (v1)` once per `generate` block, and assembles the
+  `image_manifest` (base64) + `rendered_delta` (with `{type:'image_ref',placeholder_id}` placeholders) that Block
+  10's Stage C already consumes. Graph: `When Called → Lookup Count Ceiling → Resolve & Explode Blocks → Classify
+  Block (Switch, 4 routes) → {text↦Merge | Resolve Embed | Call Invoke Model → Handle Gen Result | Build Dropped
+  Block} → Merge Branches (append, 4 in) → Assemble Output`. `Assemble Output` is the **sole branch-free terminal**
+  (sub-workflow return determinism) and `Merge Branches` has exactly one downstream — the two traps from Block 2.
+  - **Per-impact image-COUNT cap retired → single global safety ceiling (migration 026).** Spec §3.4 had `impact`
+    select model + count + resolution together. That conflates *priority* with *content-need* (a Niski catalogue
+    task can legitimately need many thumbnails), so the per-impact `image_gen_params.max_images` cap is **no longer
+    read** for count (column kept, now dead for counting; `resolution` still used by Invoke Model). Replaced by one
+    tier-agnostic `config.image_count_ceiling=20` — a pure runaway guard against a malformed/hallucinated block
+    list. Over-ceiling generate blocks become a placeholder text op + `multimodal/image-count-ceiling` WARN
+    (abnormal; should never fire normally). Impact still drives image **model + resolution** via `model_routing` /
+    `image_gen_params.resolution`. **Verified live:** ceiling temporarily set to 2 with 3 generate blocks → 2
+    rendered, 3rd dropped with the placeholder + warning; ceiling restored to 20.
+  - **`executeWorkflow` must run "once for each item" for fan-out.** `Invoke Model` reads `$('When Called').first()`
+    throughout, so a default "run once for all items" call with N generate items only processes the FIRST and
+    returns one image (caught live: 2 generate blocks → 1 image). Fix: `Call Invoke Model` set to `mode:'each'`
+    (one Invoke Model execution per block; sequential). Block metadata (`block_order`, `placeholder_id`, `caption`,
+    `alt`) is smuggled through `Invoke Model`'s `task_type` as `block_meta::{…}` and recovered in `Handle Gen
+    Result`; required adding a `task_type` pass-through to Invoke Model's `Shape Output` (it was already carried by
+    `Normalize Model Result`, just not surfaced).
+  - **Footer unified + made per-modality (operator requirement).** The attribution footer was previously written
+    only by `Build Comment` (text path), named a single model, and used only the text cost — and the image path
+    skipped it entirely. Moved to a single builder in **`Finalize Comment`** (the convergence point for both paths;
+    `Build Comment` now only renders the body + web-sources). It names the model **per modality** and shows
+    **aggregate** cost across every model run that fed the comment: text-only → `(model: X, koszt: …)`; multimodal →
+    `(tekst: X, obraz: Y; koszt łączny: text+image …)`. Needs two new `Post Reply` inputs — `image_models` (deduped
+    list the resolver returns) and `total_image_cost_pln` — alongside the existing `model`/`cost_pln`. As a side
+    effect the text path's web-sources section now precedes the footer (was after); behaviourally trivial.
+  - **Image-path reviewer @mention parity.** `Build Comment` prepends the reviewer tag, but the image path
+    (`Rewrite Delta`) didn't — so a Block-10 image reply would not @-mention the reviewer. `Rewrite Delta` now
+    prepends `{type:'tag',user:{id:reviewer}}` when `reviewer_user_id` is set (verified live: posted comment shows
+    `comment-tagged-user`).
+  - **Markdown→ops reuse.** `Assemble Output` renders text blocks with the **same** markdown→`{text,…}` ops logic
+    as `Build Comment` (links/bold/italic/code/headers/lists/tables/code-fences), so text rendering is identical on
+    both paths. `embed_input` → `{type:'attachment',{id,url}}` directly (no re-upload — the image already exists on
+    the task); `generate` success → manifest entry + `{type:'image_ref'}`; failure/degraded → `[Generowanie obrazu
+    nieudane]` + `multimodal/image-gen-failed` WARN; embed miss → `[Obraz niedostępny]` +
+    `multimodal/embed-ref-not-found` WARN — all non-throwing so the comment still posts.
+  - **Silent-failure coverage:** embed miss, generate failure/degrade, and ceiling-exceed each degrade to a
+    placeholder op + a `warnings[]` entry (resolver returns `warnings`; Block 12 will route them to `Post Alert`).
+    `Invoke Model` throwing is caught by `Call Invoke Model` `onError:continueRegularOutput` (→ `Handle Gen Result`
+    reads `success:false`) and by Invoke Model's own `errorWorkflow` (→ CRITICAL). Resolver itself throwing →
+    caller's `errorWorkflow`.
+  - **Verified live, node-by-node** (task 869dhad2q, exec 1692): text + 1 real `embed_input` + 2 `generate` →
+    resolver returned manifest=2, `image_models=[gemini-2.5-flash-image]`, `total_image_cost_pln≈0.2855`,
+    `warnings=[]` → Post Reply uploaded both (`failed_count=0`), posted ONE comment with **3 images inline** (embed
+    + 2 generated, each captioned), reviewer @mention, and the footer `(tekst: haxe-sonnet-4-6-direct, obraz:
+    vertex_ai/gemini-2.5-flash-image; koszt łączny: 0.2978 PLN)`; `Record Artifact updated=1`; 0 alerts. Embed-miss
+    and ceiling cases verified separately (above).
+  - **Still owed (Block 12):** wire Stage B to call the resolver automatically (drafting model emits the block
+    list), forward `image_models`/`total_image_cost_pln`/`rendered_delta`/`image_manifest` into Post Reply, and
+    route the resolver's `warnings[]` to `Post Alert`. Sequential generation is acceptable now; parallel fan-out is
+    the latency lever if multi-image high-tier requests get slow.
+
 ---
 
 ## Date
@@ -634,3 +692,4 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
 2026-06-12 (Block 8 — image-gen providers provisioned + verified live through LiteLLM: Vertex gemini-image (Nano Banana/Pro) + OpenAI gpt-image-2; migration 023 + litellm-config; Imagen/dall-e-3/Stability retired; Phase B gate open, generation pipeline Blocks 9–12 still to build)
 2026-06-12 (Block 9 — image generation folded into `Invoke Model (v1)` as output modality `requested_modality_of_output='image'`; routing `(impact, modality='image')` + single gemini-flash fallback hop; cost via header→token-math (migration 024)→floor; all 5 tiers + degrade + size-override + text/vision regression verified live; gpt-image-2 ~176 s so image timeout raised to 240 s)
 2026-06-12 (Block 10 — comment_native delivery in Stage C, **in-memory base64 (Option A)** superseding the disk-temp design: `Execute Command` + file-delete are unavailable on this n8n, so no cleanup is possible on disk; `convertToFile`→multipart upload→inline `{type:attachment}` op (the only ClickUp form that renders inline, proven by spike); no delete-attachment API → orphan-WARN rollback + accepted persistence; `run_payload_bytes`/`n8n_execution_id` observability (migration 025); base64 kept out of the DB; verified live incl. 2-image inline render + rollback. Blocks 11/12 now carry base64 manifests, not temp paths; the disk TTL-sweep phase is dropped)
+2026-06-12 (Block 11 — `Image Resolver (v1)` sub-workflow: resolves `embed_input` to existing attachments + calls `Invoke Model` per `generate` block + assembles `image_manifest`/`rendered_delta` for Stage C; per-impact image-COUNT cap retired for a single global `config.image_count_ceiling=20` safety guard (migration 026; impact still drives model+resolution); `executeWorkflow` set to once-per-item for fan-out + `task_type` metadata smuggling (Shape Output pass-through added); footer unified into `Finalize Comment`, now per-modality (`tekst:`/`obraz:`) with aggregate cost; image-path reviewer @mention parity added to `Rewrite Delta`; verified live — 3 images inline (1 embed + 2 generated) + footer + 0 alerts, plus embed-miss and ceiling cases. Block 12 still owed: auto-wire Stage B → resolver and route resolver `warnings[]` to Post Alert)

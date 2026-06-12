@@ -1,0 +1,395 @@
+{
+  "name": "Image Resolver (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 400],
+      "notes": "Block 11 (ADR-036). Resolver inputs: output_blocks_json (drafting-model block list), impact, input_image_refs_json (from Read Input, for embed resolution), clickup_task_id + passthrough. model/cost_pln are the TEXT run attribution (forwarded by the caller to Post Reply; resolver does not use them).",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "output_blocks_json"
+            },
+            {
+              "name": "impact"
+            },
+            {
+              "name": "input_image_refs_json"
+            },
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "model"
+            },
+            {
+              "name": "cost_pln"
+            },
+            {
+              "name": "triggered_by"
+            },
+            {
+              "name": "invocation_type"
+            },
+            {
+              "name": "caller_user_id"
+            },
+            {
+              "name": "process_type"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "lookup-ceiling",
+      "name": "Lookup Count Ceiling",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [220, 400],
+      "notes": "Global image-count safety ceiling (config.image_count_ceiling=20, migration 026). Runaway guard only — NOT a per-impact cap. image_gen_params.max_images is no longer read for count (dead); resolution still used by Invoke Model.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select value::int as ceiling from config where key = 'image_count_ceiling';",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "resolve-explode",
+      "name": "Resolve & Explode Blocks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 400],
+      "notes": "Parses output_blocks_json + input_image_refs_json; builds embed lookup map; explodes to one item per block with a route (text|embed|generate|drop). Generate blocks past the ceiling get route=drop. Assigns placeholder_id gen_N to each generate.",
+      "parameters": {
+        "jsCode": "\nconst wc = $('When Called').first().json;\n\n// Global safety ceiling (runaway guard against a malformed/hallucinated block list). NOT a per-impact\n// business cap: impact drives image MODEL + RESOLUTION (inside Invoke Model), never count.\nlet ceiling = 20;\ntry { const c = $('Lookup Count Ceiling').first().json.ceiling; if (c != null && !isNaN(Number(c))) ceiling = Number(c); } catch (e) {}\n\nlet blocks = [];\ntry { blocks = JSON.parse(wc.output_blocks_json || '[]'); } catch (e) { blocks = []; }\nif (!Array.isArray(blocks)) blocks = [];\n\nlet inputRefs = [];\ntry { inputRefs = JSON.parse(wc.input_image_refs_json || '[]'); } catch (e) { inputRefs = []; }\nif (!Array.isArray(inputRefs)) inputRefs = [];\n\n// Lookup map for embed_input resolution: by source_ref (attachment id) AND by ref (url).\nconst lookup = {};\nfor (const r of inputRefs) {\n  if (!r) continue;\n  if (r.source_ref) lookup[String(r.source_ref)] = r;\n  if (r.ref) lookup[String(r.ref)] = r;\n}\nconst lookup_map = JSON.stringify(lookup);\n\nconst pass = {\n  impact: wc.impact || '',\n  clickup_task_id: wc.clickup_task_id || '',\n  triggered_by: wc.triggered_by || 'image_gen',\n  invocation_type: wc.invocation_type || 'explicit',\n  caller_user_id: wc.caller_user_id || '',\n  process_type: wc.process_type || ''\n};\n\nconst out = [];\nlet genCount = 0;\nfor (let idx = 0; idx < blocks.length; idx++) {\n  const b = blocks[idx] || {};\n  const order = (b.order != null) ? Number(b.order) : (idx + 1);\n  const type = b.type;\n  if (type === 'text') {\n    out.push({ json: Object.assign({ route: 'text', block_type: 'text', block_order: order, md: b.md || '' }, pass) });\n  } else if (type === 'image' && b.mode === 'embed_input') {\n    out.push({ json: Object.assign({ route: 'embed', block_type: 'embed_input', block_order: order,\n      ref: b.ref || '', source_ref: b.source_ref || '', caption: b.caption || '', alt: b.alt || '', lookup_map }, pass) });\n  } else if (type === 'image' && b.mode === 'generate') {\n    genCount++;\n    const active = genCount <= ceiling;\n    out.push({ json: Object.assign({ route: active ? 'generate' : 'drop', block_type: 'generate', block_order: order,\n      is_active: active, prompt: b.prompt || '', aspect: b.aspect || '', caption: b.caption || '', alt: b.alt || '',\n      placeholder_id: 'gen_' + (genCount - 1) }, pass) });\n  }\n  // unknown block types are skipped\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "classify-block",
+      "name": "Classify Block",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [660, 400],
+      "notes": "Routes each exploded block by $json.route to one of 4 outputs: 0 text, 1 embed, 2 generate, 3 fallback(=drop). Text passes straight to Merge; the others get per-branch handling.",
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r1",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "text",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "text"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r2",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "embed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "embed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r3",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "generate",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "generate"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "resolve-embed",
+      "name": "Resolve Embed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 240],
+      "notes": "embed_input: resolve ref/source_ref against the input image lookup map -> {type:attachment} (existing CU attachment, no re-upload). Miss -> embed_failed + warning.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst block = $json;\nlet map = {};\ntry { map = JSON.parse(block.lookup_map || '{}'); } catch (e) { map = {}; }\nconst input = map[block.source_ref] || map[block.ref] || null;\nif (!input) {\n  return { json: { block_type: 'embed_failed', block_order: block.block_order,\n    warning: 'multimodal/embed-ref-not-found: ' + (block.ref || block.source_ref || '(empty)') } };\n}\nreturn { json: { block_type: 'embed_resolved', block_order: block.block_order,\n  att_id: input.source_ref || '', att_url: input.ref || '', caption: block.caption || '', alt: block.alt || '' } };\n"
+      }
+    },
+    {
+      "id": "call-invoke-model",
+      "name": "Call Invoke Model",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [900, 400],
+      "notes": "Block 11: one image-generation call per active generate block (sequential). Block metadata is smuggled via task_type (block_meta::{...}) and recovered in Handle Gen Result. onError=continueRegularOutput: a thrown Invoke Model still flows to Handle Gen Result (reads success:false). Invoke Model has its own errorWorkflow -> CRITICAL if it throws internally.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "XcOIVdZnVCCWNPeb",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "prompt": "={{ $json.prompt }}",
+            "impact": "={{ $json.impact }}",
+            "requested_modality_of_output": "image",
+            "aspect": "={{ $json.aspect }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}",
+            "task_type": "={{ 'block_meta::' + JSON.stringify({ block_order: $json.block_order, placeholder_id: $json.placeholder_id, caption: $json.caption, alt: $json.alt }) }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {},
+        "mode": "each"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "handle-gen-result",
+      "name": "Handle Gen Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 400],
+      "notes": "Maps Invoke Model output back to a block: success -> generate_success (adds to manifest, captures image_model + cost_pln); failure/degraded/no-b64 -> generate_failed + warning. Recovers block metadata from task_type.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst res = $json; // Invoke Model (v1) Shape Output — now carries task_type (Block 11)\nlet meta = {};\ntry { meta = JSON.parse(String(res.task_type || '').replace('block_meta::', '') || '{}'); } catch (e) { meta = {}; }\nif (!res.success || !res.b64_json) {\n  return { json: { block_type: 'generate_failed', block_order: (meta.block_order != null ? meta.block_order : 99),\n    placeholder_id: meta.placeholder_id || '',\n    warning: 'multimodal/image-gen-failed: ' + (res.degraded ? 'degraded/failed' : 'no output'),\n    caption: meta.caption || '', alt: meta.alt || '', cost_pln: Number(res.cost_pln || 0) } };\n}\nreturn { json: { block_type: 'generate_success', block_order: meta.block_order, placeholder_id: meta.placeholder_id,\n  b64_json: res.b64_json, mime: res.mime || 'image/png', caption: meta.caption || '', alt: meta.alt || '',\n  cost_pln: Number(res.cost_pln || 0), image_model: res.model || '' } };\n"
+      }
+    },
+    {
+      "id": "build-dropped",
+      "name": "Build Dropped Block",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 560],
+      "notes": "Generate block past the global safety ceiling: emits a placeholder text op + multimodal/image-count-ceiling warning (abnormal; should not fire in normal use).",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nreturn { json: { block_type: 'generate_dropped', block_order: $json.block_order,\n  md: '[Obraz pominięty — przekroczono limit bezpieczeństwa]',\n  warning: 'multimodal/image-count-ceiling: safety ceiling reached at order ' + $json.block_order } };\n"
+      }
+    },
+    {
+      "id": "merge-branches",
+      "name": "Merge Branches",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [1340, 400],
+      "notes": "Append all four branches (text / resolved-embed / gen-result / dropped) into one stream. Safe with empty branches (Block 3). Single output to Assemble Output (the sole terminal).",
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 4
+      }
+    },
+    {
+      "id": "assemble-output",
+      "name": "Assemble Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 400],
+      "notes": "SOLE TERMINAL (sub-workflow return determinism): exactly one incoming connection. Sorts by block_order, renders text via the same markdown->{text,...} ops as Build Comment, interleaves embed/generated image ops, and returns {image_manifest, rendered_delta, total_image_cost_pln, image_models, warnings} for Stage C (Post Reply).",
+      "parameters": {
+        "jsCode": "\nconst items = $input.all().map(i => i.json);\nitems.sort((a, b) => ((a.block_order == null ? 99 : a.block_order) - (b.block_order == null ? 99 : b.block_order)));\n\nconst FENCE = String.fromCharCode(96, 96, 96);\nconst LINK = /\\[([^\\]]+)\\]\\(([^)]+)\\)/;\nconst BOLD = /\\*\\*([^*]+)\\*\\*/;\nconst CODE = /\\x60([^\\x60]+)\\x60/;\nconst ITAL = /\\*([^*]+)\\*|_([^_]+)_/;\nfunction inlineOps(t) {\n  const out = [];\n  let rest = String(t);\n  while (rest.length) {\n    let best = null, kind = null;\n    const cands = [[LINK,'link'],[BOLD,'bold'],[CODE,'code'],[ITAL,'ital']];\n    for (const c of cands) { const m = c[0].exec(rest); if (m && (best === null || m.index < best.index)) { best = m; kind = c[1]; } }\n    if (!best) { out.push({ text: rest }); break; }\n    if (best.index > 0) out.push({ text: rest.slice(0, best.index) });\n    if (kind === 'link') out.push({ text: best[1], attributes: { link: best[2] } });\n    else if (kind === 'bold') out.push({ text: best[1], attributes: { bold: true } });\n    else if (kind === 'code') out.push({ text: best[1], attributes: { code: true } });\n    else out.push({ text: best[1] || best[2], attributes: { italic: true } });\n    rest = rest.slice(best.index + best[0].length);\n  }\n  return out.length ? out : [{ text: '' }];\n}\nfunction isRow(s){ const t=s.trim(); return t.length>1 && t.charAt(0)==='|' && t.charAt(t.length-1)==='|'; }\nfunction isSep(s){ const t=s.trim(); return /^[|\\s:-]+$/.test(t) && t.indexOf('-')>=0; }\nfunction cellsOf(s){ return s.trim().replace(/^\\|/,'').replace(/\\|$/,'').split('|').map(function(c){return c.trim();}); }\nfunction mdToOps(md) {\n  const ops = [];\n  function emit(inline, attrs) { for (const o of inline) ops.push(o); ops.push(attrs ? { text: '\\n', attributes: attrs } : { text: '\\n' }); }\n  const L = String(md).replace(/\\r/g,'').split('\\n');\n  let i=0, gRow=0, inCode=false;\n  while (i < L.length) {\n    const s = L[i];\n    if (s.trim().indexOf(FENCE) === 0) { inCode = !inCode; i++; continue; }\n    if (inCode) { ops.push({ text: s }); ops.push({ text: '\\n', attributes: { 'code-block': 'plain' } }); i++; continue; }\n    if (isRow(s) && i+1 < L.length && isSep(L[i+1])) {\n      const rows=[]; let j=i;\n      while (j < L.length && isRow(L[j])) { rows.push(L[j]); j++; }\n      for (let r=0; r<rows.length; r++) {\n        if (r===1) continue;\n        gRow++;\n        const cs = cellsOf(rows[r]);\n        for (const c of cs) { const io = inlineOps(c); for (const o of io) ops.push(o); ops.push({ text: '\\n', attributes: { table: 'row-'+gRow } }); }\n      }\n      i=j; continue;\n    }\n    const t = s.replace(/^\\s+/,'');\n    let m;\n    if (t.charAt(0)==='#') { const h=t.match(/^(#{1,6})\\s+(.*)$/); if (h) { emit(inlineOps(h[2]), { header: Math.min(h[1].length,3) }); i++; continue; } }\n    if ((m = t.match(/^[-*+]\\s+(.*)$/))) { emit(inlineOps(m[1]), { list: 'bullet' }); i++; continue; }\n    if ((m = t.match(/^\\d+\\.\\s+(.*)$/))) { emit(inlineOps(m[1]), { list: 'ordered' }); i++; continue; }\n    if (t.charAt(0)==='>') { emit(inlineOps(t.replace(/^>\\s?/,'')), { blockquote: true }); i++; continue; }\n    if (/^([-*_])\\1{2,}$/.test(s.trim())) { i++; continue; }\n    if (s.trim()==='') { i++; continue; }\n    emit(inlineOps(s), null);\n    i++;\n  }\n  return ops;\n}\n\nconst image_manifest = [];\nconst rendered_delta = [];\nconst warnings = [];\nconst image_models_set = {};\nlet total_image_cost_pln = 0;\n\nfor (const block of items) {\n  switch (block.block_type) {\n    case 'text':\n      for (const op of mdToOps(block.md || '')) rendered_delta.push(op);\n      break;\n    case 'embed_resolved':\n      rendered_delta.push({ type: 'attachment', attachment: { id: block.att_id, url: block.att_url } });\n      if (block.caption) rendered_delta.push({ text: block.caption + '\\n', attributes: { italic: true } });\n      else rendered_delta.push({ text: '\\n' });\n      break;\n    case 'embed_failed':\n      rendered_delta.push({ text: '[Obraz niedostępny]\\n', attributes: { italic: true } });\n      warnings.push(block.warning);\n      break;\n    case 'generate_success':\n      image_manifest.push({ placeholder_id: block.placeholder_id, b64: block.b64_json, mime: block.mime, caption: block.caption, alt: block.alt });\n      rendered_delta.push({ type: 'image_ref', placeholder_id: block.placeholder_id });\n      if (block.caption) rendered_delta.push({ text: block.caption + '\\n', attributes: { italic: true } });\n      else rendered_delta.push({ text: '\\n' });\n      total_image_cost_pln += Number(block.cost_pln || 0);\n      if (block.image_model) image_models_set[block.image_model] = true;\n      break;\n    case 'generate_failed':\n      rendered_delta.push({ text: '[Generowanie obrazu nieudane]\\n', attributes: { italic: true } });\n      warnings.push(block.warning);\n      total_image_cost_pln += Number(block.cost_pln || 0);\n      break;\n    case 'generate_dropped':\n      rendered_delta.push({ text: (block.md || '') + '\\n', attributes: { italic: true } });\n      warnings.push(block.warning);\n      break;\n  }\n}\n\nreturn [{ json: { image_manifest, rendered_delta, total_image_cost_pln, image_models: Object.keys(image_models_set), warnings } }];\n"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Lookup Count Ceiling",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Count Ceiling": {
+      "main": [
+        [
+          {
+            "node": "Resolve & Explode Blocks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve & Explode Blocks": {
+      "main": [
+        [
+          {
+            "node": "Classify Block",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Block": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resolve Embed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Invoke Model",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Dropped Block",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Embed": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Call Invoke Model": {
+      "main": [
+        [
+          {
+            "node": "Handle Gen Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Gen Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Build Dropped Block": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Merge Branches": {
+      "main": [
+        [
+          {
+            "node": "Assemble Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}
