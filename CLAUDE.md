@@ -42,6 +42,31 @@ wrong. Surface failure modes. Don't accommodate sloppy thinking.
   Windows-native (.ps1 or .bat) preferred over bash unless we're 
   scripting on the Linux VPS.
 - whenever you explain how to do something, and you notice it may be useful in the future for Franciszek, teach him a deeper understanding of it. He wants his knowledge to grow by doing, not outsource everything blindly with no understanding.
+- **Use subagents**: Delegate independent subtasks to subagents and keep working while they run. Intervene
+if a subagent goes off track or is missing relevant context.
+
+## Communication rules
+- **Brevity during work, complete sentences at handoff**:
+Terse shorthand is fine between tool calls (that's you thinking out loud, and brevity
+there is good). Your final summary is different: it's for a reader who didn't see any of
+that.
+
+If you've been working for a while without the user watching (overnight, across many
+tool calls, since they last spoke), your final message is their first look at any of it.
+Write it as a re-grounding, not a continuation of your working thread: the outcome
+first, then the one or two things you need from them, each explained as if new. The
+vocabulary you built up while working is yours, not theirs; leave it behind unless you
+re-introduce it.
+
+When you write the summary at the end, or a plan at the beginning, drop the working shorthand. Write complete
+sentences. Spell out terms. Don't use arrow chains, hyphen-stacked compounds, or labels
+you made up earlier. When you mention files, commits, flags, or other identifiers, give
+each one its own plain-language clause. Open with the outcome: one sentence on what
+happened or what you found. Then the supporting detail. If you have to choose between
+short and clear, choose clear.
+- Aim to be readable - avoid jargon, keep yourself concise. The way to keep output short is to be selective about what you include (drop details
+that don't change what the reader would do next), not to compress the writing into
+fragments, abbreviations, arrow chains like A → B → fails, or jargon. 
 
 ## Git and commit discipline
 
@@ -57,6 +82,12 @@ wrong. Surface failure modes. Don't accommodate sloppy thinking.
   especially to `main` — remain a deliberate, explicitly-approved step. Auto-commit at
   milestones does not imply auto-push. Push when ending a work session or when the operator
   asks, after the milestone's verification has passed (see *Definition of done*).
+- **Do not act unless explicitely told to**: When the user is describing a problem, asking a question, or thinking out loud rather
+than requesting a change, the deliverable is your assessment. Run the tools necessary to deliver it, report your findings and
+stop. Don't apply a fix until they ask for one. Before running a command that changes
+system state (restarts, deletes, config edits), check that the evidence actually
+supports that specific action. A signal that pattern-matches to a known failure may have
+a different cause.
 
 ## Live changes must be written back (every repo-mastered system)
 
@@ -123,6 +154,24 @@ Date
   reach as **n8n credentials** — the Crypto node's HMAC action reads its key from
   a `crypto` credential (`hmacSecret`). Note `$vars` works in expressions but
   `$env` does not.
+- **No `Execute Command` node; `Read/Write Files` cannot delete; no disk-temp schemes.** This n8n
+  (2.x) does not ship a usable `Execute Command` node — the API rejects `n8n-nodes-base.executeCommand`
+  with "Unrecognized node type" even with no `NODES_EXCLUDE` set — so there is **no shell** (no `rm`,
+  no `find` sweeps) from inside a workflow. `n8n-nodes-base.readWriteFile` exists but is **read/write
+  only — no delete operation**. Consequence: never design a temp-file-on-disk scheme that needs
+  cleanup from inside n8n (nothing can garbage-collect it). To move binary across without disk, use
+  **`Convert to File`** (`operation:'toBinary'`, base64 string → binary `data`) and pass image bytes
+  as **base64 in the JSON payload** (then rely on n8n execution pruning, not files). This is why
+  ADR-036 Block 10's image delivery is in-memory base64, not server temp.
+- **ClickUp comment inline image = the undocumented `{type:attachment}` op; there is no
+  delete-attachment API.** To render an image inline in a ClickUp comment, the comment ops array op
+  must be `{ "type":"attachment", "attachment":{ "id":"<attachment_id>", "url":"<attachment_url>" } }`
+  referencing a **real ClickUp task attachment** (uploaded via `POST /api/v2/task/{id}/attachment`,
+  multipart field `attachment` → `{id,url}`). A bare `{ "image":"<url>" }` op is accepted + stored but
+  **never renders** (blank); `comment_text` markdown `![](url)` stays literal text. The comment endpoint
+  is **JSON-only** (no one-call multipart). ClickUp v2 has **no delete-attachment endpoint**, and a
+  comment-referenced attachment is **free-floating** (deleting the comment leaves it), so a failed post
+  can only WARN with the orphaned ids — it cannot roll back the upload (ADR-036 Block 10).
 - **ClickUp webhook auth = HMAC-SHA256(secret, rawBody) hex** in the
   `X-Signature` header. You must hash the **raw** request body, not a
   re-stringified JSON (bytes differ → signature mismatch): set the Webhook node's
