@@ -214,10 +214,17 @@ test) is done with throwaway, session-only snippets — ad-hoc PowerShell `Conve
 one-off `jq`-style extracts, manual API pokes. Those evaporate at `/clear` and get re-derived from
 scratch next time, which is wasted effort and a source of inconsistency.
 
-**Rule:** whenever you write a script, snippet, or small program that you'd plausibly reuse — or that
-sped *this* task up enough that re-deriving it next session would hurt — **stop and ask the operator
-whether to save it permanently** (typically under `scripts/`, mirroring the existing
-`export-workflows.mjs` / `check-workflow-drift.mjs`). When you ask:
+**First — check for an existing tool before writing new code.** Persisting scripts is pointless if the
+next session re-derives them blind. Before hand-rolling a snippet for a deploy/verify/inspection task,
+**scan `scripts/` (and skim each candidate's top-of-file comment)** for something that already does it
+or is one flag away — e.g. `inspect-execution.mjs`, `alerts-since.mjs`, `export-workflows.mjs`,
+`check-workflow-drift.mjs`. Reuse or extend it rather than starting fresh. This is the standing "read
+existing patterns before adding new ones" rule, applied to tooling specifically.
+
+**Then — offer to persist anything reusable.** Whenever you write a script, snippet, or small program
+that you'd plausibly reuse — or that sped *this* task up enough that re-deriving it next session would
+hurt — **stop and ask the operator whether to save it permanently** (typically under `scripts/`,
+mirroring the existing `export-workflows.mjs` / `check-workflow-drift.mjs`). When you ask:
 
 1. Say in one or two lines **what the program does**.
 2. Say **how it would aid future work/deployment** (which recurring step it replaces, e.g. "every
