@@ -1,9 +1,11 @@
 Multimodal I/O — bite-sized build plan (ADR-036 Phases 2–5)
 
-Rewritten 2026-06-12 to match live state. Phase A (INPUT) + the spine decomposition are DONE and
-verified; the PD/EU apparatus this plan once carried has been removed (ADR-043, migration 021); the
-erasure-readiness schema landed (ADR-044, migration 022). Only Block 6 (input robustness) and Phase B
-(image generation, Blocks 8–12) remain.
+Rewritten 2026-06-12 to match live state; status updated 2026-06-12 (Block 6 + Block 8 DONE). Phase A
+(INPUT) is COMPLETE through Block 6 (verified); the PD/EU apparatus this plan once carried has been
+removed (ADR-043, migration 021); the erasure-readiness schema landed (ADR-044, migration 022). Block 8
+(the Phase B provisioning gate) is DONE — image providers are live + verified (gemini-image Nano
+Banana/Pro + OpenAI gpt-image-2, migration 023). What remains is the Phase B generation PIPELINE:
+Blocks 9–12.
 
 Context
 
@@ -56,10 +58,11 @@ ADR / migration numbering (older copies are stale, fix on sight):
 - The "later migration that drops personal_data from the PK and retires eu_only" = migration 021 —
   DONE. The erasure schema = migration 022 — DONE. There is no "migration 010."
 
-What is NOT built = Block 6 (input-image robustness fallback) on the INPUT side, and the entire
-OUTPUT/generation half: invoke-image-model, image-resolver, the multimodal assembler, the
-comment_native delivery primitives (temp staging / upload / rollback / TTL sweep), and the Stage-B/C
-wiring that flips the drafting model to the output block contract.
+What is NOT built (post Block 8) = the Phase B generation PIPELINE: invoke-image-model (Block 9), the
+comment_native delivery primitives (temp staging / upload / rollback / TTL sweep, Block 10), the
+image-resolver + multimodal assembler (Block 11), and the end-to-end Stage-B/C wiring that flips the
+drafting model to the output block contract (Block 12). Block 6 (input-image robustness) and Block 8
+(image-provider provisioning + live aliases, migration 023) are DONE + verified (2026-06-12).
 
 Known doc state: current.md §15 already describes the decomposed orchestrator + Stage A/B/C reality
 (the old monolithic-spine drift was corrected in Block 1). New blocks append to ADR-036 Consequences
@@ -145,7 +148,7 @@ Blocks 1–5 recap (DONE + VERIFIED — see ADR-036 Consequences for the full re
   sentinel + orchestrator Context-OK / LLM-Succeeded CRITICAL guards). The interim PD image guard from
   Block 5 (image-dropped-pd) was REMOVED by the GDPR master plan (Blocks 2–3) — PD-blind now.
 
-Block 6 — Input-image robustness fallback (text-only when a model can't consume an image)
+Block 6 — Input-image robustness fallback (text-only when a model can't consume an image)  [DONE 2026-06-12]
 
 - Context: The safety net that closes the INPUT path. Under ADR-043 the pipeline is PD-blind and
   global, so the old Bedrock-residency guard and the PD image stance are GONE. What remains is pure
@@ -178,7 +181,7 @@ Block 6 — Input-image robustness fallback (text-only when a model can't consum
 ---
 PHASE B — OUTPUT / IMAGE GENERATION (gated on Block 8)
 
-Block 8 — GATE: provision + verify image providers through LiteLLM; refresh seeds
+Block 8 — GATE: provision + verify image providers through LiteLLM; refresh seeds  [DONE 2026-06-12]
 
 - Context: The gate that unblocks all of Phase B. The DB/gateway image aliases exist but the external
   accounts + keys don't, and the seeded models (SD3.5 / imagegeneration@006 / dall-e-3, seeded

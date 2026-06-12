@@ -494,6 +494,38 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
   even on the text-only retry; `Sum Task Cost` stays correct (no double-count, no zero-cost silent run).
   _Knowingly DEFERRED:_ per-image isolation (whole-set drop accepted); fully multimodal input (embedded +
   page-render images) → Block 10 hosting.
+- **Block 8 (image-gen providers provisioned + verified through LiteLLM) — 2026-06-12.** The GATE that
+  unblocks Phase B. The dated seeds were all dead/dying — `dall-e-3` deprecated, `stable-diffusion-3-5`
+  superseded, and the **entire Vertex Imagen family is shutting down ~2026-06-24..30** (Google's own
+  migration target is `gemini-2.5-flash-image`). Operator-confirmed refresh to a cross-provider ladder:
+  Niski/`__default__` → `vertex_ai/gemini-2.5-flash-image` (Nano Banana, ~$0.039), Średni →
+  `vertex_ai/gemini-3-pro-image-preview` (Nano Banana Pro, ~$0.134), Wysoki/Krytycznie ważne →
+  `openai/gpt-image-2` (~$0.21 high/1024²). This gives Block 9's step-down ladder cross-provider
+  resilience (OpenAI top → Google mid/low). **No new Google account** (Imagen retired; gemini-image rides
+  the existing Vertex cred on `vertex_location: global`); **OpenAI** needed only a key + billing in the
+  existing workspace. PD-blind/global throughout (ADR-043) — no EU pin, no PD branch, Stability dropped.
+  **What changed:** `litellm-config.yaml` (3 dead aliases → the 3 above; `model_name` == `litellm_model`,
+  1:1); migration `023_image_gen_block8_providers.sql` (UPDATEs the 5 `modality='image'` rows + a static
+  `fallback_price_per_unit` floor each; PK/columns untouched, no `personal_data`/`eu_only`); `.env.example`
+  (Stability dropped, `VERTEX_LOCATION` marked unused). Deployed to the VPS (LiteLLM v1.87.0) — note a
+  **config-file-only change needs `docker compose restart` to reload the mounted YAML** (`up -d` recreates
+  only on a compose/.env change, so it left the old config in memory the first time); `up -d` was used
+  after the OpenAI key landed in `.env`.
+  **Verified live** (one `/v1/images/generations` call per model through the gateway): `gemini-2.5-flash-image`
+  → image + `x-litellm-response-cost`=$0.0387 (1290 out-tokens); `gemini-3-pro-image-preview` → $0.1344
+  (1120); `gpt-image-2` (high, 1024²) → $0.2108 (7024 image-output tokens × $30/1M = OpenAI's real rate).
+  **Cost-header reality (correction to the going-in assumption):** v1.87.0 returns ACCURATE costs for all
+  three — including gpt-image-2 at standard sizes; the #26863 "$0" bug only bites EXOTIC resolutions that
+  miss the cost map. So `fallback_price_per_unit` is a genuine safety net (live header wins; floor used only
+  when the header is missing/zero), NOT the active price.
+  **Silent-failure coverage (reliability mandate).** _Covered:_ provider availability/credit cliff caught
+  here at the gate by the per-model test calls (a missing key / dead provider 4xxs visibly); a zero/absent
+  cost header → static floor logs a non-zero priced row (no zero-cost silent run), with the live header
+  auto-overriding once reliable. _Deferred to Block 9 (stated, not yet built):_ per-call provider-down WARN
+  + the `cost=0`-with-image-tokens guard. **Compliance:** `gdpr-processing-decisions.md` §4 updated — Google
+  (Vertex) now also image-gen, OpenAI is image-gen-only; OpenAI ZDR + EU residency are sales-gated (not
+  blocking). **Phase B still gated on the generation pipeline itself** (Blocks 9–12): invoke-image-model,
+  image-resolver, the assembler, comment_native delivery — the image rows have no caller yet.
 - Phase 2–5: consequences recorded when each phase is verified end-to-end. **Phase A (INPUT) COMPLETE —
   attachment-level text + directly-attached images, with robust unprocessable-image degradation (Blocks
   1–6).** Still owed for *fully* multimodal input: Block 10 (host embedded in-document images + pdf/pptx
@@ -509,3 +541,4 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
 2026-06-10 (Block 3 — unified `Read Input (v1)` verified live; readers unified, router retired)
 2026-06-10 (Block 5 — input wired into spine; multimodal model call verified; Stage B + Decide Research return-path bugs fixed)
 2026-06-12 (Block 6 — unprocessable-image robustness: reactive Opus→text-only safety net + `multimodal/image-unprocessable` WARN; Phase A INPUT closed; PD/Bedrock image stance superseded per ADR-043)
+2026-06-12 (Block 8 — image-gen providers provisioned + verified live through LiteLLM: Vertex gemini-image (Nano Banana/Pro) + OpenAI gpt-image-2; migration 023 + litellm-config; Imagen/dall-e-3/Stability retired; Phase B gate open, generation pipeline Blocks 9–12 still to build)

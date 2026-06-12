@@ -39,7 +39,7 @@ senior-management intervention.
 3. **Anthropic direct + Vertex AI (global)** — model inference via LiteLLM gateway. **PD-blind** routing
    by `(impact, modality)` (ADR-043, migration 021): `modality='text'` → Anthropic direct (Claude);
    `modality='multimodal_input'` → Vertex AI Gemini (global endpoint, DPA+SCCs; flash for low tiers, pro
-   for high — ADR-042); `modality='image'` → image-gen tiers (Stability/Vertex/DALL-E). Bedrock EU and
+   for high — ADR-042); `modality='image'` → image-gen tiers (Vertex gemini-image + OpenAI gpt-image-2, ADR-036 Block 8). Bedrock EU and
    the `personal_data`/`eu_only` axis were retired (migration 021). See ADR-030, ADR-043, ADR-042.
 
 4. **Supabase (eu-west-1, Ireland)** — application database. Operational logs, threaded
@@ -70,7 +70,7 @@ senior-management intervention.
 │  PD-blind, routed by (impact, modality) — ADR-043             │
 │  text → Anthropic direct (Haiku/Sonnet/Opus/Fable 5)          │
 │  multimodal_input → Vertex AI Gemini (flash/pro, global)      │
-│  image → Stability / Vertex / DALL-E (image-gen tiers)        │
+│  image → Vertex gemini-image + OpenAI gpt-image-2 (gen)       │
 └────────────────────────────────────────────────────────────────┘
                               ↕
 ┌────────────────────────────────────────────────────────────────┐
@@ -150,8 +150,10 @@ they slot in additively. See the corresponding ADRs.
   (PDF/DOCX/XLSX) into the prompt — a PDF therefore routes as `modality='text'` → Claude. Image *input*
   (`modality='multimodal_input'`) routes to **Vertex AI Gemini** for all tasks (the active multimodal
   route — flash for n/d/Niski/Średni, pro for Wysoki/Krytycznie; ADR-043 operator decision + ADR-042).
-  Image *generation* live via LiteLLM Stability/Vertex AI/DALL-E 3 tiers (ADR-036). ClickUp attachment
-  upload deferred.
+  Image *generation* providers provisioned & verified live (Block 8, ADR-036, migration 023):
+  Niski/__default__ → Vertex `gemini-2.5-flash-image` (Nano Banana), Średni → `gemini-3-pro-image-preview`
+  (Nano Banana Pro), Wysoki/Krytycznie → OpenAI `gpt-image-2`. The generation *pipeline* (invoke-image-model,
+  resolver, comment_native delivery) is Phase B / Blocks 9–12 — not yet built. ClickUp attachment upload deferred.
 
 ---
 
@@ -356,6 +358,15 @@ a data location change.
 > DELETE CASCADE**; `agent_proposals.source_agent_run_id` nullable; `agent_proposal_evaluations`
 > transitive) or — `conversation_sessions` — link only by `clickup_task_id`/`comment_root_id` text
 > (**no FK back**). Retention + lawful-basis posture is recorded in `compliance/gdpr-processing-decisions.md`.
+
+> **Block 8 — image-gen providers refreshed (2026-06-12, ADR-036).** Migration
+> `023_image_gen_block8_providers.sql` repoints the five `modality='image'` rows off the dated/dead seeds
+> (SD3.5 / Imagen@006 / dall-e-3 — Imagen shutting down ~2026-06-24, dall-e-3 deprecated) to the live map:
+> Niski/__default__ → `vertex_ai/gemini-2.5-flash-image`, Średni → `vertex_ai/gemini-3-pro-image-preview`,
+> Wysoki/Krytycznie → `openai/gpt-image-2`; and sets a static `fallback_price_per_unit` floor per row
+> (0.038703 / 0.134422 / 0.210805 USD, live-measured). PK/columns unchanged (no `personal_data`/`eu_only`).
+> All three verified live through the LiteLLM gateway with accurate cost headers. The generation *pipeline*
+> (Blocks 9–12) is still unbuilt — these rows have no caller yet.
 
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
@@ -679,8 +690,8 @@ State as of 2026-06-10:
   monolithic 26-node `agent-spine.json` was decomposed in place — `a8XKaijkMFNBpRBa` is now the
   orchestrator.)
 - **Model layer — DONE.** Self-hosted LiteLLM gateway, **PD-blind** data-driven routing on `(impact,
-  modality)` — `text` → Anthropic direct, `multimodal_input` → Vertex Gemini, `image` → image-gen tiers
-  (ADR-043, migration 021) — exact USD × daily NBP FX → `cost_pln`, logged to `agent_runs` and summed
+  modality)` — `text` → Anthropic direct, `multimodal_input` → Vertex Gemini, `image` → gemini-image + gpt-image-2 tiers (Block 8)
+  (ADR-043, migration 021; image tiers refreshed in migration 023) — exact USD × daily NBP FX → `cost_pln`, logged to `agent_runs` and summed
   into `[AI] Koszt akcji [PLN]`.
 - **Output — DONE.** Draft comment @-mentions the reviewer and renders full markdown (headings,
   lists, code, tables) via a deterministic markdown→Quill-Delta converter; soft
@@ -1022,10 +1033,15 @@ Bedrock — only the native node can; ADR-021).
     `'litellm/vertex'`. ⚠ Gemini 3.x uses **thinking tokens** billed on top of text: ~65 reasoning + 1 text
     tokens per one-word reply (Flash), ~133 + 1 (Pro); bounded per-model via `reasoning_effort` (ADR-042).
     Real task cost will exceed text-token count alone.
-  - `modality='image'` → **image generation tiers** (Stability/Vertex/DALL-E 3; ADR-036).
+  - `modality='image'` → **image generation tiers** — Niski/__default__ `vertex_ai/gemini-2.5-flash-image`,
+    Średni `vertex_ai/gemini-3-pro-image-preview`, Wysoki/Krytycznie `openai/gpt-image-2` (ADR-036 Block 8,
+    migration 023; all three verified live via `/v1/images/generations`). gemini-image returns an accurate
+    `x-litellm-response-cost`; gpt-image-2 too for standard sizes ($30/1M image tokens) — a static
+    `fallback_price_per_unit` floor covers the exotic-size #26863 edge.
   `agent_runs.model_used` stores the versioned model ID from the LiteLLM response body. Migrations 008
-  (composite PK), 013 (image tiers), 014 (Gemini multimodal), 020 (max_tokens by tier), and **021 — PD-blind
-  collapse to `(impact, modality)`, Bedrock rows dropped, Gemini aliases renamed `-eu`→none** — all applied.
+  (composite PK), 013 (image tiers), 014 (Gemini multimodal), 020 (max_tokens by tier), **021 — PD-blind
+  collapse to `(impact, modality)`, Bedrock rows dropped, Gemini aliases renamed `-eu`→none**, and **023 —
+  image-gen tiers refreshed to gemini-image + gpt-image-2 (Block 8)** — all applied.
 - **Impact → tier (ADR-023):** `Niski`→Haiku 4.5, `Średni`→Sonnet 4.6, `Wysoki`→Opus,
   `Krytycznie ważne`→Opus at temp 0.2 / 16k tokens with a prepended deliberation nudge;
   `n/d`/empty/unknown→Sonnet (fail-safe).

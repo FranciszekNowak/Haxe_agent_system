@@ -48,12 +48,13 @@ non-EU processing rests on the transfer mechanisms below, not on data residency.
 | Sub-processor | Role | Transfer basis |
 |---|---|---|
 | Anthropic (Claude family) | LLM inference (text, multimodal reasoning) | DPA + SCCs / DPF — **confirm** |
-| Google (Vertex AI — Gemini) | LLM inference (multimodal route) | DPA + SCCs / DPF — **confirm** |
-| OpenAI | LLM inference / capability (where routed) | DPA + SCCs / DPF — **confirm** |
+| Google (Vertex AI — Gemini) | LLM inference (multimodal route) **+ image generation** (gemini-image: Nano Banana / Nano Banana Pro, Block 8) | DPA + SCCs / DPF — **confirm** |
+| OpenAI | **Image generation** (`gpt-image-2`, Block 8 — top image tiers). No text/multimodal LLM route currently uses OpenAI. | DPA + SCCs / DPF — **confirm**. ZDR + EU data residency available but **sales-gated** (not enabled) |
 
 Supabase (Postgres, EU region) and the self-hosted n8n/LiteLLM VPS hold the operational data and are
 processors/infrastructure under their respective DPAs. Keep this table in sync with the live LiteLLM
-alias set and `model_routing`.
+alias set and `model_routing`. (Stability AI was evaluated for image generation but **dropped** in
+Block 8 — not a sub-processor; Vertex Imagen was retired ahead of Google's ~2026-06-24 shutdown.)
 
 ## 5. Erasure (Art 17)
 

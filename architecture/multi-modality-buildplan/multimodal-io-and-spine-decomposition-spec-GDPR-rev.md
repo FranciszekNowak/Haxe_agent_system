@@ -215,17 +215,19 @@ Walk output blocks in order:
 together, and is also the fallback ladder. Keys are the **Polish ClickUp `[AI] Wpływ` tiers**
 (`Niski`/`Średni`/`Wysoki`/`Krytycznie ważne`/`__default__`), aligned to the field in migration 013.
 
-| impact (ClickUp tier) | seeded model (DATED — verify/refresh at Block 8) | max images | resolution |
-|---|---|---|---|
-| Niski | `stability/stable-diffusion-3-5` | 2 | standard |
-| Średni | `vertex_ai/imagegeneration@006` | 4 | high |
-| Wysoki | `openai/dall-e-3` | 8 | max |
-| Krytycznie ważne | `openai/dall-e-3` (shares top with Wysoki) | 8 | max |
-| __default__ | `vertex_ai/imagegeneration@006` | 4 | high |
+| impact (ClickUp tier) | model (LIVE — Block 8, migration 023) | max images | resolution | ~$/img |
+|---|---|---|---|---|
+| Niski | `vertex_ai/gemini-2.5-flash-image` (Nano Banana) | 2 | standard | 0.039 |
+| Średni | `vertex_ai/gemini-3-pro-image-preview` (Nano Banana Pro) | 4 | high | 0.134 |
+| Wysoki | `openai/gpt-image-2` | 8 | max | ~0.21 |
+| Krytycznie ważne | `openai/gpt-image-2` (shares top with Wysoki) | 8 | max | ~0.21 |
+| __default__ | `vertex_ai/gemini-2.5-flash-image` (Nano Banana) | 4 | high | 0.039 |
 
 These are seed values in `model_routing` / `image_gen_params` (data, not code), swappable as models
-turn over. They are **dated** (seeded 2026-06-09) and untouched by the PD-blind collapse; the
-provisioning gate (Block 8) refreshes them to current best and provisions real provider accounts.
+turn over. **DONE (Block 8, 2026-06-12):** the original dated seeds (SD3.5 / Imagen@006 / dall-e-3) were
+all deprecated/shutting down (Imagen retired ~2026-06-24) and were refreshed to the live map above via
+migration 023; all three models provisioned (existing Vertex cred + a new OpenAI key) and verified
+end-to-end through the LiteLLM gateway with accurate cost headers. The count/resolution caps are unchanged.
 
 ### 3.5 `assembler` (extends `Post Reply`'s Build Comment, ADR-027/028)
 - Walk resolved blocks: render `text` via markdown→Quill-Delta; insert inline image embeds at
@@ -455,12 +457,14 @@ input wired into the spine and verified end-to-end). Remaining:
    decision): the comment/attachment lifecycle binding (deleted-with-comment vs free-floating), and
    whether a one-call `comment[]`/multipart post collapses attach-then-reference. `assets_sink`/
    `object_store` stay documented future alternatives.
-2. **Per-tier seeded image models** and the impact→(count, resolution) mapping in 3.4 are dated
-   [recommended: refresh to current best at Block 8]; expect revision as models turn over.
+2. **Per-tier image models** — **RESOLVED (Block 8, 2026-06-12):** refreshed to gemini-image (Nano
+   Banana / Pro) + `gpt-image-2` via migration 023 (see §3.4), all verified live. Count/resolution caps
+   unchanged. Still swappable as models turn over.
 3. **Cost field write location**: Stage C [decided].
-4. **Provider terms**: every image-provider account is on commercial/API terms with a DPA, SCCs, and
-   no-training. Residency is **not** a routing concern (ADR-043) — this is an account-level check at
-   Block 8, not a per-call decision.
+4. **Provider terms** — **RESOLVED (Block 8):** image providers are Google Vertex (existing DPA+SCCs,
+   no-training, `global` per ADR-043) and OpenAI (`gpt-image-2`; DPA+SCCs + API no-training default; ZDR +
+   EU residency available but sales-gated, not enabled). Recorded in `compliance/gdpr-processing-decisions.md`
+   §4. Residency is **not** a routing concern (ADR-043) — account-level only.
 5. **Multimodal input route** is **Gemini** (flash/pro by tier, active; ADR-042/043), not Claude.
    Block 6's vision-capability check applies to whatever the routed model is.
 
