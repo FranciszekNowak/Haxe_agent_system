@@ -11,7 +11,7 @@
 #
 #   *-direct aliases  -> Anthropic API (Claude family: text + native vision)
 #   haxe-gemini-*     -> Gemini via Vertex AI (global endpoint) — the multimodal_input route
-#   image-gen aliases -> Stability / Vertex / OpenAI (image OUTPUT tiers)
+#   image-gen aliases -> Vertex gemini-image (Nano Banana / Pro) + OpenAI gpt-image-2 (image OUTPUT tiers)
 
 model_list:
   # ── Anthropic direct (text + native vision) ─────────────────────────────────
@@ -63,27 +63,40 @@ model_list:
       vertex_location: global
       reasoning_effort: high
 
-  # ── Image generation (ADR-036) ───────────────────────────────────────────────
-  # Tiered by impact: low → Stability, medium → Vertex AI, high → DALL-E 3.
-  # Image payloads carry no personal data (spec 0.1).
-  # Aliases match model_routing.litellm_model seeds from migration 012.
-  # API keys injected from .env; see .env.example for required variable names.
-  # Replace model IDs if the listed versions become unavailable at build time.
+  # ── Image generation (ADR-036, Block 8) ──────────────────────────────────────
+  # Tiered by impact (model_routing modality='image', migration 023):
+  #   Niski / __default__ -> Vertex gemini-2.5-flash-image  (Nano Banana)
+  #   Średni              -> Vertex gemini-3-pro-image-preview (Nano Banana Pro)
+  #   Wysoki / Krytycznie -> OpenAI gpt-image-2
+  # `model_name` == model_routing.litellm_model (1:1). API keys/creds injected from .env.
+  #
+  # Why these, not the original SD3.5/Imagen/DALL-E seeds: dall-e-3 deprecated; the entire
+  # Vertex Imagen family is being shut down ~2026-06-24..30 (Google's own migration target is
+  # gemini-2.5-flash-image). gemini-image bills by OUTPUT TOKENS but LiteLLM v1.87.0's cost map
+  # carries a per-image price ($0.039 / $0.134), so its x-litellm-response-cost is reliable.
+  # gpt-image-2 has NO per-image cost in the map (output_cost_per_image=null) -> its cost header
+  # is unreliable; model_routing.fallback_price_per_unit is the static floor (Block 9 WARNs on
+  # cost=0-with-tokens; live price auto-overrides the floor once LiteLLM #26863 lands).
+  #
+  # Vertex auth = ADC via GOOGLE_APPLICATION_CREDENTIALS (mounted key); vertex_location: global
+  # (matches the gemini text aliases — do NOT use os.environ/VERTEX_LOCATION, which is unset and
+  # was only ever for the now-retired us-central1 Imagen route). ADR-043: PD-blind, no EU pin.
 
-  - model_name: stability/stable-diffusion-3-5
+  - model_name: vertex_ai/gemini-2.5-flash-image
     litellm_params:
-      model: stability/stable-diffusion-3-5
-      api_key: os.environ/STABILITY_API_KEY
-
-  - model_name: vertex_ai/imagegeneration@006
-    litellm_params:
-      model: vertex_ai/imagegeneration@006
+      model: vertex_ai/gemini-2.5-flash-image
       vertex_project: os.environ/VERTEX_PROJECT
-      vertex_location: os.environ/VERTEX_LOCATION
+      vertex_location: global
 
-  - model_name: openai/dall-e-3
+  - model_name: vertex_ai/gemini-3-pro-image-preview
     litellm_params:
-      model: openai/dall-e-3
+      model: vertex_ai/gemini-3-pro-image-preview
+      vertex_project: os.environ/VERTEX_PROJECT
+      vertex_location: global
+
+  - model_name: openai/gpt-image-2
+    litellm_params:
+      model: openai/gpt-image-2
       api_key: os.environ/OPENAI_API_KEY
 
 litellm_settings:
