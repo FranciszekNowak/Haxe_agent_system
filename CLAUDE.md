@@ -201,6 +201,30 @@ maintainer act in an informed and timely way. Therefore:
 - When you build or change a feature, state in your summary which silent-failure modes
   you covered and how. If a failure mode is knowingly left uncovered, say so explicitly.
 
+## Reusable tooling — offer to persist it (don't let it die with the session)
+
+Much of the repetitive work in this project (deploying n8n changes, inspecting executions
+node-by-node, re-exporting, drift-checking, scanning the Alerts channel during a Definition-of-Done
+test) is done with throwaway, session-only snippets — ad-hoc PowerShell `ConvertFrom-Json`,
+one-off `jq`-style extracts, manual API pokes. Those evaporate at `/clear` and get re-derived from
+scratch next time, which is wasted effort and a source of inconsistency.
+
+**Rule:** whenever you write a script, snippet, or small program that you'd plausibly reuse — or that
+sped *this* task up enough that re-deriving it next session would hurt — **stop and ask the operator
+whether to save it permanently** (typically under `scripts/`, mirroring the existing
+`export-workflows.mjs` / `check-workflow-drift.mjs`). When you ask:
+
+1. Say in one or two lines **what the program does**.
+2. Say **how it would aid future work/deployment** (which recurring step it replaces, e.g. "every
+   block's verification re-parses a too-big execution payload by hand — this prints the compact
+   per-node summary directly").
+3. Propose a name + home (`scripts/<name>.mjs`), note any env it needs (e.g. `N8N_API_KEY`), and let
+   the operator decide — default to **not** committing it unless they say yes.
+
+This applies to genuinely reusable tooling, not to a literal one-liner you'd never run twice. Prefer
+extending an existing script over adding a near-duplicate. If the operator says yes, document it with
+a top-of-file comment (purpose + usage), the way the existing `scripts/*.mjs` are.
+
 ## What's in this repo vs in ClickUp
 
 **In this repo (I edit, version-controlled):**
