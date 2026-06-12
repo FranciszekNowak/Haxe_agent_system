@@ -159,9 +159,14 @@ anything that touches the agent pipeline:
    last execution. Look at every node — not just whether the run succeeded overall,
    but whether any node produced a warning, an empty result it shouldn't have, or
    a fallback it shouldn't have taken. A green checkmark on the execution does not
-   mean every node did what was intended.
+   mean every node did what was intended. Helper: `node scripts/inspect-execution.mjs
+   <execId> [--nodes A,B] [--fields x,y]` prints a compact per-node view (status,
+   per-output item counts so you can see which IF/error branch fired, selected fields)
+   without the oversized payload — use it instead of dumping the raw execution.
 3. **Check the ClickUp alert channel.** If any WARN or CRITICAL alert fired during
-   the test run, treat it as a failure until explained.
+   the test run, treat it as a failure until explained. Helper: `node
+   scripts/alerts-since.mjs <minutes> [--crit] [--source <substr>]` lists Post Alert
+   firings in a window (reads them as n8n executions — no ClickUp token needed).
 
 Only after these three checks pass report the task complete. "The code looks
 right" is not a substitute for observing the system behave correctly.
