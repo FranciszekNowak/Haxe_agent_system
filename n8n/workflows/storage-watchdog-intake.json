@@ -1,0 +1,73 @@
+{
+  "name": "Storage Watchdog Intake (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "wh",
+      "name": "Watchdog Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 200],
+      "webhookId": "73536272-2085-4f2a-93f4-ce5befe491b1",
+      "notes": "External (host systemd) disk/DB watchdog posts here. Header-auth gated (X-Watchdog-Key). Dead-man's-switch must live OUTSIDE n8n (it watches the host that runs n8n); this thin intake only forwards into the Post Alert seam.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "storage-watchdog-7e06358ac257ad20",
+        "responseMode": "onReceived",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "3ydBksESwiUW2rFV",
+          "name": "Storage Watchdog Header Auth"
+        }
+      }
+    },
+    {
+      "id": "call-alert",
+      "name": "Call Post Alert",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [240, 200],
+      "notes": "Forwards the host watchdog's severity/source/message/details into Post Alert (v1) -> ClickUp Alerts task. Keeps the swappable alert seam.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "={{ $json.body.severity }}",
+            "source": "={{ $json.body.source }}",
+            "message": "={{ $json.body.message }}",
+            "details": "={{ $json.body.details }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Watchdog Webhook": {
+      "main": [
+        [
+          {
+            "node": "Call Post Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}

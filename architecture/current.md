@@ -940,6 +940,7 @@ the canonical form going forward.
 | **`Post Alert (v1)`** | Centralized alert seam → ClickUp Alerts task | **LIVE** |
 | **`Error Handler (v1)`** | Global `errorWorkflow`: throws → CRITICAL + status rollback | **LIVE** |
 | **`FX Rates Daily (v1)`** + **`FX Freshness Monitor (v1)`** | Daily NBP USD/PLN upsert + staleness WARN | **LIVE** |
+| **`Storage Watchdog Intake (v1)`** (id `iMJrbyPD7UroQZ1W`) | Header-auth webhook → Post Alert; receives the host disk/DB dead-man's-switch (ADR-046) | **LIVE** |
 | **`Read Input (v1)`** (id `zgGpONulGMohQQqI`) | Unified multimodal input reader (Blocks 2+3, ADR-036 "Input readers unified"), pure/branch-free: self-fetches `{ clickup_task_id }` → `Classify Attachment` (Switch) → **image** = URL passthrough (skips Docling) / **extractable** = Docling → `Merge` → `{ blocks(text+image, ordered), clickup_task_id, warnings }`. Reader owns ordering; Stage A (Block 5) fires `warnings` via `Post Alert (v1)`. Router + visual reader retired | **LIVE (Phase 2, input)** |
 | Daily Due-Date Producer | 00:00 cron: enqueue due-today/yesterday `Czy dla AI=Tak` tasks | **Planned (Phase 3)** |
 | Gmail Email Workflow | Incoming mail → Gmail draft; sent-folder post-send analysis | **Planned (Phase 3)** |
@@ -1383,6 +1384,7 @@ have `Czy dla AI = Tak` by default, or set `Status agenta = Paused` on specific 
 | Git pull cron every 5 min on VPS | 15 min | Workflow JSON sync |
 | Session cleanup hourly | 30 min | Data hygiene, Supabase bloat prevention |
 | Queue depth monitoring every 5 min | 30 min | Detect backups before they cascade |
+| Storage dead-man's-switch (host systemd timer, every 6h) → Post Alert | done (ADR-046) | VPS disk + n8n execution-DB growth (base64 images) caught early, external to n8n |
 | Redis persistence enabled (AOF) | 15 min | Survive container restarts without queue loss |
 
 Total one-off setup: ~4 hours during Phase 0.

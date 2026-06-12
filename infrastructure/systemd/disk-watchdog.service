@@ -1,0 +1,9 @@
+[Unit]
+# Host-level storage dead-man's-switch (ADR-046). Install to /etc/systemd/system/.
+Description=Haxe storage watchdog (VPS disk + n8n DB) -> Post Alert
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/haxe-agents/disk-watchdog.sh

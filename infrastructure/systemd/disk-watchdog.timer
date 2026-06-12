@@ -1,0 +1,12 @@
+[Unit]
+# Fires disk-watchdog.service every 6h (ADR-046). Install to /etc/systemd/system/ then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now disk-watchdog.timer
+Description=Run Haxe storage watchdog every 6h
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

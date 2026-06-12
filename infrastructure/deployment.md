@@ -243,3 +243,35 @@ migration files — always add a new one with the next sequential number.
 Workflows are deployed via Claude Code's n8n MCP (REST API), not by restarting containers.
 After verifying a workflow change in the n8n UI, export the JSON and commit it to
 `n8n/workflows/<workflow>.json`.
+
+## Storage dead-man's-switch (ADR-046)
+
+Host-level watchdog for VPS disk + n8n execution DB, external to n8n (a watcher must not share the
+fate of the watched). Repo-mastered: `infrastructure/scripts/disk-watchdog.sh` +
+`infrastructure/systemd/disk-watchdog.{service,timer}`. It POSTs breaches to the
+`Storage Watchdog Intake (v1)` n8n webhook (header-auth) → Post Alert → ClickUp Alerts task.
+
+Deploy / re-deploy after editing the script or units:
+
+```bash
+# from repo root
+scp infrastructure/scripts/disk-watchdog.sh infrastructure/systemd/disk-watchdog.service \
+    infrastructure/systemd/disk-watchdog.timer franciszek@185.25.149.174:/tmp/
+ssh franciszek@185.25.149.174 '
+  cp /tmp/disk-watchdog.sh /opt/haxe-agents/disk-watchdog.sh && sed -i "s/\r$//" /opt/haxe-agents/disk-watchdog.sh && chmod 755 /opt/haxe-agents/disk-watchdog.sh
+  sudo cp /tmp/disk-watchdog.service /tmp/disk-watchdog.timer /etc/systemd/system/ && sudo sed -i "s/\r$//" /etc/systemd/system/disk-watchdog.{service,timer}
+  sudo systemctl daemon-reload && sudo systemctl enable --now disk-watchdog.timer'
+```
+
+Secrets are NOT committed — `/opt/haxe-agents/watchdog.env` (chmod 600) holds:
+
+```
+WATCHDOG_URL=https://agents.haxe.ai/webhook/<intake-path>
+WATCHDOG_KEY=<value of the "Storage Watchdog Header Auth" httpHeaderAuth credential, header X-Watchdog-Key>
+# optional overrides: WARN_PCT (default 60), CRIT_PCT (default 75), N8N_DB_WARN_GB (default 5)
+```
+
+If the webhook secret is rotated, update both the n8n `Storage Watchdog Header Auth` credential and
+`watchdog.env`. Check it: `tail /opt/haxe-agents/watchdog.log`; force a test with
+`sudo env WARN_PCT=0 /opt/haxe-agents/disk-watchdog.sh` (expect a WARN on the Alerts task). The n8n
+intake workflow is `n8n/workflows/storage-watchdog-intake.json`.
