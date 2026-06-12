@@ -1,6 +1,6 @@
 Multimodal I/O — bite-sized build plan (ADR-036 Phases 2–5)
 
-Rewritten 2026-06-12 to match live state; status updated 2026-06-12 (Blocks 6, 8, 9, 10 DONE). Phase A
+Rewritten 2026-06-12 to match live state; status updated 2026-06-12 (Blocks 6, 8, 9, 10, 11 DONE). Phase A
 (INPUT) is COMPLETE through Block 6 (verified); the PD/EU apparatus this plan once carried has been
 removed (ADR-043, migration 021); the erasure-readiness schema landed (ADR-044, migration 022). Block 8
 (the Phase B provisioning gate) is DONE — image providers are live + verified (gemini-image Nano
@@ -285,8 +285,17 @@ Block 10 — comment_native delivery primitives in Stage C  [DONE 2026-06-12 —
   crashed-run temp → TTL sweep; a failed artifact-id record → WARN side-branch (reply/status still
   complete, no webhook loop).
 
-Block 11 — image-resolver + multimodal assembler
+Block 11 — image-resolver + multimodal assembler  [DONE 2026-06-12]
 
+- DONE (Image Resolver (v1), znDqcfgXK6CNte20; verified live on 869dhad2q — 3 images inline (1 embed +
+  2 generated) + per-modality footer, 0 alerts; embed-miss + ceiling cases too). Deviations from the
+  plan below, all per ADR-036 Block 11: (a) generated images are base64 in image_manifest, not temp
+  paths (Block 10 in-memory pivot — no disk on this n8n); (b) the per-impact max_images COUNT cap is
+  RETIRED for a single global config.image_count_ceiling=20 safety guard (migration 026 — count follows
+  content, impact still drives model+resolution); (c) generation is sequential (Call Invoke Model
+  mode=each), parallel fan-out deferred; (d) the footer moved to Post Reply's Finalize Comment and is
+  now per-modality (tekst:/obraz:) with aggregate cost; (e) Invoke Model's Shape Output now surfaces
+  task_type so per-block metadata round-trips. The ORIGINAL plan below is superseded where it conflicts.
 - Context: The two deterministic pieces that turn the model's output block list into a postable
   comment: the resolver fills each block's ref (place existing / generate new → temp), the assembler
   interleaves them inline into Quill-Delta. Bridges Block 9 (generation) and Block 10 (delivery).
