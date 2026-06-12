@@ -4,7 +4,7 @@
 
 This repository contains the infrastructure-as-code for Haxe's internal 
 agentic operating system. The architecture is described in 
-`architecture/current.md`. Read that first if you're new to this project.
+`architecture/current.md`. Read that first if you're new to this project or if you want to see what the current phase is.
 
 ## Project goal
 
@@ -63,9 +63,7 @@ wrong. Surface failure modes. Don't accommodate sloppy thinking.
 
 Several systems are edited **live** (via MCP/UI) but are **mastered by the repo**. After ANY
 live change, write the repo artifact back **in the same session** and commit. A forward-note
-("a later block will codify it") is NOT a write-back — it is the exact drift that has bitten us
-(ADR-038 deployed-but-never-exported; a live `model_routing` temperature change left as a note,
-caught only on review → migration 015).
+("a later block will codify it") is NOT a write-back — it is the exact drift that has bitten us in the past.
 
 - **n8n graph** → re-export `n8n/workflows/*.json` (`n8n_get_workflow` mode `active`),
   reconciling by behaviour and preserving curated node `notes` (live usually lacks them) —
@@ -144,6 +142,13 @@ Date
   processing only that branch's items and dropping the rest — give aggregators
   exactly **one** input (merge upstream into a single stream first). Both traps were
   hit building `read-input-text` (ADR-036, Block 2).
+- **ClickUp threaded replies: reply to the comment's own `id`, never `comment.parent`.**
+  To reply in-thread, POST to `/api/v2/comment/{comment.id}/reply`. For a **top-level**
+  comment ClickUp populates `parent` with the **task id**, so replying to `parent` targets a
+  task (not a comment) and the call fails ("The service was not able to process your request").
+  This silently broke in-thread replies in the CU Webhook Producer's `Detect Mention` node
+  (it preferred `comment.parent`); the fix reads `comment.id` first (ADR-035). Verify against
+  the producer's real webhook payload, not assumptions.
 
 ## Definition of done
 
@@ -276,15 +281,6 @@ for operational knowledge. Don't mix these.
   `architecture/decisions/` rather than making the change silently
 - For ambiguous situations, ask me before proceeding
 
-## Current phase
-
-Phase 2 - the agent spine. The generic ClickUp→LLM→ClickUp pipeline is live and
-verified: Context Gather → Invoke Model (LiteLLM/Bedrock routing + PLN cost) →
-draft comment posted back (@-mention + rendered markdown), rules-doc loading,
-status field. Automatic triggering via a signature-verified ClickUp @-mention
-webhook (ADR-029). Remaining: selective `linked_doc_leaves`, autonomous
-status/due-date triggers (Phase 3).
-
 ## Self-improving documentation
 
 **When to propose updates to this file:**
@@ -328,46 +324,4 @@ This section accumulates learnings until I review and either promote them to
 the appropriate permanent section above or remove them. Append new entries 
 below with date and context.
 
-### 2026-06-01 — Changeset merge ritual for architecture docs
-
-`prompts/MERGE_PROMPT.md` is the reusable prompt for applying a changeset
-handed off from a chat session. A changeset is a **targeted diff** to
-`architecture/current.md` (plus zero or more new ADR files), NOT a replacement
-document. Mechanics learned applying one this session:
-
-- **Apply only the named edits; treat every unmentioned line as immutable.**
-  Detailed accumulated sections (diagrams, tables, the credential/Docker
-  architecture blocks) must survive byte-for-byte unless explicitly edited.
-  Preserving accumulated detail is the entire point of the ritual.
-- **Changesets can be stale — reconcile against reality, don't apply blindly.**
-  This one's version examples lagged the live file (it said "v7/v8"; the doc was
-  already v9), and its "password auth still ENABLED" claim was already false.
-  When the changeset's replacement block is *thinner* than the live doc, MERGE
-  (take the factual updates, keep the existing detail) rather than overwrite —
-  and flag the merge for the operator instead of silently choosing.
-- **New ADRs:** add as complete files; assign the next free contiguous number;
-  renumber on collision; verify the `decisions/` sequence stays gap-free.
-  Strip any `> NOTE FOR MERGE` placeholder lines and set the real number.
-- **ADR numbering:** the *filename* number is canonical — `current.md` cites
-  "ADR-010" etc. Match the recent `# ADR-0NN:` heading style and the filename.
-- **ADRs are append-only.** When reality supersedes one (password auth got
-  disabled, contradicting ADR-010's "deferred" section), append a dated
-  `> Update YYYY-MM-DD (supersedes ...)` note — never edit the original claim.
-- **Process:** apply to working tree → produce `git diff` + a report (applied
-  cleanly / needed adaptation / could-not-apply with reason) → WAIT for
-  approval → commit → push only when explicitly told. To review a diff that
-  includes new untracked files, `git add -N <file>` first so `git diff` shows
-  them.
-
-Candidate for promotion to a permanent "Working with architecture docs"
-subsection once stable.
-
-### 2026-06-09 — ClickUp `comment.parent` is the task id for top-level comments
-
-To reply in-thread, POST to `/api/v2/comment/{h.comment.id}/reply` — use the
-comment's own `id`, **never** `h.comment.parent`. For a top-level comment ClickUp
-populates `parent` with the **task id**, so replying to it targets a task, not a
-comment, and the call fails ("The service was not able to process your request").
-This silently broke in-thread replies in the CU Webhook Producer's `Detect Mention`
-node (it preferred `h.comment.parent`); fix was to read `h.comment.id` first
-(ADR-035). Verify with the producer's webhook payload, not assumptions.
+_(empty — entries get promoted into the sections above once they stabilize.)_
