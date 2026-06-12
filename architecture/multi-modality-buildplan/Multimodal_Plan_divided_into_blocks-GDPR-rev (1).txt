@@ -1,6 +1,6 @@
 Multimodal I/O — bite-sized build plan (ADR-036 Phases 2–5)
 
-Rewritten 2026-06-12 to match live state; status updated 2026-06-12 (Blocks 6, 8, 9 DONE). Phase A
+Rewritten 2026-06-12 to match live state; status updated 2026-06-12 (Blocks 6, 8, 9, 10 DONE). Phase A
 (INPUT) is COMPLETE through Block 6 (verified); the PD/EU apparatus this plan once carried has been
 removed (ADR-043, migration 021); the erasure-readiness schema landed (ADR-044, migration 022). Block 8
 (the Phase B provisioning gate) is DONE — image providers are live + verified (gemini-image Nano
@@ -240,8 +240,21 @@ Block 9 — image generation as an output modality of Invoke Model (v1)  [DONE 2
   gen failure → block fails up to the resolver (which drops + notes + WARN, comment still posts); every
   attempt cost-logged in one place.
 
-Block 10 — comment_native delivery primitives in Stage C (temp staging / upload / rollback / TTL); also
-            unblocks fully-multimodal INPUT — dummy image
+Block 10 — comment_native delivery primitives in Stage C  [DONE 2026-06-12 — IN-MEMORY base64 (Option A), NOT disk]
+
+- DONE (revised — supersedes the disk design below): this n8n ships no `Execute Command` node and `Read/Write
+  Files` has no delete op, so disk temp can't be garbage-collected inside n8n. Pivoted to **in-memory base64**:
+  images travel as base64 in `image_manifest` ({placeholder_id,b64,mime,caption,alt}, matching Block 9's
+  `b64_json`); Stage C `Has Images? → Parse Manifest → To Binary (convertToFile) → Upload Attachment (multipart)
+  → Aggregate → Rewrite Delta → Finalize Comment → post`. Inline render uses the spike-proven op
+  `{type:'attachment',attachment:{id,url}}` (a bare {image:url}/markdown does NOT render). No delete-attachment
+  API + free-floating attachments → rollback is best-effort orphan-WARN (persistence accepted). Added
+  `run_payload_bytes`/`n8n_execution_id` (migration 025) + Polish size footer; base64 kept out of the DB; n8n
+  execution pruning relied on (defaults). Verified live (2 images inline + rollback + text regression).
+  **Disk apparatus RETIRED: no temp dir, no TTL sweep, no shared volume, no shell — Phase 3 (host cleanup) is
+  dropped.** **Blocks 11/12 now carry base64 manifests, not temp paths.** The fully-multimodal INPUT hosting
+  (embedded-doc + pdf/pptx page images) is split off as **Block 10b** (uses the same upload primitive). See
+  ADR-036 (Block 10). The ORIGINAL disk plan below is superseded.
 
 - Context: How a generated image actually reaches ClickUp. ClickUp's comment API can't read our disk,
   so bytes must be uploaded to get a URL, then referenced. Built/tested with a dummy image so the

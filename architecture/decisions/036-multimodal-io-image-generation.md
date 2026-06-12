@@ -574,6 +574,53 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
   tracked** (ADR-045 + master-plan Block 13). The generation pipeline still owes Blocks 10–12 (delivery,
   resolver/assembler, end-to-end drafting-model block list).
 
+- **Block 10 — comment_native delivery primitives in Stage C, IN-MEMORY base64 (Option A) — 2026-06-12.**
+  Supersedes spec §3.6's disk-temp delivery (temp dir / TTL sweep / upload-from-disk). **Why the pivot:**
+  this n8n (2.x) ships **no `Execute Command` node** (confirmed: not an env exclusion — the node type is
+  unrecognized) and **`Read/Write Files` has no delete operation**, so nothing can clean a temp dir from
+  inside n8n — the disk design was un-garbage-collectable here. So generated images travel as **base64 in
+  the manifest** (matching Block 9, which already returns `b64_json`): Stage C `Parse Manifest` → `To Binary`
+  (`convertToFile`) → `Upload Attachment` (multipart `POST /task/{id}/attachment` → `{id,url}`) → `Aggregate`
+  → `Rewrite Delta` → `Finalize Comment` → existing reply/draft post. **No disk, no shared volume, no temp,
+  no TTL sweep, no shell** — the Phase-1 shared-volume compose change was reverted and the orphan-temp failure
+  class is gone entirely.
+  - **Spike (live, task 869dhad2q), the inline-image format — the load-bearing finding:** ClickUp's comment
+    API renders an image inline ONLY via the **undocumented op `{ "type":"attachment", "attachment":{ "id":…,
+    "url":… } }`** referencing a real ClickUp **task attachment**. A bare `{ "image":"<url>" }` op is *accepted
+    and stored but never rendered* (blank); `comment_text` markdown `![](url)` stays literal text. Public docs
+    + community say inline is "impossible" — they miss this op. `Rewrite Delta` emits exactly this op.
+  - **No delete-attachment API** (ClickUp v2, confirmed). And the spike proved the attachment is **free-floating**:
+    deleting the comment does NOT remove it. So **rollback = best-effort WARN, not deletion** — on post-failure
+    after upload, `Alert Post-back Failed` lists the orphaned attachment ids (`orphaned_attachments=[…]`) for
+    manual UI cleanup; no temp to retain (there is none). Operator decision: **accept persistence** — generated
+    mockups are legitimate task content; the only inline mechanism *is* a task attachment, so persistence is
+    inherent, and humans can delete in the UI (where deletion works). Verified live: forced post-failure →
+    one `post-reply/post-back` WARN with the two orphan ids, no partial post, no double-post, 0 CRITICAL.
+  - **Per-run payload-weight observability (migration 025):** `agent_runs.run_payload_bytes` (+ nullable
+    `n8n_execution_id`). `Finalize Comment` computes `run_payload_bytes` = UTF-8 bytes of
+    `JSON.stringify({rendered_comment, image_manifest})` for **every** delivering run (text + image), appends a
+    Polish footer line `rozmiar danych przebiegu: <X KB|MB>`, and `Record Artifact` writes it onto the same
+    answer row it already targets (no second `agent_runs` writer). It is a **proxy + lower bound** for n8n
+    execution-data weight (true ≈ this × nodes traversed); `n8n_execution_id` enables an exact backfill later.
+    Verified: image run 495 815 B (484 KB), text run 547 B (1 KB); footer present on both; null before delivery.
+  - **base64 never reaches Supabase** (verified: the delivered row's full JSON is 607 B, no PNG signature) —
+    `Record Artifact`/`Log Model Run` receive only scalar fields, never the manifest. **Execution-data hygiene:**
+    base64 lives in n8n execution data, multiplied per node traversed; mitigations are (a) minimal base64 hops
+    (manifest → `To Binary` → upload, dropped after) and (b) n8n execution pruning — **no `EXECUTIONS_DATA_*`
+    env is set, so n8n defaults apply (prune ON, max age 336 h, max count 10 000).** Recommend tightening if
+    image volume grows: `EXECUTIONS_DATA_MAX_AGE=168` (7 d) + `EXECUTIONS_DATA_PRUNE_MAX_COUNT=5000`.
+  - **Provider coverage:** all current image tiers return `b64_json` via LiteLLM, so the manifest always
+    carries bytes; no tier returns a URL-only result today, so the resolver's fetch→encode-for-URL safeguard
+    (Block 11) has nothing to exercise yet (documented, not built). **Verified live, node-by-node:** 2 real
+    gemini-flash images → 2 `{type:attachment}` ops → one comment with both rendered inline (operator-confirmed)
+    + size footer; text-only regression unchanged. **Contract for Blocks 11/12:** the resolver fills
+    `image_manifest=[{placeholder_id,b64,mime,caption,alt}]` (base64, NOT temp paths) and the assembler emits
+    `rendered_delta` ops with `{type:'image_ref',placeholder_id}` placeholders; Stage C does the rest.
+  - **Known pre-existing limitation (out of Block-10 scope, "don't touch the spine"):** on *total* post-failure
+    Stage C swallows the error (`continueErrorOutput` + WARN) and does not reach `Set Status Zakończono`, so the
+    task stays at `W trakcie` (no auto-reset). Same as the prior text-only path; a reset would require the
+    orchestrator to treat post-failure as a stage error.
+
 ---
 
 ## Date
@@ -586,3 +633,4 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
 2026-06-12 (Block 6 — unprocessable-image robustness: reactive Opus→text-only safety net + `multimodal/image-unprocessable` WARN; Phase A INPUT closed; PD/Bedrock image stance superseded per ADR-043)
 2026-06-12 (Block 8 — image-gen providers provisioned + verified live through LiteLLM: Vertex gemini-image (Nano Banana/Pro) + OpenAI gpt-image-2; migration 023 + litellm-config; Imagen/dall-e-3/Stability retired; Phase B gate open, generation pipeline Blocks 9–12 still to build)
 2026-06-12 (Block 9 — image generation folded into `Invoke Model (v1)` as output modality `requested_modality_of_output='image'`; routing `(impact, modality='image')` + single gemini-flash fallback hop; cost via header→token-math (migration 024)→floor; all 5 tiers + degrade + size-override + text/vision regression verified live; gpt-image-2 ~176 s so image timeout raised to 240 s)
+2026-06-12 (Block 10 — comment_native delivery in Stage C, **in-memory base64 (Option A)** superseding the disk-temp design: `Execute Command` + file-delete are unavailable on this n8n, so no cleanup is possible on disk; `convertToFile`→multipart upload→inline `{type:attachment}` op (the only ClickUp form that renders inline, proven by spike); no delete-attachment API → orphan-WARN rollback + accepted persistence; `run_payload_bytes`/`n8n_execution_id` observability (migration 025); base64 kept out of the DB; verified live incl. 2-image inline render + rollback. Blocks 11/12 now carry base64 manifests, not temp paths; the disk TTL-sweep phase is dropped)

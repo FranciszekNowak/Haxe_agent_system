@@ -8,20 +8,40 @@
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
       "position": [0, 200],
+      "notes": "Inputs: model output (completion, model, cost_pln) + routing fields (clickup_task_id, reviewer_user_id, triggering_comment_id, web_sources).",
       "parameters": {
         "workflowInputs": {
           "values": [
-            { "name": "completion" },
-            { "name": "model" },
-            { "name": "cost_pln" },
-            { "name": "clickup_task_id" },
-            { "name": "reviewer_user_id" },
-            { "name": "triggering_comment_id" },
-            { "name": "web_sources" }
+            {
+              "name": "completion"
+            },
+            {
+              "name": "model"
+            },
+            {
+              "name": "cost_pln"
+            },
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "reviewer_user_id"
+            },
+            {
+              "name": "triggering_comment_id"
+            },
+            {
+              "name": "web_sources"
+            },
+            {
+              "name": "image_manifest"
+            },
+            {
+              "name": "rendered_delta"
+            }
           ]
         }
-      },
-      "notes": "Inputs: model output (completion, model, cost_pln) + routing fields (clickup_task_id, reviewer_user_id, triggering_comment_id, web_sources)."
+      }
     },
     {
       "id": "build-comment",
@@ -29,10 +49,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [220, 200],
+      "notes": "Converts model markdown -> ClickUp Quill-delta ops + @-mention + footer + web sources section. Reads all inputs from When Called trigger.",
       "parameters": {
         "jsCode": "const wc = $('When Called').first().json;\nconst md = (wc.completion || '').toString();\nconst reviewer = Number(wc.reviewer_user_id);\nconst model = wc.model || '';\nconst cost = wc.cost_pln;\n\nconst ops = [];\nif (reviewer) ops.push({ type: 'tag', user: { id: reviewer } });\nops.push({ text: '\\n' });\n\nconst LINK = /\\[([^\\]]+)\\]\\(([^)]+)\\)/;\nconst BOLD = /\\*\\*([^*]+)\\*\\*/;\nconst CODE = /`([^`]+)`/;\nconst ITAL = /\\*([^*]+)\\*|_([^_]+)_/;\n\nfunction inlineOps(t) {\n  const out = [];\n  let rest = String(t);\n  while (rest.length) {\n    let best = null, kind = null;\n    const cands = [[LINK,'link'],[BOLD,'bold'],[CODE,'code'],[ITAL,'ital']];\n    for (const c of cands) { const m = c[0].exec(rest); if (m && (best === null || m.index < best.index)) { best = m; kind = c[1]; } }\n    if (!best) { out.push({ text: rest }); break; }\n    if (best.index > 0) out.push({ text: rest.slice(0, best.index) });\n    if (kind === 'link') out.push({ text: best[1], attributes: { link: best[2] } });\n    else if (kind === 'bold') out.push({ text: best[1], attributes: { bold: true } });\n    else if (kind === 'code') out.push({ text: best[1], attributes: { code: true } });\n    else out.push({ text: best[1] || best[2], attributes: { italic: true } });\n    rest = rest.slice(best.index + best[0].length);\n  }\n  return out.length ? out : [{ text: '' }];\n}\nfunction emit(inline, attrs) { for (const o of inline) ops.push(o); ops.push(attrs ? { text: '\\n', attributes: attrs } : { text: '\\n' }); }\nfunction isRow(s){ const t=s.trim(); return t.length>1 && t.charAt(0)==='|' && t.charAt(t.length-1)==='|'; }\nfunction isSep(s){ const t=s.trim(); return /^[|\\s:-]+$/.test(t) && t.indexOf('-')>=0; }\nfunction cellsOf(s){ return s.trim().replace(/^\\|/,'').replace(/\\|$/,'').split('|').map(function(c){return c.trim();}); }\n\nconst L = md.replace(/\\r/g,'').split('\\n');\nlet i=0, gRow=0, inCode=false;\nwhile (i < L.length) {\n  const s = L[i];\n  if (s.trim().indexOf('```') === 0) { inCode = !inCode; i++; continue; }\n  if (inCode) { ops.push({ text: s }); ops.push({ text: '\\n', attributes: { 'code-block': 'plain' } }); i++; continue; }\n  if (isRow(s) && i+1 < L.length && isSep(L[i+1])) {\n    const rows=[]; let j=i;\n    while (j < L.length && isRow(L[j])) { rows.push(L[j]); j++; }\n    for (let r=0; r<rows.length; r++) {\n      if (r===1) continue;\n      gRow++;\n      const cs = cellsOf(rows[r]);\n      for (const c of cs) { const io = inlineOps(c); for (const o of io) ops.push(o); ops.push({ text: '\\n', attributes: { table: 'row-'+gRow } }); }\n    }\n    i=j; continue;\n  }\n  const t = s.replace(/^\\s+/,'');\n  let m;\n  if (t.charAt(0)==='#') { const h=t.match(/^(#{1,6})\\s+(.*)$/); if (h) { emit(inlineOps(h[2]), { header: Math.min(h[1].length,3) }); i++; continue; } }\n  if ((m = t.match(/^[-*+]\\s+(.*)$/))) { emit(inlineOps(m[1]), { list: 'bullet' }); i++; continue; }\n  if ((m = t.match(/^\\d+\\.\\s+(.*)$/))) { emit(inlineOps(m[1]), { list: 'ordered' }); i++; continue; }\n  if (t.charAt(0)==='>') { emit(inlineOps(t.replace(/^>\\s?/,'')), { blockquote: true }); i++; continue; }\n  if (/^([-*_])\\1{2,}$/.test(s.trim())) { i++; continue; }\n  if (s.trim()==='') { i++; continue; }\n  emit(inlineOps(s), null);\n  i++;\n}\n\nops.push({ text: '\\n—\\n' });\nops.push({ text: 'Przygotowane przez agenta AI (model: '+model+', koszt: '+cost+' PLN). Do weryfikacji — nie finalizuje zadania.', attributes: { italic: true } });\nops.push({ text: '\\n' });\nlet webSources = [];\ntry {\n  const raw = wc.web_sources;\n  webSources = Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : []);\n} catch(e) {}\nif (webSources.length) {\n  ops.push({ text: 'Źródła' });\n  ops.push({ text: '\\n', attributes: { header: 2 } });\n  for (const s of webSources) {\n    ops.push({ text: (s.title || s.url), attributes: { link: s.url } });\n    ops.push({ text: '\\n', attributes: { list: 'bullet' } });\n  }\n}\nreturn [{ json: { ops } }];"
-      },
-      "notes": "Converts model markdown -> ClickUp Quill-delta ops + @-mention + footer + web sources section. Reads all inputs from When Called trigger."
+      }
     },
     {
       "id": "is-mention",
@@ -40,17 +60,31 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [440, 200],
+      "notes": "True (triggering_comment_id set) -> reply in-thread. False (autonomous trigger) -> new top-level comment.",
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
           "conditions": [
-            { "id": "s1", "leftValue": "={{ $('When Called').first().json.triggering_comment_id }}", "rightValue": "", "operator": { "type": "string", "operation": "notEmpty", "singleValue": true } }
+            {
+              "id": "s1",
+              "leftValue": "={{ $('When Called').first().json.triggering_comment_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
           ],
           "combinator": "and"
         },
         "options": {}
-      },
-      "notes": "True (triggering_comment_id set) -> reply in-thread. False (autonomous trigger) -> new top-level comment."
+      }
     },
     {
       "id": "post-reply",
@@ -58,6 +92,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [660, 80],
+      "notes": "Reply path for @mention triggers. onError=continueErrorOutput -> Alert Reply Failed, then fallback to Post Draft Comment.",
       "parameters": {
         "method": "POST",
         "url": "=https://api.clickup.com/api/v2/comment/{{ $('When Called').first().json.triggering_comment_id }}/reply",
@@ -65,15 +100,19 @@
         "nodeCredentialType": "clickUpApi",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ comment: $('Build Comment').first().json.ops, notify_all: false }) }}",
+        "jsonBody": "={{ JSON.stringify({ comment: $json.ops, notify_all: false }) }}",
         "options": {}
       },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
-      "waitBetweenTries": 2000,
-      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
-      "onError": "continueErrorOutput",
-      "notes": "Reply path for @mention triggers. onError=continueErrorOutput -> Alert Reply Failed, then fallback to Post Draft Comment."
+      "waitBetweenTries": 2000
     },
     {
       "id": "alert-reply-failed",
@@ -81,8 +120,13 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [880, 0],
+      "notes": "WARN when replying in-thread fails. Run continues via Post Draft Comment fallback.",
       "parameters": {
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -92,18 +136,11 @@
             "details": "=task={{ $('When Called').first().json.clickup_task_id }}; triggering_comment={{ $('When Called').first().json.triggering_comment_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
         },
         "options": {}
-      },
-      "notes": "WARN when replying in-thread fails. Run continues via Post Draft Comment fallback."
+      }
     },
     {
       "id": "post-draft-comment",
@@ -111,6 +148,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [660, 320],
+      "notes": "Posts agent output as a new top-level comment. Used for autonomous triggers or as Post Reply fallback.",
       "parameters": {
         "method": "POST",
         "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}/comment",
@@ -118,15 +156,19 @@
         "nodeCredentialType": "clickUpApi",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ comment: $('Build Comment').first().json.ops, notify_all: false }) }}",
+        "jsonBody": "={{ JSON.stringify({ comment: $json.ops, notify_all: false }) }}",
         "options": {}
       },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
-      "waitBetweenTries": 2000,
-      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
-      "onError": "continueErrorOutput",
-      "notes": "Posts agent output as a new top-level comment. Used for autonomous triggers or as Post Reply fallback."
+      "waitBetweenTries": 2000
     },
     {
       "id": "alert-postback-failed",
@@ -135,22 +177,20 @@
       "typeVersion": 1.3,
       "position": [880, 400],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
             "severity": "WARN",
             "source": "post-reply/post-back",
             "message": "Nie udało się opublikować wersji roboczej (komentarza) na zadaniu CU.",
-            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; reviewer={{ $('When Called').first().json.reviewer_user_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; reviewer={{ $('When Called').first().json.reviewer_user_id }}; orphaned_attachments={{ $('Rewrite Delta').isExecuted ? JSON.stringify($('Rewrite Delta').first().json.attachment_ids) : '[]' }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
         },
@@ -163,6 +203,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1100, 200],
+      "notes": "Sets [AI] Status agenta -> 'Zakończono' after draft comment is posted.",
       "parameters": {
         "method": "POST",
         "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}/field/30130652-01c2-451b-954a-c36a455790fe",
@@ -173,12 +214,16 @@
         "jsonBody": "={{ JSON.stringify({ value: '6fcac9a5-0a76-4f9e-a92a-a2a34c60d794' }) }}",
         "options": {}
       },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
-      "waitBetweenTries": 2000,
-      "credentials": { "clickUpApi": { "id": "QRrgf6hteyGWSJyv", "name": "ClickUp account" } },
-      "onError": "continueErrorOutput",
-      "notes": "Sets [AI] Status agenta -> 'Zakończono' after draft comment is posted."
+      "waitBetweenTries": 2000
     },
     {
       "id": "alert-status-failed",
@@ -187,7 +232,11 @@
       "typeVersion": 1.3,
       "position": [1320, 200],
       "parameters": {
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -197,12 +246,6 @@
             "details": "=task={{ $('When Called').first().json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
         },
@@ -215,19 +258,24 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [1320, 380],
+      "notes": "ADR-044 erasure-readiness: writes the posted ClickUp comment id onto the task's latest agent_runs row. Side branch off Set Status success — cannot affect the already-complete reply/status. CTE always returns one row (target_id, updated 0/1) so a 0-row UPDATE is detectable, not a silent 0-item drop. Block 10: also records run_payload_bytes (delivered-payload UTF-8 bytes, proxy for n8n execution-data weight) + n8n_execution_id on the same row. Reuses the sanctioned post-delivery UPDATE (no second agent_runs writer).",
       "parameters": {
         "operation": "executeQuery",
-        "query": "with target as (\n  select id from agent_runs where clickup_task_id = $1 order by id desc limit 1\n), upd as (\n  update agent_runs set clickup_comment_id = $2\n  where id = (select id from target)\n  returning id\n)\nselect (select id from target) as target_id, (select count(*) from upd)::int as updated;",
+        "query": "with target as (\n  select id from agent_runs where clickup_task_id = $1 order by id desc limit 1\n), upd as (\n  update agent_runs set clickup_comment_id = $2, run_payload_bytes = $3, n8n_execution_id = $4\n  where id = (select id from target)\n  returning id\n)\nselect (select id from target) as target_id, (select count(*) from upd)::int as updated;",
         "options": {
-          "queryReplacement": "={{ [ $('When Called').first().json.clickup_task_id, ($('Post Draft Comment').isExecuted && $('Post Draft Comment').first().json.id) ? $('Post Draft Comment').first().json.id : ($('Post Reply').isExecuted ? $('Post Reply').first().json.id : '') ] }}"
+          "queryReplacement": "={{ [ $('When Called').first().json.clickup_task_id, ($('Post Draft Comment').isExecuted && $('Post Draft Comment').first().json.id) ? $('Post Draft Comment').first().json.id : ($('Post Reply').isExecuted ? $('Post Reply').first().json.id : ''), $('Finalize Comment').isExecuted ? $('Finalize Comment').first().json.run_payload_bytes : null, $execution.id ] }}"
         }
       },
-      "credentials": { "postgres": { "id": "EjK3iACTbSNRDhVz", "name": "Postgres / supabase connection" } },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
-      "waitBetweenTries": 2000,
-      "onError": "continueErrorOutput",
-      "notes": "ADR-044 erasure-readiness: writes the posted ClickUp comment id onto the task's latest agent_runs row. Side branch off Set Status success — cannot affect the already-complete reply/status. CTE always returns one row (target_id, updated 0/1) so a 0-row UPDATE is detectable, not a silent 0-item drop."
+      "waitBetweenTries": 2000
     },
     {
       "id": "recorded",
@@ -235,17 +283,30 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [1540, 380],
+      "notes": "True: clickup_comment_id written (updated=1) -> done. False: no matching agent_runs row (updated=0) -> WARN.",
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 3 },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
           "conditions": [
-            { "id": "r1", "leftValue": "={{ $json.updated }}", "rightValue": 1, "operator": { "type": "number", "operation": "equals" } }
+            {
+              "id": "r1",
+              "leftValue": "={{ $json.updated }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
           ],
           "combinator": "and"
         },
         "options": {}
-      },
-      "notes": "True: clickup_comment_id written (updated=1) -> done. False: no matching agent_runs row (updated=0) -> WARN."
+      }
     },
     {
       "id": "alert-record-artifact",
@@ -253,8 +314,13 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [1760, 480],
+      "notes": "WARN when the comment-id write found no row or errored. Defense-in-depth: a missing run row is also alerted upstream by Log Model Run. Posts to the Alerts task (disjoint from the answer task) so no webhook loop; does not block reply/status.",
       "parameters": {
-        "workflowId": { "__rl": true, "value": "YSCdHlmdf3p9XEUx", "mode": "list", "cachedResultName": "Post Alert (v1)" },
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
@@ -264,46 +330,435 @@
             "details": "=task={{ $('When Called').first().json.clickup_task_id }}; target_id={{ $('Record Artifact').first().json.target_id || 'null' }}; updated={{ $('Record Artifact').first().json.updated }}; err={{ ($json.error && (($json.error.message) || $json.error)) || 'none' }}"
           },
           "matchingColumns": [],
-          "schema": [
-            { "id": "severity", "displayName": "severity", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "source", "displayName": "source", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "message", "displayName": "message", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false },
-            { "id": "details", "displayName": "details", "type": "string", "canBeUsedToMatch": true, "required": false, "display": true, "defaultMatch": false }
-          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": true
         },
         "options": {}
+      }
+    },
+    {
+      "id": "has-images",
+      "name": "Has Images?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [200, 200],
+      "notes": "True: image_manifest non-empty -> in-memory base64 image path. False: text-only path (Build Comment), unchanged from pre-Block-10.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "h1",
+              "leftValue": "={{ Array.isArray($json.image_manifest) ? $json.image_manifest.length > 0 : (typeof $json.image_manifest === 'string' && $json.image_manifest.trim() !== '' && $json.image_manifest.trim() !== '[]') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "parse-manifest",
+      "name": "Parse Manifest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 40],
+      "notes": "Parses image_manifest (base64 entries: {placeholder_id,b64,mime,caption,alt}) -> one item per image. In-memory (Option A); no disk.",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nlet manifest = wc.image_manifest;\nif (typeof manifest === 'string') { try { manifest = JSON.parse(manifest || '[]'); } catch (e) { manifest = []; } }\nif (!Array.isArray(manifest)) manifest = [];\nconst out = [];\nfor (const m of manifest) {\n  out.push({ json: { b64: m.b64 || '', mime: m.mime || 'image/png', placeholder_id: m.placeholder_id, caption: m.caption || '', alt: m.alt || '' } });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "to-binary",
+      "name": "To Binary",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [640, 40],
+      "notes": "Decodes each manifest base64 string into binary \"data\" for multipart upload. No file ever touches disk.",
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "b64",
+        "binaryPropertyName": "data",
+        "options": {
+          "fileName": "={{ ($json.placeholder_id || 'image') }}.png",
+          "mimeType": "={{ $json.mime || 'image/png' }}"
+        }
+      }
+    },
+    {
+      "id": "upload-att",
+      "name": "Upload Attachment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [860, 40],
+      "notes": "Uploads each decoded image to the task -> {id,url}. onError=continueRegularOutput so a failed upload still flows in order (Aggregate substitutes [obraz niedostępny] + WARN).",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}/attachment",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "attachment",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {}
       },
-      "notes": "WARN when the comment-id write found no row or errored. Defense-in-depth: a missing run row is also alerted upstream by Log Model Run. Posts to the Alerts task (disjoint from the answer task) so no webhook loop; does not block reply/status."
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "aggregate-uploads",
+      "name": "Aggregate Uploads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 40],
+      "notes": "Correlates uploads to manifest by order (1:1). Emits upload_map placeholder_id->{id,url}, attachment_ids, failed_count. One incoming connection only (CLAUDE.md aggregator trap).",
+      "parameters": {
+        "jsCode": "const manifest = $('Parse Manifest').all().map(i => i.json);\nconst uploads = items.map(i => i.json);\nconst map = {};\nlet failed = 0;\nfor (let i = 0; i < manifest.length; i++) {\n  const ph = manifest[i].placeholder_id;\n  const up = uploads[i];\n  if (up && up.id && up.url) { map[ph] = { id: up.id, url: up.url }; }\n  else { failed++; }\n}\nconst attachment_ids = Object.values(map).map(v => v.id);\nreturn [{ json: { upload_map: map, attachment_ids, failed_count: failed } }];"
+      }
+    },
+    {
+      "id": "rewrite-delta",
+      "name": "Rewrite Delta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 40],
+      "notes": "Rewrites {type:image_ref,placeholder_id} -> {type:attachment,attachment:{id,url}} (the ClickUp inline-image op proven in the Block 10 spike). Missing upload -> [obraz niedostępny].",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nlet ops = wc.rendered_delta;\nif (typeof ops === 'string') { try { ops = JSON.parse(ops || '[]'); } catch (e) { ops = []; } }\nif (!Array.isArray(ops)) ops = [];\nconst agg = $('Aggregate Uploads').first().json;\nconst map = agg.upload_map || {};\nconst out = [];\nfor (const op of ops) {\n  if (op && op.type === 'image_ref') {\n    const m = map[op.placeholder_id];\n    if (m && m.id) out.push({ type: 'attachment', attachment: { id: m.id, url: m.url } });\n    else out.push({ text: '[obraz niedostępny]\\n', attributes: { italic: true } });\n  } else {\n    out.push(op);\n  }\n}\nreturn [{ json: { ops: out, attachment_ids: agg.attachment_ids || [], failed_count: agg.failed_count || 0 } }];"
+      }
+    },
+    {
+      "id": "uploads-failed",
+      "name": "Uploads Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1300, -140],
+      "notes": "True: >=1 image upload failed -> WARN (side branch, non-blocking). The comment still posts with [obraz niedostępny] in place of failed images.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "u1",
+              "leftValue": "={{ $json.failed_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "alert-upload-failed",
+      "name": "Alert Upload Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1520, -140],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "post-reply/image-upload",
+            "message": "Nie udało się przesłać co najmniej jednego obrazu do ClickUp — komentarz publikuje się z zastępnikiem [obraz niedostępny].",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; failed_count={{ $json.failed_count }}; uploaded={{ JSON.stringify($json.attachment_ids) }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "finalize-comment",
+      "name": "Finalize Comment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 200],
+      "notes": "Converges text + image paths. Computes run_payload_bytes = UTF-8 bytes of {rendered_comment,image_manifest} (proxy/lower-bound for execution-data weight; recorded for ALL runs) and appends the Polish size footer line. runOnceForEachItem avoids the multi-incoming aggregator trap.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const wc = $('When Called').first().json;\nconst ops = Array.isArray($json.ops) ? $json.ops : [];\nlet manifest = wc.image_manifest;\nif (typeof manifest === 'string') { try { manifest = JSON.parse(manifest || '[]'); } catch (e) { manifest = []; } }\nif (!Array.isArray(manifest)) manifest = [];\nconst payloadStr = JSON.stringify({ rendered_comment: ops, image_manifest: manifest });\nlet bytes;\ntry { bytes = Buffer.byteLength(payloadStr, 'utf8'); } catch (e) { bytes = payloadStr.length; }\nconst fmt = bytes >= 1048576 ? (bytes / 1048576).toFixed(2).replace('.', ',') + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB';\nconst out = ops.slice();\nout.push({ text: '\\nrozmiar danych przebiegu: ' + fmt + '\\n', attributes: { italic: true } });\nreturn { json: { ops: out, run_payload_bytes: bytes, attachment_ids: $json.attachment_ids || [] } };"
+      }
     }
   ],
   "connections": {
-    "When Called": { "main": [[{ "node": "Build Comment", "type": "main", "index": 0 }]] },
-    "Build Comment": { "main": [[{ "node": "Is @mention?", "type": "main", "index": 0 }]] },
-    "Is @mention?": { "main": [[{ "node": "Post Reply", "type": "main", "index": 0 }], [{ "node": "Post Draft Comment", "type": "main", "index": 0 }]] },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Has Images?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Comment": {
+      "main": [
+        [
+          {
+            "node": "Finalize Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is @mention?": {
+      "main": [
+        [
+          {
+            "node": "Post Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post Draft Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Post Reply": {
       "main": [
-        [{ "node": "Set Status Zakonczono", "type": "main", "index": 0 }],
-        [{ "node": "Alert Reply Failed", "type": "main", "index": 0 }, { "node": "Post Draft Comment", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Set Status Zakonczono",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Reply Failed",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Post Draft Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Post Draft Comment": {
       "main": [
-        [{ "node": "Set Status Zakonczono", "type": "main", "index": 0 }],
-        [{ "node": "Alert Post-back Failed", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Set Status Zakonczono",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Post-back Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Set Status Zakonczono": { "main": [[{ "node": "Record Artifact", "type": "main", "index": 0 }], [{ "node": "Alert Status Failed", "type": "main", "index": 0 }]] },
-    "Record Artifact": { "main": [[{ "node": "Recorded?", "type": "main", "index": 0 }], [{ "node": "Alert Record Artifact", "type": "main", "index": 0 }]] },
-    "Recorded?": { "main": [[], [{ "node": "Alert Record Artifact", "type": "main", "index": 0 }]] }
+    "Set Status Zakonczono": {
+      "main": [
+        [
+          {
+            "node": "Record Artifact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Status Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Artifact": {
+      "main": [
+        [
+          {
+            "node": "Recorded?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Record Artifact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recorded?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Alert Record Artifact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Images?": {
+      "main": [
+        [
+          {
+            "node": "Parse Manifest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Manifest": {
+      "main": [
+        [
+          {
+            "node": "To Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "To Binary": {
+      "main": [
+        [
+          {
+            "node": "Upload Attachment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Attachment": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Uploads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Uploads": {
+      "main": [
+        [
+          {
+            "node": "Rewrite Delta",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Uploads Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Uploads Failed?": {
+      "main": [
+        [
+          {
+            "node": "Alert Upload Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Rewrite Delta": {
+      "main": [
+        [
+          {
+            "node": "Finalize Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Comment": {
+      "main": [
+        [
+          {
+            "node": "Is @mention?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
   },
   "settings": {
     "executionOrder": "v1",
     "errorWorkflow": "81eplXMD1v5ONhzs"
-  },
-  "staticData": null,
-  "meta": null,
-  "pinData": {},
-  "tags": []
+  }
 }

@@ -235,7 +235,18 @@ end-to-end through the LiteLLM gateway with accurate cost headers. The count/res
 - Append the "Do weryfikacji — nie finalizuje" footer and the reviewer @-mention.
 - Returns `{ rendered_comment: { delta, image_refs(temp paths) }, temp_manifest, total_cost_pln }`.
 
-### 3.6 Image delivery (comment_native, staged through server temp)
+### 3.6 Image delivery (comment_native)
+
+> **SUPERSEDED IN PART — Block 10 (2026-06-12, ADR-036): in-memory base64, NOT server temp.** This n8n
+> ships no `Execute Command` node and `Read/Write Files` has no delete op, so a temp dir cannot be cleaned
+> from inside n8n. The **disk-temp staging, the per-run temp dir, the rollback-retain-temp, and the TTL sweep
+> below are retired**; images travel as **base64 in the manifest** (`{placeholder_id,b64,mime,caption,alt}`,
+> matching Block 9's `b64_json`) and Stage C does `convertToFile → multipart upload → inline op` in memory.
+> What STILL holds: comment_native delivery; attach-then-reference (the comment API is JSON-only, no multipart);
+> and the **inline-image op proven by the Block-10 spike** — `{ "type":"attachment","attachment":{ "id":…,"url":… } }`
+> referencing a real ClickUp task attachment (a bare `{image:url}` op / markdown does NOT render). Also settled:
+> **no delete-attachment API exists** and the attachment is **free-floating** (deleting the comment does not
+> remove it) → rollback is a best-effort orphan-WARN (no deletion), persistence accepted. See ADR-036 Block 10.
 
 Decision (ADR-036, `config.image_host=comment_native`): deliver images via the native ClickUp
 comment-attachment flow. New image bytes are staged on the server and uploaded only as part of the
@@ -427,10 +438,12 @@ input wired into the spine and verified end-to-end). Remaining:
    reachable via LiteLLM `image_generation` (cost header verified or static price set).
 2. **[DONE]** One extractor: a .docx and a .pdf each produce the shared contract via Docling; a
    corrupt file yields `[BRAK: extraction_failed]` + WARN, run continues.
-3. comment_native delivery (Phase B): generated images staged in the per-run temp dir; only final-
-   comment images uploaded; upload-then-reference renders inline; forced post-failure → rollback +
-   temp retained; success → temp deleted; TTL sweep removes a stale dir. Record the lifecycle
-   binding; test the one-call paths.
+3. **[DONE — Block 10, 2026-06-12, in-memory base64]** comment_native delivery: generated images travel as
+   base64 in the manifest; Stage C `convertToFile → multipart upload → inline {type:attachment} op` renders
+   them inline (verified live, 2 images); forced post-failure after upload → orphan-WARN (no delete API,
+   persistence accepted); no temp/disk/sweep (retired — `Execute Command`/file-delete unavailable here).
+   Lifecycle binding recorded: attachment is free-floating (survives comment deletion). One-call path
+   confirmed absent (comment endpoint is JSON-only). `run_payload_bytes` observability added (migration 025).
 4. **[DONE]** Decomposition: one trigger → three executions (A, B, C), each its own log; every Call
    onError reaches the one Reset+Alert path.
 5. Tiering (Phase B): Niski selects the cheap model + low cap; Wysoki the top model + high cap.

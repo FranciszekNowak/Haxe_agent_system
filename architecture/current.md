@@ -168,6 +168,11 @@ Two parallel feedback systems with identical machinery, different subject:
   `clickup_comment_id` (the id of the comment the run posted — recorded live by
   Post-back's `Record Artifact`), and a reserved `drive_file_id`. Nothing reads
   `subject_key` yet; the schema is ready at zero behavioral cost.
+  **Observability (migration 025, ADR-036 Block 10):** nullable `run_payload_bytes` (UTF-8 byte
+  size of the delivered payload — rendered comment + any image base64 — written once per delivering
+  run by `Record Artifact`, for text and image runs alike; a **proxy + lower bound** for n8n
+  execution-data weight, true ≈ this × nodes traversed; null if the run failed before delivery) and
+  `n8n_execution_id` (the run's n8n execution id, for exact-size backfill + run→execution debugging).
 - `agent_run_evaluations` — append-only threaded human feedback on a given
   output. Each row = one timestamped contribution carrying an optional thumbs
   rating and/or comment. Same user may appear many times; current stance = their
@@ -376,6 +381,14 @@ a data location change.
 > the data half of Block 9, which folded image generation into `Invoke Model (v1)` as an output modality
 > (see §15.4); the rows now have a caller. Migration 023's "Blocks 9–12 unbuilt / no caller" note is
 > superseded for Block 9.
+
+> **Block 10 — `agent_runs` payload-weight observability (2026-06-12, ADR-036).** Migration
+> `025_agent_runs_payload_bytes.sql` adds two nullable columns to `agent_runs`: `run_payload_bytes`
+> (bigint — UTF-8 byte size of the delivered payload, rendered comment + any image base64; a proxy +
+> lower bound for n8n execution-data weight) and `n8n_execution_id` (text). Written once per delivering
+> run by Post Reply's `Record Artifact` (no new writer). Additive, nullable; PK/columns otherwise
+> unchanged; PD-blind. Supports the Block-10 in-memory base64 delivery pivot (see §15.6) — base64 rides
+> n8n execution data, so per-run weight is now observable.
 
 Principles: store facts, never derivations; constrain (CHECK) where downstream
 automation depends on consistency, leave free-form where only semantic meaning
@@ -1165,11 +1178,31 @@ post never sets status or `[AI] Finalny…`.
   > Entity`), so the root is the only valid target. On reply failure → new top-level comment + WARN,
   > unchanged.
 
-- **Artifact recording (ADR-044, migration 022):** after the status field is set, a `Record Artifact`
-  Postgres node (side branch off `Set Status Zakończono` success) writes the posted comment id onto
-  the task's latest `agent_runs.clickup_comment_id`. Best-effort + observable: a 0-row write or DB
-  error fires a `post-reply/record-artifact` WARN; reply and status still complete. This is
-  erasure-readiness plumbing — see the §4 `agent_runs` note and the Block 4 migration narrative.
+- **Artifact recording (ADR-044, migration 022; extended Block 10, migration 025):** after the status
+  field is set, a `Record Artifact` Postgres node (side branch off `Set Status Zakończono` success) writes
+  the posted comment id onto the task's latest `agent_runs.clickup_comment_id` — and, since Block 10, also
+  `run_payload_bytes` + `n8n_execution_id` on the same row (no second `agent_runs` writer). Best-effort +
+  observable: a 0-row write or DB error fires a `post-reply/record-artifact` WARN; reply and status still
+  complete. Erasure-readiness + payload-observability plumbing — see the §4/§5 `agent_runs` notes.
+
+- **Multimodal image delivery — in-memory base64, Option A (ADR-036 Block 10, 2026-06-12).** When the caller
+  passes `image_manifest` (base64 entries `{placeholder_id,b64,mime,caption,alt}`) + `rendered_delta` (ops with
+  `{type:'image_ref',placeholder_id}` placeholders), Stage C forks an image path off `Has Images?`:
+  `Parse Manifest → To Binary (convertToFile, base64→binary) → Upload Attachment (multipart POST
+  /task/{id}/attachment → {id,url}) → Aggregate Uploads → Rewrite Delta`, which replaces each placeholder with
+  the **ClickUp inline-image op `{type:'attachment', attachment:{id,url}}`** — the *only* form that renders
+  inline (a bare `{image:url}` op or markdown does not; proven by the Block-10 spike). Both paths converge at
+  `Finalize Comment` (computes `run_payload_bytes` + appends the Polish `rozmiar danych przebiegu` footer), then
+  the existing reply/draft post. **No disk, no temp, no shell, no shared volume** — the disk-temp design
+  (spec §3.6) was impossible on this n8n (`Execute Command` + file-delete unavailable) and is superseded by
+  in-memory base64 (matches Block 9's `b64_json` output). **Two invariants:** (1) **base64 never reaches the
+  DB** — `Record Artifact`/`Log Model Run` get only scalar fields, never the manifest; (2) **execution pruning
+  is required** (base64 rides n8n execution data) — currently n8n defaults (prune on, 336 h / 10 000). **Failure
+  handling:** there is no delete-attachment API, so a post-failure after upload leaves the uploaded images as
+  free-floating task attachments (persistence accepted — mockups are legitimate content) and fires a
+  `post-reply/post-back` WARN listing the orphaned ids; per-image upload failure → `[obraz niedostępny]` +
+  `post-reply/image-upload` WARN, the comment still posts. Verified live on `869dhad2q` (2 generated images
+  rendered inline). The base64 manifest is the Stage-B→C contract Blocks 11/12 build on.
 
 ### 15.7 `CU Webhook Producer (v1)` — automatic triggering
 
