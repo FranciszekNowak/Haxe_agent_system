@@ -1045,12 +1045,15 @@ was a task-node link-rendering / pre-grant artifact).
 > size **exactly**, snapping to nearest-valid only on a real violation (+ an honest Polish note rendered inline
 > + `invoke-model/size-snapped` WARN). Verified live: `1280x512` on Krytycznie → gpt-image-2 returned an exact
 > 1280×512 (decoded), priced row, posted inline, no snap/WARN.
-> **Limitation:** the Vertex **gemini** image tiers (Niski/Średni) cannot honor `size` *or* `aspect` through the
-> current LiteLLM gateway — LiteLLM drops gemini's `imageConfig`, so those images return ~1:1 1K regardless
-> (known LiteLLM bug; a non-square probe returned 1024×1024). Explicit-resolution control therefore works on the
-> **gpt-image-2 tiers only**; an interim reroute-to-gemini design was built and **reversed** once probing proved
-> gpt-image-2 is the resolution-flexible model and gemini-via-gateway ignores size. *Follow-up tracked:* bypass
-> LiteLLM for gemini image (native `generateContent`) or route aspect-sensitive generation to gpt-image-2.
+> **Gemini tiers + explicit resolution → model upgrade (Block 13b).** Vertex gemini image (Niski/Średni) can't
+> honor `size`/`aspect` through the gateway (LiteLLM drops `imageConfig` → ~1:1 1K; a non-square probe returned
+> 1024×1024). So when a user requests an explicit `size` on a gemini tier, `Resolve Routing` **upgrades the image
+> model to gpt-image-2** (which honors size), keeps the tier's low `image_quality` for cost, and informs the user
+> inline + `invoke-model/resolution-adjusted` WARN. Verified: Niski 1280×512 → gpt-image-2 low-quality, exact
+> 1280×512, $0.0024. An interim *reverse* design (reroute gpt→gemini) was built and **reversed** once probing
+> proved gpt-image-2 is the resolution-flexible model. **Residual limitation:** *aspect-only* requests (no explicit
+> `size`) on gemini tiers still return ~1:1 1K. *Follow-up tracked:* bypass LiteLLM for gemini image (native
+> `generateContent`) so the gemini tiers honor aspect without forcing a gpt-image-2 upgrade.
 
 ### 15.4 `Invoke Model (v1)` — routing + exact cost
 

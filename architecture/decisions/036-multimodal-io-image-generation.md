@@ -735,6 +735,13 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
   priced `image_gen` row, no snap/WARN on the clean path. The only alerts were pre-existing test-task noise (12 junk
   attachments → Block-6 `image-unprocessable`; `broken.docx`; a flaky `Research the web` CRITICAL) — none from
   Block 13. No migration; no model-end work (the `requested_size` seam pre-existed from Block 9).
+- **Block 13b — gemini-tier explicit-resolution upgrade (2026-06-13, ADR-045).** Since gemini-via-LiteLLM ignores
+  `size`, an explicit resolution on a **non-gpt tier (Niski/Średni)** now **upgrades the image model to gpt-image-2**
+  in `Resolve Routing` (`reqSize && !isGpt`), keeping the tier's low `image_quality` so cost stays minimal, and
+  informs the user (inline Polish note + `invoke-model/resolution-adjusted` WARN). This is the correctly-directed
+  counterpart to the reversed reroute (gemini→gpt, not gpt→gemini). Verified live (Niski, exec 1948): model upgraded
+  gemini→gpt-image-2, exact 1280×512 returned (decoded), `image_quality=low`, cost $0.0024, note posted inline.
+  Residual: aspect-only (no explicit `size`) on gemini tiers is still ~1:1 1K (the native-`generateContent` follow-up).
 
 ---
 

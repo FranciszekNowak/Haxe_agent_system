@@ -74,11 +74,19 @@ LiteLLM ignores `imageConfig`/`size`** and returned a **1024×1024 square** for 
 LiteLLM limitation (it does not map/forward gemini's `imageConfig`). The reroute therefore moved work onto the
 one model that *cannot* honor resolution. It was dropped.
 
-**Scope + limitation.** Explicit-resolution control is **live on the gpt-image-2 tiers (Wysoki / Krytycznie
-ważne)**. The gemini tiers (Niski / Średni) cannot honor `size` *or* `aspect` through the current gateway
-(images come back ~1:1 1K regardless — this also means the pre-existing per-block `aspect` feature is inert for
-gemini tiers). Follow-up tracked: bypass LiteLLM for Vertex gemini image generation (native `generateContent`
-HTTP node) or route aspect/resolution-sensitive generation to gpt-image-2.
+**Scope + the gemini-tier upgrade (Block 13b).** `gpt-image-2` is the only model that honors `size` through the
+gateway, so explicit-resolution control works natively on its tiers (Wysoki / Krytycznie ważne). For a **gemini
+tier (Niski / Średni)** an explicit `size` would otherwise be silently ignored (~1:1 1K), so `Resolve Routing`
+**upgrades the image model to `gpt-image-2`** whenever an explicit `size` is present on a non-gpt tier — keeping
+the tier's low `image_quality` (cost stays minimal: a verified Niski 1280×512 cost $0.0024) — and informs the
+user with an inline Polish note plus an `invoke-model/resolution-adjusted` WARN. Verified live (Niski, exec 1948):
+model upgraded gemini→gpt-image-2, exact 1280×512 returned (decoded), note posted inline.
+
+**Residual limitation.** Only an **aspect-only** request (a per-block `aspect`, no explicit `size`) on a gemini
+tier is still unhonored (returns ~1:1 1K) — the pre-existing per-block `aspect` feature remains inert for the
+gemini tiers because we don't force a model upgrade without an explicit resolution. Follow-up tracked: bypass
+LiteLLM for Vertex gemini image generation (native `generateContent` HTTP node) so the gemini tiers honor
+`aspect` directly, without a gpt-image-2 upgrade.
 
 ## Date
 
