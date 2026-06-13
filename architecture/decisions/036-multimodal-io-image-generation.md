@@ -674,10 +674,49 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
     + 2 generated, each captioned), reviewer @mention, and the footer `(tekst: haxe-sonnet-4-6-direct, obraz:
     vertex_ai/gemini-2.5-flash-image; koszt łączny: 0.2978 PLN)`; `Record Artifact updated=1`; 0 alerts. Embed-miss
     and ceiling cases verified separately (above).
-  - **Still owed (Block 12):** wire Stage B to call the resolver automatically (drafting model emits the block
-    list), forward `image_models`/`total_image_cost_pln`/`rendered_delta`/`image_manifest` into Post Reply, and
-    route the resolver's `warnings[]` to `Post Alert`. Sequential generation is acceptable now; parallel fan-out is
-    the latency lever if multi-image high-tier requests get slow.
+  - **Done in Block 12 (below):** Stage B now auto-calls the resolver (drafting model emits the block list), the
+    four image fields are forwarded to Post Reply, and resolver `warnings[]` route to `Post Alert`. Sequential
+    generation is still in place; parallel fan-out remains the latency lever if multi-image high-tier requests get slow.
+
+- **Block 12 — end-to-end multimodal run: drafting model emits the block list, full A→B→C (2026-06-13).**
+  Wired the four upstream pieces so the resolver/delivery built in Blocks 9–11 actually run on real tasks.
+  Operator decisions this build: **full unification** — *every* task is instructed to emit the JSON output-block
+  contract and routes through `Image Resolver (v1)`; the prose `Build Comment` renderer in Stage C is **retired**,
+  so there is now ONE rendering path (the resolver's `rendered_delta`). **embed_input wired end-to-end** — the agent
+  can place an EXISTING attached image inline, not only generate new ones.
+  - **Stage A `Build Prompt`:** the prose trailer (Wyniki/Pytania/… as headings) is replaced by a strict-JSON
+    block-contract instruction (text / embed_input / generate shapes + a one-line example); the soft
+    Wyniki/Pytania/Decyzje/Sugestie structure now lives *inside* text blocks' `md`. Input images are enumerated with
+    their `ref` so the model can `embed_input` them; `source_ref` is added to the emitted image refs (it was dropped
+    before) so the resolver's embed lookup resolves.
+  - **Stage B `Execute LLM Call`:** new `Parse Output Blocks` (tolerant — strips a ```json fence, falls back to the
+    first `[...]`, then to a single `{type:text,md:completion}` block; the unify format-reliability net) →
+    `Call Image Resolver` → re-sequenced so `Sum Task Cost` runs AFTER the resolver (per-`generate` `image_gen` rows
+    are counted). `Return LLM Result` now carries `rendered_delta`/`image_manifest`/`image_models`/
+    `total_image_cost_pln`. Resolver `warnings[]` → `Has Warnings?` → `Alert Resolver Warnings` (WARN
+    `multimodal/resolver`), reconverging into the sole terminal. A resolver **throw** is left to propagate to the
+    orchestrator's global `Error Handler` (CRITICAL + status rollback) rather than caught locally — internal
+    gen/embed/ceiling failures are warnings, not throws.
+  - **Orchestrator:** `Call Post Reply` forwards the four image fields; `If LLM Succeeded?` accepts a non-empty
+    `completion` OR a non-empty `rendered_delta`.
+  - **Stage C `Post Reply`:** `Build Comment` deleted; `Has Images?` false branch → new `Pass Delta` (uses
+    `rendered_delta` directly, prepends the reviewer @mention, no upload) → `Finalize Comment`; the web-sources
+    `Źródła` section moved from Build Comment into `Finalize Comment`.
+  - **Verified live, node-by-node** (form-triggered: the unchanged webhook producer's mention-detection can't be
+    invoked programmatically, and Block 12 touches only A/B/C + orchestrator): (1) Niski text + 1 generate → image
+    inline via `{type:attachment}`, per-modality footer, `Record Artifact updated=1`, 0 alerts (exec 1725);
+    (2) text-only regression → prose rendered via resolver + `Pass Delta`, text-only footer, no image nodes fired;
+    (3) Niski task with an attached image → routed `multimodal_input` → `haxe-gemini-flash`, Gemini **read** the image
+    (found label typos, rendered a markdown table) and `embed_input` placed the existing attachment inline with **no
+    re-upload**; (4) two `generate` blocks → both images interleaved at the correct positions, distinct uploads,
+    aggregate footer (`koszt łączny 0.3202 PLN`); (5) forced embed-miss (`ref=photo_999`) → `[Obraz niedostępny]`
+    placeholder + WARN `multimodal/resolver` (`embed-ref-not-found`), comment still posts. Cost cross-check
+    (agent_runs vs CU field): the `image_gen` row is logged once (Log Model Run) and summed in.
+  - **Not re-run (cost/time):** the Wysoki `gpt-image-2` end-to-end (~$0.21/img, ~176 s). Block 9 already verified
+    gpt-image-2 generation + tier routing live across all five tiers, and the Block-12 wiring is tier-agnostic (the
+    resolver calls `Invoke Model` with `impact`; routing is unchanged), so the high tier is covered transitively.
+  - **Phase B (multimodal OUTPUT) is COMPLETE.** Remaining tracked item: Block 13 (resolution-extraction surface,
+    ADR-045) — model-end seam already built.
 
 ---
 
@@ -693,3 +732,4 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
 2026-06-12 (Block 9 — image generation folded into `Invoke Model (v1)` as output modality `requested_modality_of_output='image'`; routing `(impact, modality='image')` + single gemini-flash fallback hop; cost via header→token-math (migration 024)→floor; all 5 tiers + degrade + size-override + text/vision regression verified live; gpt-image-2 ~176 s so image timeout raised to 240 s)
 2026-06-12 (Block 10 — comment_native delivery in Stage C, **in-memory base64 (Option A)** superseding the disk-temp design: `Execute Command` + file-delete are unavailable on this n8n, so no cleanup is possible on disk; `convertToFile`→multipart upload→inline `{type:attachment}` op (the only ClickUp form that renders inline, proven by spike); no delete-attachment API → orphan-WARN rollback + accepted persistence; `run_payload_bytes`/`n8n_execution_id` observability (migration 025); base64 kept out of the DB; verified live incl. 2-image inline render + rollback. Blocks 11/12 now carry base64 manifests, not temp paths; the disk TTL-sweep phase is dropped)
 2026-06-12 (Block 11 — `Image Resolver (v1)` sub-workflow: resolves `embed_input` to existing attachments + calls `Invoke Model` per `generate` block + assembles `image_manifest`/`rendered_delta` for Stage C; per-impact image-COUNT cap retired for a single global `config.image_count_ceiling=20` safety guard (migration 026; impact still drives model+resolution); `executeWorkflow` set to once-per-item for fan-out + `task_type` metadata smuggling (Shape Output pass-through added); footer unified into `Finalize Comment`, now per-modality (`tekst:`/`obraz:`) with aggregate cost; image-path reviewer @mention parity added to `Rewrite Delta`; verified live — 3 images inline (1 embed + 2 generated) + footer + 0 alerts, plus embed-miss and ceiling cases. Block 12 still owed: auto-wire Stage B → resolver and route resolver `warnings[]` to Post Alert)
+2026-06-13 (Block 12 — end-to-end multimodal: drafting model emits the JSON block list; **full unification** (prose `Build Comment` retired → one rendering path via the resolver's `rendered_delta`); `embed_input` wired end-to-end; Stage B `Parse Output Blocks`→`Call Image Resolver`, cost-sum re-sequenced after the resolver, resolver `warnings[]`→Post Alert; orchestrator forwards the four image fields; Stage C adds `Pass Delta` + web-sources in `Finalize Comment`; verified live across generate / text-only regression / Gemini-vision+embed / multi-image interleave / forced embed-miss degrade; **Phase B multimodal OUTPUT complete**; Wysoki gpt-image-2 not re-run — covered transitively by Block 9)

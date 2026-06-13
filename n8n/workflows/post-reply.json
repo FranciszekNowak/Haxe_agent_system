@@ -50,17 +50,6 @@
       }
     },
     {
-      "id": "build-comment",
-      "name": "Build Comment",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [220, 200],
-      "notes": "Converts model markdown -> ClickUp Quill-delta ops + @-mention + footer + web sources section. Reads all inputs from When Called trigger.",
-      "parameters": {
-        "jsCode": "const wc = $('When Called').first().json;\nconst md = (wc.completion || '').toString();\nconst reviewer = Number(wc.reviewer_user_id);\nconst model = wc.model || '';\nconst cost = wc.cost_pln;\n\nconst ops = [];\nif (reviewer) ops.push({ type: 'tag', user: { id: reviewer } });\nops.push({ text: '\\n' });\n\nconst LINK = /\\[([^\\]]+)\\]\\(([^)]+)\\)/;\nconst BOLD = /\\*\\*([^*]+)\\*\\*/;\nconst CODE = /`([^`]+)`/;\nconst ITAL = /\\*([^*]+)\\*|_([^_]+)_/;\n\nfunction inlineOps(t) {\n  const out = [];\n  let rest = String(t);\n  while (rest.length) {\n    let best = null, kind = null;\n    const cands = [[LINK,'link'],[BOLD,'bold'],[CODE,'code'],[ITAL,'ital']];\n    for (const c of cands) { const m = c[0].exec(rest); if (m && (best === null || m.index < best.index)) { best = m; kind = c[1]; } }\n    if (!best) { out.push({ text: rest }); break; }\n    if (best.index > 0) out.push({ text: rest.slice(0, best.index) });\n    if (kind === 'link') out.push({ text: best[1], attributes: { link: best[2] } });\n    else if (kind === 'bold') out.push({ text: best[1], attributes: { bold: true } });\n    else if (kind === 'code') out.push({ text: best[1], attributes: { code: true } });\n    else out.push({ text: best[1] || best[2], attributes: { italic: true } });\n    rest = rest.slice(best.index + best[0].length);\n  }\n  return out.length ? out : [{ text: '' }];\n}\nfunction emit(inline, attrs) { for (const o of inline) ops.push(o); ops.push(attrs ? { text: '\\n', attributes: attrs } : { text: '\\n' }); }\nfunction isRow(s){ const t=s.trim(); return t.length>1 && t.charAt(0)==='|' && t.charAt(t.length-1)==='|'; }\nfunction isSep(s){ const t=s.trim(); return /^[|\\s:-]+$/.test(t) && t.indexOf('-')>=0; }\nfunction cellsOf(s){ return s.trim().replace(/^\\|/,'').replace(/\\|$/,'').split('|').map(function(c){return c.trim();}); }\n\nconst L = md.replace(/\\r/g,'').split('\\n');\nlet i=0, gRow=0, inCode=false;\nwhile (i < L.length) {\n  const s = L[i];\n  if (s.trim().indexOf('```') === 0) { inCode = !inCode; i++; continue; }\n  if (inCode) { ops.push({ text: s }); ops.push({ text: '\\n', attributes: { 'code-block': 'plain' } }); i++; continue; }\n  if (isRow(s) && i+1 < L.length && isSep(L[i+1])) {\n    const rows=[]; let j=i;\n    while (j < L.length && isRow(L[j])) { rows.push(L[j]); j++; }\n    for (let r=0; r<rows.length; r++) {\n      if (r===1) continue;\n      gRow++;\n      const cs = cellsOf(rows[r]);\n      for (const c of cs) { const io = inlineOps(c); for (const o of io) ops.push(o); ops.push({ text: '\\n', attributes: { table: 'row-'+gRow } }); }\n    }\n    i=j; continue;\n  }\n  const t = s.replace(/^\\s+/,'');\n  let m;\n  if (t.charAt(0)==='#') { const h=t.match(/^(#{1,6})\\s+(.*)$/); if (h) { emit(inlineOps(h[2]), { header: Math.min(h[1].length,3) }); i++; continue; } }\n  if ((m = t.match(/^[-*+]\\s+(.*)$/))) { emit(inlineOps(m[1]), { list: 'bullet' }); i++; continue; }\n  if ((m = t.match(/^\\d+\\.\\s+(.*)$/))) { emit(inlineOps(m[1]), { list: 'ordered' }); i++; continue; }\n  if (t.charAt(0)==='>') { emit(inlineOps(t.replace(/^>\\s?/,'')), { blockquote: true }); i++; continue; }\n  if (/^([-*_])\\1{2,}$/.test(s.trim())) { i++; continue; }\n  if (s.trim()==='') { i++; continue; }\n  emit(inlineOps(s), null);\n  i++;\n}\n\nlet webSources = [];\ntry {\n  const raw = wc.web_sources;\n  webSources = Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : []);\n} catch(e) {}\nif (webSources.length) {\n  ops.push({ text: 'Źródła' });\n  ops.push({ text: '\\n', attributes: { header: 2 } });\n  for (const s of webSources) {\n    ops.push({ text: (s.title || s.url), attributes: { link: s.url } });\n    ops.push({ text: '\\n', attributes: { list: 'bullet' } });\n  }\n}\nreturn [{ json: { ops } }];"
-      }
-    },
-    {
       "id": "is-mention",
       "name": "Is @mention?",
       "type": "n8n-nodes-base.if",
@@ -527,7 +516,17 @@
       "notes": "Converges text + image paths. Computes run_payload_bytes = UTF-8 bytes of {rendered_comment,image_manifest} (proxy/lower-bound for execution-data weight; recorded for ALL runs) and appends the Polish size footer line. runOnceForEachItem avoids the multi-incoming aggregator trap.",
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const wc = $('When Called').first().json;\nconst ops = Array.isArray($json.ops) ? $json.ops : [];\nlet manifest = wc.image_manifest;\nif (typeof manifest === 'string') { try { manifest = JSON.parse(manifest || '[]'); } catch (e) { manifest = []; } }\nif (!Array.isArray(manifest)) manifest = [];\n\n// Attribution footer (Block 11): name model per modality (text + image) + aggregate cost.\nconst textModel = wc.model || '—';\nlet imgModels = wc.image_models;\nif (typeof imgModels === 'string') { try { imgModels = JSON.parse(imgModels); } catch (e) { imgModels = imgModels ? [imgModels] : []; } }\nimgModels = Array.isArray(imgModels) ? imgModels.filter(Boolean) : [];\nconst totalCost = (Number(wc.cost_pln || 0) + Number(wc.total_image_cost_pln || 0)).toFixed(4);\nconst attribution = imgModels.length\n  ? ('Przygotowane przez agenta AI (tekst: ' + textModel + ', obraz: ' + imgModels.join(', ') + '; koszt łączny: ' + totalCost + ' PLN). Do weryfikacji — nie finalizuje zadania.')\n  : ('Przygotowane przez agenta AI (model: ' + textModel + ', koszt: ' + totalCost + ' PLN). Do weryfikacji — nie finalizuje zadania.');\nconst out = ops.slice();\nout.push({ text: '\\n—\\n' });\nout.push({ text: attribution, attributes: { italic: true } });\nout.push({ text: '\\n' });\nconst payloadStr = JSON.stringify({ rendered_comment: out, image_manifest: manifest });\nlet bytes;\ntry { bytes = Buffer.byteLength(payloadStr, 'utf8'); } catch (e) { bytes = payloadStr.length; }\nconst fmt = bytes >= 1048576 ? (bytes / 1048576).toFixed(2).replace('.', ',') + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB';\nout.push({ text: '\\nrozmiar danych przebiegu: ' + fmt + '\\n', attributes: { italic: true } });\nreturn { json: { ops: out, run_payload_bytes: bytes, attachment_ids: $json.attachment_ids || [] } };"
+        "jsCode": "const wc = $('When Called').first().json;\nconst ops = Array.isArray($json.ops) ? $json.ops : [];\nlet manifest = wc.image_manifest;\nif (typeof manifest === 'string') { try { manifest = JSON.parse(manifest || '[]'); } catch (e) { manifest = []; } }\nif (!Array.isArray(manifest)) manifest = [];\n\n// Attribution footer (Block 11): name model per modality (text + image) + aggregate cost.\nconst textModel = wc.model || '—';\nlet imgModels = wc.image_models;\nif (typeof imgModels === 'string') { try { imgModels = JSON.parse(imgModels); } catch (e) { imgModels = imgModels ? [imgModels] : []; } }\nimgModels = Array.isArray(imgModels) ? imgModels.filter(Boolean) : [];\nconst totalCost = (Number(wc.cost_pln || 0) + Number(wc.total_image_cost_pln || 0)).toFixed(4);\nconst attribution = imgModels.length\n  ? ('Przygotowane przez agenta AI (tekst: ' + textModel + ', obraz: ' + imgModels.join(', ') + '; koszt łączny: ' + totalCost + ' PLN). Do weryfikacji — nie finalizuje zadania.')\n  : ('Przygotowane przez agenta AI (model: ' + textModel + ', koszt: ' + totalCost + ' PLN). Do weryfikacji — nie finalizuje zadania.');\nconst out = ops.slice();\nlet webSources = [];\ntry { const raw = wc.web_sources; webSources = Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : []); } catch(e) {}\nif (webSources.length) {\n  out.push({ text: 'Źródła' });\n  out.push({ text: '\\n', attributes: { header: 2 } });\n  for (const s of webSources) {\n    out.push({ text: (s.title || s.url), attributes: { link: s.url } });\n    out.push({ text: '\\n', attributes: { list: 'bullet' } });\n  }\n}\nout.push({ text: '\\n—\\n' });\nout.push({ text: attribution, attributes: { italic: true } });\nout.push({ text: '\\n' });\nconst payloadStr = JSON.stringify({ rendered_comment: out, image_manifest: manifest });\nlet bytes;\ntry { bytes = Buffer.byteLength(payloadStr, 'utf8'); } catch (e) { bytes = payloadStr.length; }\nconst fmt = bytes >= 1048576 ? (bytes / 1048576).toFixed(2).replace('.', ',') + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB';\nout.push({ text: '\\nrozmiar danych przebiegu: ' + fmt + '\\n', attributes: { italic: true } });\nreturn { json: { ops: out, run_payload_bytes: bytes, attachment_ids: $json.attachment_ids || [] } };"
+      }
+    },
+    {
+      "id": "7db4ac78-cf8f-4ff7-aaa5-5f1ab3903baa",
+      "name": "Pass Delta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 360],
+      "parameters": {
+        "jsCode": "// Block 12: no-upload delta path (manifest empty: text-only or embed-only result).\n// Uses the resolver's rendered_delta directly; prepends the reviewer @-mention (parity with\n// Build Comment / Rewrite Delta). image_ref ops are not expected here (those imply a manifest),\n// but are handled defensively.\nconst wc = $('When Called').first().json;\nlet ops = wc.rendered_delta;\nif (typeof ops === 'string') { try { ops = JSON.parse(ops || '[]'); } catch (e) { ops = []; } }\nif (!Array.isArray(ops)) ops = [];\nconst out = [];\nconst reviewer = Number(wc.reviewer_user_id);\nif (reviewer) { out.push({ type: 'tag', user: { id: reviewer } }); out.push({ text: '\\n' }); }\nfor (const op of ops) {\n  if (op && op.type === 'image_ref') { out.push({ text: '[obraz niedostępny]\\n', attributes: { italic: true } }); }\n  else { out.push(op); }\n}\nreturn [{ json: { ops: out, attachment_ids: [], failed_count: 0 } }];"
       }
     }
   ],
@@ -537,17 +536,6 @@
         [
           {
             "node": "Has Images?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Build Comment": {
-      "main": [
-        [
-          {
-            "node": "Finalize Comment",
             "type": "main",
             "index": 0
           }
@@ -672,7 +660,7 @@
         ],
         [
           {
-            "node": "Build Comment",
+            "node": "Pass Delta",
             "type": "main",
             "index": 0
           }
@@ -736,8 +724,7 @@
             "type": "main",
             "index": 0
           }
-        ],
-        []
+        ]
       ]
     },
     "Rewrite Delta": {
@@ -756,6 +743,17 @@
         [
           {
             "node": "Is @mention?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pass Delta": {
+      "main": [
+        [
+          {
+            "node": "Finalize Comment",
             "type": "main",
             "index": 0
           }

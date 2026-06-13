@@ -153,7 +153,10 @@ they slot in additively. See the corresponding ADRs.
   Image *generation* providers provisioned & verified live (Block 8, ADR-036, migration 023):
   Niski/__default__ → Vertex `gemini-2.5-flash-image` (Nano Banana), Średni → `gemini-3-pro-image-preview`
   (Nano Banana Pro), Wysoki/Krytycznie → OpenAI `gpt-image-2`. The generation *pipeline* (invoke-image-model,
-  resolver, comment_native delivery) is Phase B / Blocks 9–12 — not yet built. ClickUp attachment upload deferred.
+  resolver, comment_native delivery) is Phase B / Blocks 9–12 — **LIVE** (Phase B / Blocks 9–12 COMPLETE, 2026-06-13): generation folded into `Invoke Model (v1)`,
+  `Image Resolver (v1)` walks the drafting model's output-block list (text / `embed_input` / `generate`), and
+  Stage C delivers in-memory base64 images inline in the ClickUp comment. Every task now emits the block
+  contract (full unification, Block 12); `embed_input` lets the agent place existing attachments inline.
 
 ---
 
@@ -976,11 +979,16 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   made Gemini the active multimodal route, superseding both the former "PD guard drops images" stance and the
   Claude-direct vision path).
 - **Stage B — `Execute LLM Call (v1)`** (`n8n/workflows/execute-llm-call.json`, id `9qdJA4xnAGbxqkt9`,
-  8 nodes): `Invoke Model (v1)` → drafted reply + cost; forwards `image_blocks_json` to Invoke Model.
-  **Return path linearized** (`Call Invoke Model → Sum Task Cost → Update CU Cost Field → Return LLM
-  Result`, the sole terminal) so the sub-workflow deterministically returns `completion` — fixed a
-  return-determinism bug where the parallel cost-sync branch's empty output could be returned instead,
-  silently dropping the draft (ADR-036 Block 5).
+  12 nodes): `Invoke Model (v1)` → drafted reply + cost; forwards `image_blocks_json` to Invoke Model.
+  **Multimodal output (Block 12, 2026-06-13):** the drafting model now returns the **output-block list**, so
+  Stage B runs `Call Invoke Model → Parse Output Blocks (tolerant JSON parse; un-parseable → single text block)
+  → Call Image Resolver (znDqcfgXK6CNte20) → Sum Task Cost → Update CU Cost Field → [Has Warnings? → Alert
+  Resolver Warnings] → Return LLM Result` (sole terminal). The resolver is called **before** the cost sum so
+  per-`generate` `image_gen` rows are counted; `Return LLM Result` carries `rendered_delta` / `image_manifest` /
+  `image_models` / `total_image_cost_pln` to Stage C; resolver `warnings[]` fire a WARN (`multimodal/resolver`)
+  on a reconverging branch. A resolver throw propagates to the global Error Handler (CRITICAL, no partial post).
+  The return path stays a single branch-free terminal (fixes the ADR-036 Block-5 return-determinism bug, where
+  the parallel cost-sync branch's empty output could be returned instead, silently dropping the draft).
 - **Stage C — `Post Reply (v1)`** (`n8n/workflows/post-reply.json`, id `t17moGs7Vxo5ZcFv`, 9 nodes):
   posts the thread-aware draft comment, writes the cost field, flips status **W trakcie → Zakończono**.
   C owns every ClickUp side-effect (comment, cost, status, and — once multimodal lands, ADR-036 —
@@ -1228,8 +1236,13 @@ post never sets status or `[AI] Finalny…`.
   per-impact `image_gen_params.max_images` is dead for counting (impact still drives model + resolution). Block
   metadata rides `Invoke Model`'s `task_type` as `block_meta::{…}`. Degradations (embed miss / gen failure /
   ceiling) become placeholder ops + a `warnings[]` entry (Block 12 routes these to Post Alert). Verified live:
-  text + 1 embed + 2 generate → 3 images inline + per-modality footer, 0 alerts. **Owed (Block 12):** auto-wire
-  Stage B to call the resolver and forward its outputs into Post Reply.
+  text + 1 embed + 2 generate → 3 images inline + per-modality footer, 0 alerts. **DONE (Block 12, 2026-06-13):**
+  Stage B now auto-calls the resolver (the drafting model emits the block list — see §15.2/§15.4) and forwards
+  its outputs into Post Reply; resolver `warnings[]` route to Post Alert. Stage C's prose `Build Comment` renderer
+  was **retired** — every reply now renders through the resolver's `rendered_delta`; the `Has Images?` FALSE branch
+  feeds a new `Pass Delta` node (rendered_delta + reviewer @mention, no upload) and the web-sources `Źródła` section
+  moved into `Finalize Comment`. Verified live end-to-end: generate, text-only regression, Gemini-vision + embed,
+  multi-image interleave, and a forced embed-miss degrade (WARN + `[Obraz niedostępny]`, comment still posts).
 
 ### 15.7 `CU Webhook Producer (v1)` — automatic triggering
 

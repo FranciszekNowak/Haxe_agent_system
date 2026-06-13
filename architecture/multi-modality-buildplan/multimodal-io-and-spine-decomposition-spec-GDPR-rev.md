@@ -170,9 +170,14 @@ channel isn't flooded.
 
 ---
 
-## 3. Output multimodality (inside Stage B) — Phase B, unbuilt
+## 3. Output multimodality (inside Stage B) — Phase B, **LIVE (Block 12, 2026-06-13)**
 
-### 3.1 Drafting model emits block list
+### 3.1 Drafting model emits block list — **DONE (Block 12, 2026-06-13)**
+> Built: `Build Prompt` now emits a strict-JSON output-block-contract instruction for **every** task (full
+> unification — Stage B parses the result with a tolerant fallback and always routes it through `Image Resolver
+> (v1)`; the prose `Build Comment` path is retired). Input images are enumerated with their `ref` so the model can
+> `embed_input` them. See ADR-036 Block 12 + current.md §15.2/§15.6.
+
 Build Prompt instructs the drafting model to return the output block contract: `embed_input` when a
 real asset exists, `generate` to mock up a visual that does not exist yet. For mockup PDPs, multiple
 `generate` blocks per comment are expected. No render restrictions (governance is the prefs doc +
@@ -465,18 +470,20 @@ input wired into the spine and verified end-to-end). Remaining:
    confirmed absent (comment endpoint is JSON-only). `run_payload_bytes` observability added (migration 025).
 4. **[DONE]** Decomposition: one trigger → three executions (A, B, C), each its own log; every Call
    onError reaches the one Reset+Alert path.
-5. Tiering (Phase B): Niski selects the cheap model + low cap; Wysoki the top model + high cap.
-   Confirm via `model` + `impact` on the `image_gen` rows.
-6. Multi-image (Phase B): a mockup-PDP request → multiple images interleaved correctly, each a priced
-   `image_gen` row, within the per-impact cap.
-7. Step-down (Phase B): force a top-tier provider error → next attempt uses the lower tier +
-   `tier-degrade` WARN, comment posts degraded; force all tiers → image dropped with a note + WARN,
-   comment still posts. Text-turn error → Opus fallback.
+5. Tiering: Niski selects the cheap model. **[Block 12: Niski verified live (`gemini-2.5-flash-image`);
+   Wysoki `gpt-image-2` not re-run for cost — covered transitively by Block 9, which verified all five tiers,
+   since the Block-12 wiring is tier-agnostic.]**
+6. **[DONE — Block 12]** Multi-image: a mockup-PDP request → multiple images interleaved correctly, each a priced
+   `image_gen` row (count governed by the global `image_count_ceiling`, not a per-impact cap — Block 11).
+7. Step-down: this is Block 9's single fallback hop inside `Invoke Model` (verified Block 9). At the bottom the
+   resolver drops the block + a caption note + WARN `multimodal/resolver` (embed-miss verified live in Block 12);
+   text-turn error → Opus fallback.
 8. Unprocessable-image guard (Block 6): an input image on a non-vision model, or a corrupt/4xx image,
    → WARN + `[BRAK]` + text-only continuation, no hallucination, the call does not sink.
 9. **[DONE]** References-not-binaries: no raw binary crosses A→B→C.
-10. Cost: Sum Task Cost includes text turns + all `image_gen` rows (incl. degraded retries); CU cost
-    field written in C; cross-check `SELECT count(*), sum(cost_pln) FROM agent_runs WHERE clickup_task_id=…`.
+10. **[DONE — Block 12]** Cost: `Sum Task Cost` runs AFTER the resolver so it includes text turns + all
+    `image_gen` rows; CU cost field written in C; cross-checked live (`SELECT count(*), sum(cost_pln) FROM
+    agent_runs WHERE clickup_task_id=…` — the `image_gen` row logged once via Log Model Run and summed in).
 11. **[DONE]** Status: "W trakcie" up-front; "Zakończono" in C; any stage failure → Reset + alert, no
     partial post.
 12. **[DONE]** Loop guard: Alerts task `869dj2z2c` never read.
@@ -502,7 +509,14 @@ input wired into the spine and verified end-to-end). Remaining:
 
 ---
 
-## 10. Worked flow: mockup PDP from a .docx + product photos (Phase B target)
+## 10. Worked flow: mockup PDP from a .docx + product photos (Phase B target) — **REALIZED (Block 12, 2026-06-13)**
+
+> The full arc below runs live as of Block 12 (ADR-036). Deviations from the prose below, all built: generated
+> images travel as base64 in `image_manifest` (not a disk temp path — Block 10), the resolver runs `generate`
+> calls sequentially, and the assembler/footer live in `Image Resolver (v1)` + Post Reply's `Finalize Comment`.
+> Verified live on Niski tasks (cheap model) across generate / embed / multi-image / text-only / degrade; the
+> Wysoki `gpt-image-2` variant is covered transitively by Block 9's tier verification (tier-agnostic wiring).
+
 
 Trigger: a teammate @-mentions the agent on a high-value Noven launch task with a `.docx` spec, a
 couple of reference photos, and `impact=Wysoki`.

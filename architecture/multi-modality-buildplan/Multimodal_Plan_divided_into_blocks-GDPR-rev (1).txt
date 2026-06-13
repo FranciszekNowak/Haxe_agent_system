@@ -1,6 +1,7 @@
 Multimodal I/O — bite-sized build plan (ADR-036 Phases 2–5)
 
-Rewritten 2026-06-12 to match live state; status updated 2026-06-12 (Blocks 6, 8, 9, 10, 11 DONE). Phase A
+Rewritten 2026-06-12 to match live state; status updated 2026-06-13 (Blocks 6, 8, 9, 10, 11, 12 DONE — Phase B
+OUTPUT COMPLETE; only tracked Block 13 resolution-extraction remains). Phase A
 (INPUT) is COMPLETE through Block 6 (verified); the PD/EU apparatus this plan once carried has been
 removed (ADR-043, migration 021); the erasure-readiness schema landed (ADR-044, migration 022). Block 8
 (the Phase B provisioning gate) is DONE — image providers are live + verified (gemini-image Nano
@@ -313,8 +314,22 @@ Block 11 — image-resolver + multimodal assembler  [DONE 2026-06-12]
 - Silent-failure modes covered: per-image gen failure → drop + caption note + WARN, comment still
   posts; discarded generations stay in temp (never uploaded) and are purged by Block 10's lifecycle.
 
-Block 12 — End-to-end: drafting model emits the block list; full A→B→C multimodal run
+Block 12 — End-to-end: drafting model emits the block list; full A→B→C multimodal run  [DONE 2026-06-13]
 
+- DONE (2026-06-13, ADR-036 Block 12): full A→B→C multimodal run is LIVE. Operator decisions: (a) FULL
+  UNIFICATION — every task emits the JSON output-block contract and routes through Image Resolver (v1); the prose
+  Build Comment renderer is RETIRED (one rendering path = the resolver's rendered_delta); (b) embed_input wired
+  end-to-end (the agent can place an EXISTING attached image inline). Wiring: Stage A Build Prompt emits the
+  block-contract instruction + enumerates input-image refs (source_ref added); Stage B adds Parse Output Blocks
+  (tolerant fence/array parse → single-text-block fallback) → Call Image Resolver, re-sequences Sum Task Cost
+  AFTER the resolver (image_gen rows counted), routes resolver warnings[] → Post Alert, and returns rendered_delta/
+  image_manifest/image_models/total_image_cost_pln; orchestrator forwards those 4 fields to Post Reply + hardens
+  the success guard; Stage C deletes Build Comment, adds Pass Delta (no-upload delta path) and folds web-sources
+  into Finalize Comment. Verified live (form-triggered; producer unchanged): Niski generate (inline image + footer
+  + Record Artifact + 0 alerts), text-only regression, Gemini-vision + embed_input (no re-upload, markdown table),
+  multi-image interleave (2 generates, distinct uploads), forced embed-miss degrade (WARN multimodal/resolver +
+  [Obraz niedostępny], comment still posts); cost cross-checked. Wysoki gpt-image-2 not re-run (cost/time) —
+  covered transitively by Block 9 (tier-agnostic wiring). The ORIGINAL plan below is realized.
 - Context: The capstone — flip Stage B's drafting model from prose to the output block contract and run
   the whole arc live: read spec + photos → emit text + generate blocks → resolve/generate → assemble →
   upload → post one mockup-PDP comment, tiered by impact, nothing finalized. Proves the spec's worked
