@@ -741,7 +741,14 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
   informs the user (inline Polish note + `invoke-model/resolution-adjusted` WARN). This is the correctly-directed
   counterpart to the reversed reroute (gemini→gpt, not gpt→gemini). Verified live (Niski, exec 1948): model upgraded
   gemini→gpt-image-2, exact 1280×512 returned (decoded), `image_quality=low`, cost $0.0024, note posted inline.
-  Residual: aspect-only (no explicit `size`) on gemini tiers is still ~1:1 1K (the native-`generateContent` follow-up).
+- **Block 13c — fold aspect into the same upgrade (2026-06-13, ADR-045).** Generalized the upgrade trigger from
+  "explicit `size`" to **shape intent** = explicit `size` OR a non-square `aspect`, so a gemini-tier aspect request
+  also upgrades to gpt-image-2 and is honored (the note adapts: "żądane proporcje obrazu (16:9)"). Verified live
+  (Niski, exec 1974): `aspect:"16:9"` no pixels → gemini→gpt-image-2 → returned **1104×624 widescreen** (decoded,
+  ≈16:9, not square), `image_quality=low`, cost $0.0036, note posted inline + `resolution-adjusted` WARN. A 1:1 /
+  no-shape request correctly stays on the cheaper gemini default. **Correctness gap closed** — explicit resolution
+  *and* aspect now honored on every tier; the native-`generateContent` bypass is now only an optional cost
+  optimization (avoid the gpt-image-2 upgrade for low-tier shaped images).
 
 ---
 

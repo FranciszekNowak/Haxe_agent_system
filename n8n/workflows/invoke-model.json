@@ -7,7 +7,7 @@
       "name": "When Called",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
-      "position": [0, 304],
+      "position": [-288, 304],
       "parameters": {
         "workflowInputs": {
           "values": [
@@ -62,7 +62,7 @@
       "name": "Lookup Routing",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
-      "position": [224, 304],
+      "position": [-96, 304],
       "parameters": {
         "operation": "executeQuery",
         "query": "select r.litellm_model, r.temperature, r.max_tokens, r.nudge,\n       r.price_in_usd_per_1k, r.price_out_usd_per_1k, r.fallback_price_per_unit, r.impact,\n       p.resolution\nfrom model_routing r\nleft join image_gen_params p on p.impact = r.impact\nwhere r.impact in ($1, '__default__') and r.modality = $2 and r.active = true\norder by (r.impact = $1) desc\nlimit 1;",
@@ -87,9 +87,9 @@
       "name": "Resolve Routing",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [448, 304],
+      "position": [144, 304],
       "parameters": {
-        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\nconst override = (orig.model_override != null && String(orig.model_override).trim() !== '') ? String(orig.model_override).trim() : null;\nconst is_image = (orig.requested_modality_of_output === 'image');\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nlet routing_row_missing = false;\nif (override) {\n  row = { litellm_model: override, temperature: null, max_tokens: 4000, nudge: null, price_in_usd_per_1k: 0, price_out_usd_per_1k: 0, fallback_price_per_unit: null, resolution: null, impact: '__override__' };\n} else if (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, fallback_price_per_unit: null, resolution: null, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n  routing_row_missing = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\nconst temperature = (row.temperature != null && row.temperature !== '') ? Number(row.temperature) : null;\n\n// Multimodal (ADR-036 Block 5): content is ALWAYS an array. Image refs (ClickUp URLs from read-input)\n// become image_url parts; LiteLLM fetches them. Text path only.\nlet imgs = [];\ntry { imgs = JSON.parse(orig.image_blocks_json || '[]'); } catch (e) { imgs = []; }\nif (!Array.isArray(imgs)) imgs = [];\nconst content = [{ type: 'text', text: prompt }].concat(\n  imgs.filter(b => b && b.ref).map(b => ({ type: 'image_url', image_url: { url: b.ref } }))\n);\nconst messages = [{ role: 'user', content }];\nconst brak = imgs.length > 0 ? '\\n\\n[BRAK: obraz nieczytelny na bieżącym providerze]' : '';\nconst messages_text_only = [{ role: 'user', content: [{ type: 'text', text: prompt + brak }] }];\n\n// ── Image output (Block 9) ───────────────────────────────────────────────────────────────────\n// size precedence: user requested_size > model-emitted aspect > tier default. Base 1024 is safe across\n// providers (gpt-image-2 + gemini 1K); 'max' maps to gpt-image-2 QUALITY, not size (avoids 1536² rejects).\nfunction aspectToSize(aspect, base) {\n  if (!aspect) return base + 'x' + base;\n  const p = String(aspect).split(':');\n  if (p.length !== 2) return base + 'x' + base;\n  const w = Number(p[0]), h = Number(p[1]);\n  if (!w || !h) return base + 'x' + base;\n  if (w >= h) return base + 'x' + Math.round(base * h / w);\n  return Math.round(base * w / h) + 'x' + base;\n}\nfunction parseWH(s){ const p=String(s||'').toLowerCase().split('x'); const w=Number(p[0]),h=Number(p[1]); return (w&&h)?{w:w,h:h}:null; }\n// gpt-image-2 accepts arbitrary WxH within real constraints (OpenAI API): edges divisible by 16,\n// aspect ratio 1:3..3:1, longest edge <= 3840, pixel count 655360..8294400. Validate, and snap to the\n// nearest VALID size only on an actual violation (NOT to a fixed enum — that was a false generalization).\nfunction gptValid(wh){ if(!wh) return false; const w=wh.w, h=wh.h; if (w%16!==0||h%16!==0) return false; const r=w/h; if (r>3||r<1/3) return false; if (Math.max(w,h)>3840) return false; const px=w*h; if (px<655360||px>8294400) return false; return true; }\nfunction snapGptValid(wh, fallback){ if(!wh) return fallback; let w=wh.w, h=wh.h; const r=w/h; if (r>3) h=w/3; else if (r<1/3) w=h/3; const mx=Math.max(w,h); if (mx>3840){ const s=3840/mx; w*=s; h*=s; } let px=w*h; if (px<655360){ const k=Math.sqrt(655360/px)*1.02; w*=k; h*=k; } px=w*h; if (px>8294400){ const k=Math.sqrt(8294400/px); w*=k; h*=k; } const r16=x=>Math.max(16, Math.round(x/16)*16); return r16(w)+'x'+r16(h); }\nconst resolution = row.resolution || 'high';\nconst base = 1024;\nconst reqSize = (orig.requested_size != null && String(orig.requested_size).trim() !== '') ? String(orig.requested_size).trim() : null;\nconst size_overridden = !!reqSize;\nconst size_requested = reqSize || ((orig.aspect != null && String(orig.aspect).trim() !== '') ? aspectToSize(String(orig.aspect).trim(), base) : (base + 'x' + base));\nlet size = size_requested;\nlet resolution_note = '';\n\nlet image_model = row.litellm_model;\nlet img_floor = (row.fallback_price_per_unit != null) ? Number(row.fallback_price_per_unit) : null;\nlet img_pin = Number(row.price_in_usd_per_1k || 0);\nlet img_pout = Number(row.price_out_usd_per_1k || 0);\n// DB-down / non-image fallback row -> never route an image to a text model; use the safe floor image model.\nif (is_image && String(image_model).indexOf('image') < 0) {\n  image_model = 'vertex_ai/gemini-2.5-flash-image';\n  img_floor = 0.038703; img_pin = 0.0003; img_pout = 0.030;\n  routing_row_missing = true;\n}\nif (is_image) {\n  let isGpt = String(image_model).indexOf('openai/') === 0;\n  const reqWH = parseWH(size_requested);\n  // Block 13b: an explicit resolution on a non-gpt (Gemini) tier — Gemini can't honor `size` through the\n  // gateway, so UPGRADE to gpt-image-2 (the only model that does) and tell the user why. Quality still\n  // follows the tier (image_quality below), so a low tier stays cheap; only the model changes.\n  if (reqSize && !isGpt) {\n    image_model = 'openai/gpt-image-2';\n    img_floor = 0.210805; img_pin = 0.0003; img_pout = 0.030;\n    isGpt = true;\n    resolution_note = 'Aby zachować żądaną rozdzielczość ' + size_requested + ', użyto modelu OpenAI gpt-image-2 zamiast domyślnego modelu Gemini dla tego priorytetu (modele Gemini nie honorują wymuszonej rozdzielczości przez bramę LiteLLM).';\n  }\n  if (isGpt) {\n    // gpt-image-2 IS the resolution-flexible model (LiteLLM forwards `size` to OpenAI). Honor a valid\n    // explicit request exactly; snap aspect-derived OR out-of-constraint sizes to nearest valid.\n    if (reqSize && gptValid(reqWH)) {\n      size = size_requested;\n    } else {\n      size = snapGptValid(reqWH, '1024x1024');\n      if (reqSize && size !== size_requested) {\n        const snapMsg = 'Żądana rozdzielczość ' + size_requested + ' nie jest w pełni obsługiwana; wygenerowano w najbliższej zgodnej: ' + size + '.';\n        resolution_note = resolution_note ? (resolution_note + ' ' + snapMsg) : snapMsg;\n      }\n    }\n  }\n  // Gemini tier with NO explicit size: LiteLLM drops gemini imageConfig (returns ~1:1 1K); size is moot.\n}\nconst size_snapped = (size !== size_requested);\n// gpt-image-2 quality from tier (it only ever serves 'max' -> high, matching Block 8's measured floor).\nconst image_quality = (String(image_model).indexOf('openai/') === 0)\n  ? (resolution === 'max' ? 'high' : (resolution === 'high' ? 'medium' : 'low'))\n  : null;\nconst image_prompt = (orig.prompt || ''); // raw — no text deliberation nudge in an image prompt\n\nreturn [{ json: {\n  is_image,\n  litellm_model: row.litellm_model,\n  temperature,\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: is_image ? img_pin : Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: is_image ? img_pout : Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  messages,\n  messages_text_only,\n  had_images: imgs.length > 0,\n  image_count: imgs.length,\n  image_model,\n  image_prompt,\n  image_quality,\n  size,\n  size_requested,\n  size_overridden,\n  size_snapped,\n  resolution_note,\n  resolution,\n  fallback_price_per_unit: img_floor,\n  impact,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used,\n  routing_row_missing\n} }];\n"
+        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\nconst override = (orig.model_override != null && String(orig.model_override).trim() !== '') ? String(orig.model_override).trim() : null;\nconst is_image = (orig.requested_modality_of_output === 'image');\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nlet routing_row_missing = false;\nif (override) {\n  row = { litellm_model: override, temperature: null, max_tokens: 4000, nudge: null, price_in_usd_per_1k: 0, price_out_usd_per_1k: 0, fallback_price_per_unit: null, resolution: null, impact: '__override__' };\n} else if (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, fallback_price_per_unit: null, resolution: null, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n  routing_row_missing = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\nconst temperature = (row.temperature != null && row.temperature !== '') ? Number(row.temperature) : null;\n\n// Multimodal (ADR-036 Block 5): content is ALWAYS an array. Image refs (ClickUp URLs from read-input)\n// become image_url parts; LiteLLM fetches them. Text path only.\nlet imgs = [];\ntry { imgs = JSON.parse(orig.image_blocks_json || '[]'); } catch (e) { imgs = []; }\nif (!Array.isArray(imgs)) imgs = [];\nconst content = [{ type: 'text', text: prompt }].concat(\n  imgs.filter(b => b && b.ref).map(b => ({ type: 'image_url', image_url: { url: b.ref } }))\n);\nconst messages = [{ role: 'user', content }];\nconst brak = imgs.length > 0 ? '\\n\\n[BRAK: obraz nieczytelny na bieżącym providerze]' : '';\nconst messages_text_only = [{ role: 'user', content: [{ type: 'text', text: prompt + brak }] }];\n\n// ── Image output (Block 9) ───────────────────────────────────────────────────────────────────\n// size precedence: user requested_size > model-emitted aspect > tier default. Base 1024 is safe across\n// providers (gpt-image-2 + gemini 1K); 'max' maps to gpt-image-2 QUALITY, not size (avoids 1536² rejects).\nfunction aspectToSize(aspect, base) {\n  if (!aspect) return base + 'x' + base;\n  const p = String(aspect).split(':');\n  if (p.length !== 2) return base + 'x' + base;\n  const w = Number(p[0]), h = Number(p[1]);\n  if (!w || !h) return base + 'x' + base;\n  if (w >= h) return base + 'x' + Math.round(base * h / w);\n  return Math.round(base * w / h) + 'x' + base;\n}\nfunction parseWH(s){ const p=String(s||'').toLowerCase().split('x'); const w=Number(p[0]),h=Number(p[1]); return (w&&h)?{w:w,h:h}:null; }\n// gpt-image-2 accepts arbitrary WxH within real constraints (OpenAI API): edges divisible by 16,\n// aspect ratio 1:3..3:1, longest edge <= 3840, pixel count 655360..8294400. Validate, and snap to the\n// nearest VALID size only on an actual violation (NOT to a fixed enum — that was a false generalization).\nfunction gptValid(wh){ if(!wh) return false; const w=wh.w, h=wh.h; if (w%16!==0||h%16!==0) return false; const r=w/h; if (r>3||r<1/3) return false; if (Math.max(w,h)>3840) return false; const px=w*h; if (px<655360||px>8294400) return false; return true; }\nfunction snapGptValid(wh, fallback){ if(!wh) return fallback; let w=wh.w, h=wh.h; const r=w/h; if (r>3) h=w/3; else if (r<1/3) w=h/3; const mx=Math.max(w,h); if (mx>3840){ const s=3840/mx; w*=s; h*=s; } let px=w*h; if (px<655360){ const k=Math.sqrt(655360/px)*1.02; w*=k; h*=k; } px=w*h; if (px>8294400){ const k=Math.sqrt(8294400/px); w*=k; h*=k; } const r16=x=>Math.max(16, Math.round(x/16)*16); return r16(w)+'x'+r16(h); }\nconst resolution = row.resolution || 'high';\nconst base = 1024;\nconst reqSize = (orig.requested_size != null && String(orig.requested_size).trim() !== '') ? String(orig.requested_size).trim() : null;\nconst size_overridden = !!reqSize;\nconst size_requested = reqSize || ((orig.aspect != null && String(orig.aspect).trim() !== '') ? aspectToSize(String(orig.aspect).trim(), base) : (base + 'x' + base));\nlet size = size_requested;\nlet resolution_note = '';\n\nlet image_model = row.litellm_model;\nlet img_floor = (row.fallback_price_per_unit != null) ? Number(row.fallback_price_per_unit) : null;\nlet img_pin = Number(row.price_in_usd_per_1k || 0);\nlet img_pout = Number(row.price_out_usd_per_1k || 0);\n// DB-down / non-image fallback row -> never route an image to a text model; use the safe floor image model.\nif (is_image && String(image_model).indexOf('image') < 0) {\n  image_model = 'vertex_ai/gemini-2.5-flash-image';\n  img_floor = 0.038703; img_pin = 0.0003; img_pout = 0.030;\n  routing_row_missing = true;\n}\nif (is_image) {\n  let isGpt = String(image_model).indexOf('openai/') === 0;\n  const reqWH = parseWH(size_requested);\n  // Block 13c: ANY shape intent — an explicit `size` OR a non-1:1 `aspect` — on a non-gpt (Gemini) tier.\n  // Gemini honors neither size nor aspect through the gateway, so UPGRADE to gpt-image-2 (the only model\n  // that does) and tell the user why. Quality still follows the tier (image_quality below) so it stays cheap.\n  const wantsShape = !!reqSize || (reqWH && reqWH.w !== reqWH.h);\n  if (wantsShape && !isGpt) {\n    image_model = 'openai/gpt-image-2';\n    img_floor = 0.210805; img_pin = 0.0003; img_pout = 0.030;\n    isGpt = true;\n    resolution_note = reqSize\n      ? ('Aby zachować żądaną rozdzielczość ' + size_requested + ', użyto modelu OpenAI gpt-image-2 zamiast domyślnego modelu Gemini dla tego priorytetu (modele Gemini nie honorują wymuszonej rozdzielczości ani proporcji przez bramę LiteLLM).')\n      : ('Aby zachować żądane proporcje obrazu (' + String(orig.aspect||'').trim() + '), użyto modelu OpenAI gpt-image-2 zamiast domyślnego modelu Gemini dla tego priorytetu (modele Gemini nie honorują wymuszonych proporcji przez bramę LiteLLM).');\n  }\n  if (isGpt) {\n    // gpt-image-2 IS the resolution-flexible model (LiteLLM forwards `size` to OpenAI). Honor a valid\n    // explicit request exactly; snap aspect-derived OR out-of-constraint sizes to nearest valid.\n    if (reqSize && gptValid(reqWH)) {\n      size = size_requested;\n    } else {\n      size = snapGptValid(reqWH, '1024x1024');\n      if (reqSize && size !== size_requested) {\n        const snapMsg = 'Żądana rozdzielczość ' + size_requested + ' nie jest w pełni obsługiwana; wygenerowano w najbliższej zgodnej: ' + size + '.';\n        resolution_note = resolution_note ? (resolution_note + ' ' + snapMsg) : snapMsg;\n      }\n    }\n  }\n  // Gemini tier with NO explicit size: LiteLLM drops gemini imageConfig (returns ~1:1 1K); size is moot.\n}\nconst size_snapped = (size !== size_requested);\n// gpt-image-2 quality from tier (it only ever serves 'max' -> high, matching Block 8's measured floor).\nconst image_quality = (String(image_model).indexOf('openai/') === 0)\n  ? (resolution === 'max' ? 'high' : (resolution === 'high' ? 'medium' : 'low'))\n  : null;\nconst image_prompt = (orig.prompt || ''); // raw — no text deliberation nudge in an image prompt\n\nreturn [{ json: {\n  is_image,\n  litellm_model: row.litellm_model,\n  temperature,\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: is_image ? img_pin : Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: is_image ? img_pout : Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  messages,\n  messages_text_only,\n  had_images: imgs.length > 0,\n  image_count: imgs.length,\n  image_model,\n  image_prompt,\n  image_quality,\n  size,\n  size_requested,\n  size_overridden,\n  size_snapped,\n  resolution_note,\n  resolution,\n  fallback_price_per_unit: img_floor,\n  impact,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used,\n  routing_row_missing\n} }];\n"
       }
     },
     {
@@ -97,7 +97,7 @@
       "name": "Call LiteLLM",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [672, 304],
+      "position": [656, 320],
       "notes": "Multimodal (ADR-036 Block 5): messages now comes from Resolve Routing (content array with optional image_url parts). onError=continueErrorOutput: a non-2xx routes to Fallback to Opus (ADR-037).",
       "parameters": {
         "method": "POST",
@@ -133,7 +133,7 @@
       "name": "Parse Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [896, 304],
+      "position": [896, 352],
       "parameters": {
         "jsCode": "const routing = $('Resolve Routing').first().json;\n\n// Pick whichever LLM branch produced a real completion. Order: primary -> Opus fallback (transient\n// error, ADR-037, image kept) -> Retry Text-Only (Block 6: image stripped after a 4xx on the image).\nlet okCall = null, okFb = null, okRetry = null;\ntry { okCall = $('Call LiteLLM').first().json; } catch (e) {}\ntry { okFb = $('Fallback to Opus').first().json; } catch (e) {}\ntry { okRetry = $('Retry Text-Only').first().json; } catch (e) {}\nconst hasBody = (x) => x && x.body && x.body.choices;\nlet resp = {}, fell_back = false, image_unprocessable = false;\nif (hasBody(okCall)) { resp = okCall; }\nelse if (hasBody(okFb)) { resp = okFb; fell_back = true; }\nelse if (hasBody(okRetry)) { resp = okRetry; image_unprocessable = true; }\nelse { resp = (okCall && okCall.body) ? okCall : ((okFb && okFb.body) ? okFb : (okRetry || {})); }\n\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\nconst ch = headers['x-litellm-response-cost'];\nconst usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\n\n// Both the Opus fallback and the text-only retry run on opus-4-8-direct.\nconst onOpus = fell_back || image_unprocessable;\nconst fbAlias = 'haxe-opus-4-8-direct';\nconst alias = onOpus ? fbAlias : (routing.litellm_model || '');\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : alias;\nconst provider = alias.includes('gemini') ? 'litellm/vertex' : 'litellm/anthropic-direct';\n\n// On any Opus path the model differs from the routed one. LiteLLM's response-cost header is\n// authoritative; these price columns are only a dormant backup. Keep them roughly correct for Opus 4.8.\nconst price_in = onOpus ? 0.015 : routing.price_in_usd_per_1k;\nconst price_out = onOpus ? 0.075 : routing.price_out_usd_per_1k;\n\nreturn [{ json: {\n  completion,\n  model_used,\n  provider,\n  input_tokens, output_tokens, usd_cost,\n  price_in_usd_per_1k: price_in,\n  price_out_usd_per_1k: price_out,\n  routing_default_used: !!routing.routing_default_used,\n  routing_row_missing: !!routing.routing_row_missing,\n  fell_back_to_opus: fell_back,\n  image_unprocessable,\n  images_dropped: image_unprocessable ? (routing.image_count || 0) : 0,\n  impact: routing.impact,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
       }
@@ -143,7 +143,7 @@
       "name": "Call Log Model Run",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1120, 304],
+      "position": [1072, 144],
       "notes": "ADR-035: the shared agent_runs writer also owns cost math (FX, PLN, token-price fallback). Returns cost_pln_total + cost_missing.",
       "parameters": {
         "workflowId": {
@@ -405,7 +405,7 @@
       "name": "Fallback to Opus",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [688, 544],
+      "position": [704, 544],
       "notes": "Auto-fallback (ADR-037): primary model call failed -> retry once on Opus, to opus-4-8-direct. Uses the same multimodal messages from Resolve Routing (ADR-036 Block 5). Success feeds Parse Response with fell_back=true -> WARN. If Opus ALSO fails it throws -> Execute LLM Call CRITICAL.",
       "parameters": {
         "method": "POST",
@@ -441,7 +441,7 @@
       "name": "Routing Missing?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [1232, 464],
+      "position": [1232, 528],
       "notes": "0-row routing guard: true when Lookup Routing matched nothing and Resolve Routing fell back to its safety-net model (routing_row_missing). True -> CRITICAL alert. Both branches reconverge to Check Degradation so Shape Output stays the sole leaf (sub-workflow return determinism).",
       "parameters": {
         "conditions": {
@@ -473,7 +473,7 @@
       "name": "Alert Routing Missing",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1232, 672],
+      "position": [1232, 704],
       "notes": "CRITICAL via Post Alert (v1): the model_routing table has no row for this impact/modality/PD combo. The run still replies via Resolve Routing's safety-net model, so this is loud-but-non-blocking. Reconverges to Check Degradation (not a leaf).",
       "parameters": {
         "workflowId": {
@@ -502,7 +502,7 @@
       "name": "Retry Text-Only",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [688, 784],
+      "position": [688, 928],
       "notes": "Block 6 (ADR-036): final safety net. Reached only when BOTH the routed model AND the Opus fallback failed AND images were present (a corrupt/1x1/unprocessable image 4xxs every image-bearing call). Retries text-only on Opus with images stripped + a [BRAK] marker (messages_text_only from Resolve Routing) -> Parse Response sets image_unprocessable -> WARN multimodal/image-unprocessable. No onError here: if THIS also fails it throws -> Execute LLM Call CRITICAL, so a genuine non-image failure is NOT masked.",
       "parameters": {
         "method": "POST",
@@ -537,15 +537,15 @@
       "name": "Image Unprocessable?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [1232, 140],
+      "position": [1232, 144],
       "notes": "Block 6: true when the routed model could not consume the input image and the run degraded to a text-only retry. True -> WARN multimodal/image-unprocessable. Both branches reconverge into Call Log Model Run so Shape Output stays the sole branch-free leaf (sub-workflow return determinism), mirroring Routing Missing? -> Check Degradation.",
       "parameters": {
         "conditions": {
           "options": {
-            "version": 3,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "strict"
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
           },
           "combinator": "and",
           "conditions": [
@@ -569,7 +569,7 @@
       "name": "Alert Image Unprocessable",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1440, 140],
+      "position": [1440, 144],
       "notes": "Block 6 WARN via Post Alert (v1): a corrupt/non-vision input image was dropped and the answer was produced text-only. Loud-but-non-blocking; reconverges to Call Log Model Run (not a leaf).",
       "parameters": {
         "workflowId": {
@@ -598,14 +598,14 @@
       "name": "Output Is Image?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [620, 304],
+      "position": [352, 304],
       "parameters": {
         "conditions": {
           "options": {
-            "version": 3,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "strict"
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
           },
           "combinator": "and",
           "conditions": [
@@ -629,7 +629,7 @@
       "name": "Call Image Gen",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [820, 820],
+      "position": [880, 848],
       "notes": "Block 9: tiered image generation via LiteLLM /v1/images/generations. model/size/quality from Resolve Routing (impact, modality=image). onError=continueErrorOutput -> single fallback hop to gemini-2.5-flash-image.",
       "parameters": {
         "method": "POST",
@@ -662,7 +662,7 @@
       "name": "Fallback Image Gen",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1040, 940],
+      "position": [1088, 944],
       "notes": "Block 9: single cross-provider fallback hop (cheap reliable floor model) when the primary image model errors. onError=continueErrorOutput so a total failure still reaches Parse Image -> success:false (caller drops the block, no throw).",
       "parameters": {
         "method": "POST",
@@ -698,7 +698,7 @@
       "name": "Parse Image",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1260, 820],
+      "position": [1488, 832],
       "notes": "Block 9: normalise one image attempt; success gated on data[0].b64_json payload, not HTTP status. Feeds Normalize Model Result.",
       "parameters": {
         "jsCode": "// Block 9: normalise one image-generation attempt. Success is gated on the PAYLOAD (data[0].b64_json),\n// not HTTP status (the Docling gotcha). Reads the primary call, then the single fallback hop.\nconst routing = $('Resolve Routing').first().json;\nlet ok = null, fb = null;\ntry { ok = $('Call Image Gen').first().json; } catch (e) {}\ntry { fb = $('Fallback Image Gen').first().json; } catch (e) {}\n\nconst getImg = (x) => {\n  try { return (x && x.body && x.body.data && x.body.data[0] && x.body.data[0].b64_json) ? x : null; }\n  catch (e) { return null; }\n};\n\nlet resp = null, degraded = false, model_used = routing.image_model;\nif (getImg(ok)) { resp = ok; }\nelse if (getImg(fb)) { resp = fb; degraded = true; model_used = 'vertex_ai/gemini-2.5-flash-image'; }\nconst succeeded = !!resp;\n\nlet b64 = null, mime = 'image/png', header_cost = null, itok = 0, otok = null;\nif (resp) {\n  const body = resp.body || {};\n  const headers = resp.headers || {};\n  try { b64 = body.data[0].b64_json || null; } catch (e) {}\n  const usage = body.usage || {};\n  const out = (usage.output_tokens != null) ? usage.output_tokens\n            : ((usage.completion_tokens != null) ? usage.completion_tokens\n            : ((usage.total_tokens != null) ? usage.total_tokens : null));\n  otok = (out != null) ? Number(out) : null;\n  const inp = (usage.input_tokens != null) ? usage.input_tokens\n            : ((usage.prompt_tokens != null) ? usage.prompt_tokens : 0);\n  itok = (inp != null) ? Number(inp) : 0;\n  const ch = headers['x-litellm-response-cost'];\n  header_cost = (ch != null && ch !== '') ? Number(ch) : null;\n}\n\nreturn [{ json: {\n  is_image_result: true,\n  succeeded,\n  b64_json: b64,\n  mime,\n  model_used,\n  header_cost,\n  input_tokens: itok,\n  output_tokens: otok,\n  image_degraded: degraded,\n  size: routing.size,\n  size_overridden: !!routing.size_overridden,\n  resolution_note: routing.resolution_note || '',\n  floor: (routing.fallback_price_per_unit != null) ? Number(routing.fallback_price_per_unit) : null,\n  price_in_usd_per_1k: routing.price_in_usd_per_1k,\n  price_out_usd_per_1k: routing.price_out_usd_per_1k,\n  impact: routing.impact,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type,\n  invocation_type: routing.invocation_type\n} }];\n"
@@ -709,7 +709,7 @@
       "name": "Normalize Model Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1480, 480],
+      "position": [1520, 560],
       "notes": "Block 9: single convergence of the text + image branches into one uniform schema. Keeps Shape Output the sole branch-free leaf (return determinism).",
       "parameters": {
         "jsCode": "// Block 9: single convergence point for the text and image branches. Reads whichever Parse node ran\n// (try/catch absolute refs) and emits ONE uniform schema for Log Model Run + the degradation chain +\n// Shape Output. Keeps Shape Output the sole branch-free leaf (sub-workflow return determinism).\nlet img = null, txt = null;\ntry { img = $('Parse Image').first().json; } catch (e) {}\ntry { txt = $('Parse Response').first().json; } catch (e) {}\nconst isImg = !!(img && img.is_image_result);\nlet rrm = false;\ntry { rrm = !!$('Resolve Routing').first().json.routing_row_missing; } catch (e) {}\n\nif (isImg) {\n  // Cost layering: live header (>0) -> token-math (filled price_out) -> per-image floor. A header miss\n  // sets cost_header_missing regardless of which layer prices it (drives the WARN).\n  const header = (img.header_cost != null && Number(img.header_cost) > 0) ? Number(img.header_cost) : null;\n  let usd_cost = null, cost_header_missing = false;\n  let input_tokens = img.input_tokens, output_tokens = img.output_tokens;\n  if (header != null) {\n    usd_cost = header;\n  } else {\n    cost_header_missing = true;\n    if (img.output_tokens != null) {\n      usd_cost = null; // Log Model Run prices by token-math (input_tokens default 0 + filled price_out)\n    } else {\n      usd_cost = (img.floor != null) ? img.floor : null; // per-image floor, last resort\n      input_tokens = null; output_tokens = null;\n    }\n  }\n  const provider = (String(img.model_used || '').indexOf('openai') >= 0) ? 'litellm/openai' : 'litellm/vertex';\n  return [{ json: {\n    output_modality: 'image',\n    success: !!img.succeeded,\n    completion: '',\n    b64_json: img.b64_json || null,\n    mime: img.mime || 'image/png',\n    size: img.size || null,\n    size_overridden: !!img.size_overridden,\n    resolution_note: img.resolution_note || '',\n    image_degraded: !!img.image_degraded,\n    cost_header_missing,\n    model_used: img.model_used,\n    provider,\n    input_tokens, output_tokens, usd_cost,\n    price_in_usd_per_1k: img.price_in_usd_per_1k,\n    price_out_usd_per_1k: img.price_out_usd_per_1k,\n    impact: img.impact,\n    task_type: img.task_type || '',\n    clickup_task_id: img.clickup_task_id || '',\n    triggered_by: 'image_gen',\n    invocation_type: img.invocation_type || 'explicit',\n    caller_user_id: img.caller_user_id || '',\n    process_type: img.process_type || '',\n    routing_default_used: false,\n    routing_row_missing: rrm,\n    fell_back_to_opus: false,\n    image_unprocessable: false,\n    images_dropped: 0\n  } }];\n}\n\nconst t = txt || {};\nreturn [{ json: {\n  output_modality: 'text',\n  success: true,\n  completion: t.completion || '',\n  b64_json: null,\n  mime: null,\n  size: null,\n  size_overridden: false,\n  image_degraded: false,\n  cost_header_missing: false,\n  model_used: t.model_used,\n  provider: t.provider,\n  input_tokens: (t.input_tokens != null) ? t.input_tokens : null,\n  output_tokens: (t.output_tokens != null) ? t.output_tokens : null,\n  usd_cost: (t.usd_cost != null) ? t.usd_cost : null,\n  price_in_usd_per_1k: t.price_in_usd_per_1k,\n  price_out_usd_per_1k: t.price_out_usd_per_1k,\n  impact: t.impact,\n  task_type: t.task_type || '',\n  clickup_task_id: t.clickup_task_id || '',\n  triggered_by: t.triggered_by || 'explicit_command',\n  invocation_type: t.invocation_type || 'explicit',\n  caller_user_id: t.caller_user_id || '',\n  process_type: t.process_type || '',\n  routing_default_used: !!t.routing_default_used,\n  routing_row_missing: !!t.routing_row_missing,\n  fell_back_to_opus: !!t.fell_back_to_opus,\n  image_unprocessable: !!t.image_unprocessable,\n  images_dropped: t.images_dropped || 0\n} }];\n"
@@ -724,10 +724,10 @@
       "parameters": {
         "conditions": {
           "options": {
-            "version": 3,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "strict"
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
           },
           "combinator": "and",
           "conditions": [
@@ -751,7 +751,7 @@
       "name": "Alert Image Degrade",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [2080, 300],
+      "position": [2080, 304],
       "notes": "Block 9 WARN: an image generation stepped down to the fallback model. Loud-but-non-blocking; reconverges to Cost Header Missing? (not a leaf).",
       "parameters": {
         "workflowId": {
@@ -780,14 +780,14 @@
       "name": "Cost Header Missing?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [2280, 480],
+      "position": [2288, 480],
       "parameters": {
         "conditions": {
           "options": {
-            "version": 3,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "strict"
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
           },
           "combinator": "and",
           "conditions": [
@@ -811,7 +811,7 @@
       "name": "Alert Image Cost Missing",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [2280, 300],
+      "position": [2288, 304],
       "notes": "Block 9 WARN: the live x-litellm-response-cost header was absent for an image gen; cost fell back to token-math or the per-image floor. Reconverges to Routing Missing? (not a leaf).",
       "parameters": {
         "workflowId": {

@@ -360,11 +360,12 @@ Block 13 — resolution extraction in context-gathering  [DONE 2026-06-13]
   snapping to nearest-valid only on a real violation (+ honest Polish note inline + `invoke-model/size-snapped`
   WARN). **An interim reroute-to-gemini design was built then REVERSED** after a live probe: gpt-image-2 returned
   an exact 1280×512 for a 1280×512 request, while gemini-via-LiteLLM ignored `imageConfig`/`size` (returned 1024²).
-  **Block 13b:** since gemini ignores `size` through the gateway, an explicit resolution on a **non-gpt tier
-  (Niski/Średni) UPGRADES the image model to gpt-image-2** (keeping the tier's low quality so cost stays minimal)
-  and informs the user (inline note + `invoke-model/resolution-adjusted` WARN). Verified: Niski 1280×512 → gpt-image-2
-  low-quality, exact 1280×512, $0.0024. So explicit-resolution control is now live on **all tiers**; only *aspect-only*
-  (no explicit `size`) on gemini tiers remains unhonored — follow-up: native `generateContent` bypass for gemini image.
+  **Block 13b/c:** since gemini ignores BOTH `size` and `aspect` through the gateway, any **shape intent — explicit
+  `size` OR a non-square `aspect`** — on a **non-gpt tier (Niski/Średni) UPGRADES the image model to gpt-image-2**
+  (keeping the tier's low quality so cost stays minimal) and informs the user (inline note + `invoke-model/
+  resolution-adjusted` WARN). Verified: Niski 1280×512 → exact 1280×512 ($0.0024); Niski `16:9` (no pixels) →
+  1104×624 widescreen ($0.0036). So explicit resolution AND aspect are now honored on **all tiers**; a native
+  `generateContent` bypass for gemini image remains an OPTIONAL cost optimization (correctness is closed).
   The ORIGINAL note below is realized. No migration; no model-end work (seam pre-existed).
 
 Block 13 (original) — resolution extraction in context-gathering

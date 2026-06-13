@@ -76,17 +76,18 @@ one model that *cannot* honor resolution. It was dropped.
 
 **Scope + the gemini-tier upgrade (Block 13b).** `gpt-image-2` is the only model that honors `size` through the
 gateway, so explicit-resolution control works natively on its tiers (Wysoki / Krytycznie ważne). For a **gemini
-tier (Niski / Średni)** an explicit `size` would otherwise be silently ignored (~1:1 1K), so `Resolve Routing`
-**upgrades the image model to `gpt-image-2`** whenever an explicit `size` is present on a non-gpt tier — keeping
-the tier's low `image_quality` (cost stays minimal: a verified Niski 1280×512 cost $0.0024) — and informs the
-user with an inline Polish note plus an `invoke-model/resolution-adjusted` WARN. Verified live (Niski, exec 1948):
-model upgraded gemini→gpt-image-2, exact 1280×512 returned (decoded), note posted inline.
+tier (Niski / Średni)** size/aspect would otherwise be silently ignored (~1:1 1K), so `Resolve Routing`
+**upgrades the image model to `gpt-image-2`** whenever a request carries **shape intent — an explicit `size` OR a
+non-square `aspect`** — on a non-gpt tier, keeping the tier's low `image_quality` (cost stays minimal) and informing
+the user with an inline Polish note plus an `invoke-model/resolution-adjusted` WARN.
 
-**Residual limitation.** Only an **aspect-only** request (a per-block `aspect`, no explicit `size`) on a gemini
-tier is still unhonored (returns ~1:1 1K) — the pre-existing per-block `aspect` feature remains inert for the
-gemini tiers because we don't force a model upgrade without an explicit resolution. Follow-up tracked: bypass
-LiteLLM for Vertex gemini image generation (native `generateContent` HTTP node) so the gemini tiers honor
-`aspect` directly, without a gpt-image-2 upgrade.
+**Honored on every tier (Block 13b explicit size, 13c aspect).** The trigger is shape intent, so both halves work:
+verified live — Niski explicit 1280×512 → gemini→gpt-image-2, exact 1280×512 (decoded), $0.0024 (exec 1948); Niski
+`aspect:"16:9"` with no pixels → gemini→gpt-image-2, returned 1104×624 widescreen (decoded, ≈16:9), $0.0036, note
+posted inline (exec 1974). A 1:1 / no-shape request correctly stays on the cheaper gemini default. *Follow-up
+(optional, cost only):* a native Vertex `generateContent` path would let the gemini tiers honor `aspect`/`size`
+directly, avoiding the gpt-image-2 upgrade cost on low-tier shaped images — a cost optimization, not a correctness
+gap (correctness is now closed).
 
 ## Date
 
