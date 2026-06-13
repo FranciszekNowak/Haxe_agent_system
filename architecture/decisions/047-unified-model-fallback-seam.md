@@ -127,12 +127,14 @@ research path. The legacy `fell_back_to_opus` name exists only in Invoke Model a
 - `REAL_TIERS` is now referenced in two Code nodes: the new `Resolve Lower Tier` (sole owner of the
   step-down) and Invoke Model's `Resolve Routing` (its own `__default__` guard). Accepted, bounded
   duplication (Invoke Model's copy is not the step-down owner).
-- **Open item for Block B (image fallback regression):** `Wysoki` and `Krytycznie ważne` image both
-  resolve to `openai/gpt-image-2`, so "one tier below" for `Krytycznie ważne` image yields the same
-  model (no real fallback) — a regression vs today's hardcoded cross-provider
-  `vertex_ai/gemini-2.5-flash-image` floor. Block B must decide how the top image tier falls back
-  (e.g. a per-modality floor model, or accept no-fallback at the top image tier). To be resolved
-  before the image path is cut over.
+- **Image top-tier fallback — resolved (operator, 2026-06-13): accept no top-tier image fallback.**
+  `Wysoki` and `Krytycznie ważne` image both resolve to `openai/gpt-image-2`, so strict
+  one-tier-below yields the same model at the top image tier (no real fallback). The operator chose
+  to apply one-tier-below **uniformly** rather than add a per-modality floor-model special case: a
+  top-tier image-model outage therefore produces `success:false` (image generation is non-blocking,
+  never a CRITICAL), a mild, accepted regression vs today's hardcoded cross-provider
+  `vertex_ai/gemini-2.5-flash-image` floor. Block B implements the seam with this rule (no floor
+  concept in `Resolve Lower Tier`).
 
 ## Implementation status
 
