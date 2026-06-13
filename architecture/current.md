@@ -1037,10 +1037,20 @@ content) — config docs and leaf docs alike. Embedded doc links arrive in a tas
 `linked_doc_leaves` resolves by regex-extract → Docs v3 GET → flatten (the earlier "no access"
 was a task-node link-rendering / pre-grant artifact).
 
-> **Open (tracked):** user-overridable image resolution. Block 9 built the model-end seam — `Invoke Model`
-> honors a `requested_size` (precedence requested_size > model `aspect` > tier default). What's unresolved is
-> the *extraction* surface (a new `[AI]` field read here, inline syntax, or the model's per-block `aspect`)
-> and threading it down to that input. Decision + plan: **ADR-045**; scheduled as master-plan **Block 13**.
+> **Block 13 — model-inferred image resolution (DONE 2026-06-13, ADR-045).** Extraction surface = the
+> drafting model emits an optional per-block `size:"WxH"` in the output-block contract (no new `[AI]` field,
+> no inline command); Build Prompt instructs it to do so only when the user asks for a specific resolution,
+> the resolver threads `size`→`requested_size`, and `Resolve Routing` validates against **gpt-image-2's real
+> constraints** (edges ÷16, aspect 1:3–3:1, ≤3840 px edge, 655 360–8 294 400 px) — honoring a valid explicit
+> size **exactly**, snapping to nearest-valid only on a real violation (+ an honest Polish note rendered inline
+> + `invoke-model/size-snapped` WARN). Verified live: `1280x512` on Krytycznie → gpt-image-2 returned an exact
+> 1280×512 (decoded), priced row, posted inline, no snap/WARN.
+> **Limitation:** the Vertex **gemini** image tiers (Niski/Średni) cannot honor `size` *or* `aspect` through the
+> current LiteLLM gateway — LiteLLM drops gemini's `imageConfig`, so those images return ~1:1 1K regardless
+> (known LiteLLM bug; a non-square probe returned 1024×1024). Explicit-resolution control therefore works on the
+> **gpt-image-2 tiers only**; an interim reroute-to-gemini design was built and **reversed** once probing proved
+> gpt-image-2 is the resolution-flexible model and gemini-via-gateway ignores size. *Follow-up tracked:* bypass
+> LiteLLM for gemini image (native `generateContent`) or route aspect-sensitive generation to gpt-image-2.
 
 ### 15.4 `Invoke Model (v1)` — routing + exact cost
 

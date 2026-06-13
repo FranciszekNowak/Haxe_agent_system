@@ -715,8 +715,26 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
   - **Not re-run (cost/time):** the Wysoki `gpt-image-2` end-to-end (~$0.21/img, ~176 s). Block 9 already verified
     gpt-image-2 generation + tier routing live across all five tiers, and the Block-12 wiring is tier-agnostic (the
     resolver calls `Invoke Model` with `impact`; routing is unchanged), so the high tier is covered transitively.
-  - **Phase B (multimodal OUTPUT) is COMPLETE.** Remaining tracked item: Block 13 (resolution-extraction surface,
-    ADR-045) — model-end seam already built.
+  - **Phase B (multimodal OUTPUT) is COMPLETE.**
+
+- **Block 13 — model-inferred image resolution + gpt-image-2 constraint guard (2026-06-13, ADR-045).** Closes the
+  ADR-045 extraction half. The drafting model emits an optional per-block `size:"WxH"` (Build Prompt instruction —
+  emit only on an explicit user resolution request); the resolver threads `size`→`Invoke Model.requested_size`;
+  `Resolve Routing` validates against **gpt-image-2's real constraints** (edges ÷16, aspect 1:3–3:1, longest edge
+  ≤3840, pixel count 655 360–8 294 400) and honors a valid explicit size **exactly**, snapping to nearest-valid only
+  on a real violation (+ an honest Polish note rendered inline by the resolver + `invoke-model/size-snapped` WARN via
+  the existing resolver-`warnings[]` seam). **Key correction (empirical).** An interim design that rerouted high-tier
+  + specific-resolution requests to `gemini-3-pro-image-preview` was built and then **reversed** after a live probe:
+  (a) gpt-image-2 honors arbitrary in-constraint sizes — a `1280x512` request returned an exact 1280×512 (decoded
+  from the PNG IHDR); (b) Vertex **gemini image via LiteLLM ignores `imageConfig`/`size`** — a non-square request
+  returned 1024×1024 (a known LiteLLM limitation). So gpt-image-2 *is* the resolution-flexible model and the reroute
+  moved work onto the one that can't honor it. Net: explicit-resolution control is **live on the gpt-image-2 tiers
+  (Wysoki/Krytycznie)**; the gemini tiers (Niski/Średni) cannot honor `size`/`aspect` through the gateway (follow-up:
+  native `generateContent` bypass, or route aspect-sensitive generation to gpt-image-2). Verified live node-by-node
+  (form-triggered): exact 1280×512 generated on gpt-image-2 (`api.openai.com`, cost header $0.073) + posted inline,
+  priced `image_gen` row, no snap/WARN on the clean path. The only alerts were pre-existing test-task noise (12 junk
+  attachments → Block-6 `image-unprocessable`; `broken.docx`; a flaky `Research the web` CRITICAL) — none from
+  Block 13. No migration; no model-end work (the `requested_size` seam pre-existed from Block 9).
 
 ---
 
@@ -732,4 +750,5 @@ and image **generation** (Phase B) — those are output/hosting concerns, not re
 2026-06-12 (Block 9 — image generation folded into `Invoke Model (v1)` as output modality `requested_modality_of_output='image'`; routing `(impact, modality='image')` + single gemini-flash fallback hop; cost via header→token-math (migration 024)→floor; all 5 tiers + degrade + size-override + text/vision regression verified live; gpt-image-2 ~176 s so image timeout raised to 240 s)
 2026-06-12 (Block 10 — comment_native delivery in Stage C, **in-memory base64 (Option A)** superseding the disk-temp design: `Execute Command` + file-delete are unavailable on this n8n, so no cleanup is possible on disk; `convertToFile`→multipart upload→inline `{type:attachment}` op (the only ClickUp form that renders inline, proven by spike); no delete-attachment API → orphan-WARN rollback + accepted persistence; `run_payload_bytes`/`n8n_execution_id` observability (migration 025); base64 kept out of the DB; verified live incl. 2-image inline render + rollback. Blocks 11/12 now carry base64 manifests, not temp paths; the disk TTL-sweep phase is dropped)
 2026-06-12 (Block 11 — `Image Resolver (v1)` sub-workflow: resolves `embed_input` to existing attachments + calls `Invoke Model` per `generate` block + assembles `image_manifest`/`rendered_delta` for Stage C; per-impact image-COUNT cap retired for a single global `config.image_count_ceiling=20` safety guard (migration 026; impact still drives model+resolution); `executeWorkflow` set to once-per-item for fan-out + `task_type` metadata smuggling (Shape Output pass-through added); footer unified into `Finalize Comment`, now per-modality (`tekst:`/`obraz:`) with aggregate cost; image-path reviewer @mention parity added to `Rewrite Delta`; verified live — 3 images inline (1 embed + 2 generated) + footer + 0 alerts, plus embed-miss and ceiling cases. Block 12 still owed: auto-wire Stage B → resolver and route resolver `warnings[]` to Post Alert)
+2026-06-13 (Block 13 — model-inferred image resolution: optional per-block `size`, validated against gpt-image-2's real constraints (honor-exact / snap-on-violation); interim gemini reroute reversed after a live probe proved gpt-image-2 honors arbitrary sizes and gemini-via-LiteLLM ignores `imageConfig`; live on gpt-image-2 tiers, gemini-tier aspect/resolution deferred to a gateway-bypass follow-up)
 2026-06-13 (Block 12 — end-to-end multimodal: drafting model emits the JSON block list; **full unification** (prose `Build Comment` retired → one rendering path via the resolver's `rendered_delta`); `embed_input` wired end-to-end; Stage B `Parse Output Blocks`→`Call Image Resolver`, cost-sum re-sequenced after the resolver, resolver `warnings[]`→Post Alert; orchestrator forwards the four image fields; Stage C adds `Pass Delta` + web-sources in `Finalize Comment`; verified live across generate / text-only regression / Gemini-vision+embed / multi-image interleave / forced embed-miss degrade; **Phase B multimodal OUTPUT complete**; Wysoki gpt-image-2 not re-run — covered transitively by Block 9)

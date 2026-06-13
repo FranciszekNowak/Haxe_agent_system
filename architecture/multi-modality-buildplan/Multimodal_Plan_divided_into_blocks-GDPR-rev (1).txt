@@ -1,7 +1,7 @@
 Multimodal I/O — bite-sized build plan (ADR-036 Phases 2–5)
 
-Rewritten 2026-06-12 to match live state; status updated 2026-06-13 (Blocks 6, 8, 9, 10, 11, 12 DONE — Phase B
-OUTPUT COMPLETE; only tracked Block 13 resolution-extraction remains). Phase A
+Rewritten 2026-06-12 to match live state; status updated 2026-06-13 (Blocks 6, 8, 9, 10, 11, 12, 13 DONE — Phase B
+OUTPUT COMPLETE incl. Block 13 resolution-extraction). Phase A
 (INPUT) is COMPLETE through Block 6 (verified); the PD/EU apparatus this plan once carried has been
 removed (ADR-043, migration 021); the erasure-readiness schema landed (ADR-044, migration 022). Block 8
 (the Phase B provisioning gate) is DONE — image providers are live + verified (gemini-image Nano
@@ -350,7 +350,21 @@ Block 12 — End-to-end: drafting model emits the block list; full A→B→C mul
 - Write-back: ADR-036 → Phases 2–5 COMPLETE with the full Consequences; current.md §15 rewritten to the
   three-stage multimodal form; §11/§15 phase status updated. Final commit.
 
-Block 13 — resolution extraction in context-gathering (tracked, not yet scheduled)
+Block 13 — resolution extraction in context-gathering  [DONE 2026-06-13]
+
+- DONE (ADR-045 update, current.md §15.4): the extraction surface is **model-inferred** — the drafting model
+  emits an optional per-block `size:"WxH"` in the output-block contract (Build Prompt instructs it to do so only
+  on an explicit user resolution request; no new `[AI]` field, no inline command). The resolver threads
+  `size`→`Invoke Model.requested_size`; `Resolve Routing` validates against **gpt-image-2's real constraints**
+  (edges ÷16, aspect 1:3–3:1, ≤3840 px edge, 655 360–8 294 400 px), honoring a valid explicit size **exactly** and
+  snapping to nearest-valid only on a real violation (+ honest Polish note inline + `invoke-model/size-snapped`
+  WARN). **An interim reroute-to-gemini design was built then REVERSED** after a live probe: gpt-image-2 returned
+  an exact 1280×512 for a 1280×512 request, while gemini-via-LiteLLM ignored `imageConfig`/`size` (returned 1024²).
+  So explicit-resolution control is live on the **gpt-image-2 tiers (Wysoki/Krytycznie)**; the gemini tiers cannot
+  honor `size`/`aspect` through the gateway — follow-up: native `generateContent` bypass, or route aspect-sensitive
+  generation to gpt-image-2. The ORIGINAL note below is realized. No migration; no model-end work (seam pre-existed).
+
+Block 13 (original) — resolution extraction in context-gathering
 
 - Context: Block 9 built the MODEL-END of user-overridable image resolution — `Invoke Model (v1)` honors
   an optional `requested_size` (precedence: requested_size > model aspect > tier default), verified live.

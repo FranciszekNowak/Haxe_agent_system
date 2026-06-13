@@ -50,6 +50,37 @@ input — no further model-end work needed.
 - No new migration, no routing change — purely an input + precedence in `Resolve Routing`.
 - `current.md` §context-gathering carries a one-line pointer to this ADR + Block 13 (a pointer, not a TODO).
 
+## Update — Block 13 done, with a corrected design (2026-06-13)
+
+The extraction half is built, but the live verification **reversed** the collision design first attempted.
+
+**Extraction surface chosen: model-inferred.** The drafting model emits an optional per-block `size:"WxH"`
+in the output-block contract; Stage A's Build Prompt instructs it to do so only when the user asks for a
+specific resolution (otherwise omit `size` and use `aspect`). The Image Resolver threads `size` →
+`Invoke Model.requested_size`. No new `[AI]` ClickUp field, no inline command — per operator decision.
+
+**The guard is gpt-image-2 constraint validation, not a fixed enum.** `gpt-image-2` accepts arbitrary
+`WxH` within real limits (edges divisible by 16, aspect ratio 1:3–3:1, longest edge ≤ 3840, pixel count
+655 360–8 294 400). `Resolve Routing` honors a valid explicit size **exactly** and snaps to the nearest
+valid size only on an actual violation, with an honest Polish note (`Żądana rozdzielczość … nie jest
+obsługiwana … wygenerowano w najbliższej zgodnej: …`) rendered inline by the resolver and an
+`invoke-model/size-snapped` WARN through the existing resolver-`warnings[]` → Post Alert seam.
+
+**Reversed design (recorded for the why).** An interim build rerouted high-impact + specific-resolution
+requests off `gpt-image-2` onto `gemini-3-pro-image-preview` (premise: gemini is "resolution-flexible").
+A live probe disproved both halves of that premise: (a) `gpt-image-2` returned an **exact 1280×512** for a
+1280×512 request (decoded from the PNG) — it is the resolution-flexible model; (b) Vertex **gemini image via
+LiteLLM ignores `imageConfig`/`size`** and returned a **1024×1024 square** for a non-square request — a known
+LiteLLM limitation (it does not map/forward gemini's `imageConfig`). The reroute therefore moved work onto the
+one model that *cannot* honor resolution. It was dropped.
+
+**Scope + limitation.** Explicit-resolution control is **live on the gpt-image-2 tiers (Wysoki / Krytycznie
+ważne)**. The gemini tiers (Niski / Średni) cannot honor `size` *or* `aspect` through the current gateway
+(images come back ~1:1 1K regardless — this also means the pre-existing per-block `aspect` feature is inert for
+gemini tiers). Follow-up tracked: bypass LiteLLM for Vertex gemini image generation (native `generateContent`
+HTTP node) or route aspect/resolution-sensitive generation to gpt-image-2.
+
 ## Date
 
 2026-06-12
+2026-06-13 (Block 13 — extraction surface built; reroute design reversed after live probe)
