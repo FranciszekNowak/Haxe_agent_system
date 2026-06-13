@@ -145,6 +145,24 @@ they slot in additively. See the corresponding ADRs.
   columns + Bedrock-EU rows were dropped in **Block 3** (migration 021); the table collapsed to one row per
   `(impact, modality)`. Fail-safe preserved: DB-down falls back to `haxe-sonnet-4-6-direct` + WARN.
 
+- **Unified model fallback seam (ADR-047; research path LIVE 2026-06-13).** Fallback for any model is the
+  model **one impact tier below, within the same modality**, derived from `REAL_TIERS =
+  ['Niski','Średni','Wysoki','Krytycznie ważne']` — no `fallback_model` column (it would duplicate the
+  tiering). Two new shared sub-workflows: `Resolve Lower Tier (v1)` (`GNO6ZsIcSpvYUJDq`, sole owner of the
+  step-down) and `Call Model with Fallback (v1)` (`jBqu7znBIOMBF9HI`, a shape-agnostic try-primary-then-fallback
+  mechanism with an optional `success_path` payload predicate; returns `{fell_back, model_used, body, headers}`;
+  both-down throws → one CRITICAL). **Research** (`research-the-web`) now calls the seam on `/v1/messages` with
+  `fallback_model = ResolveLowerTier(task_impact)` (so `Krytycznie ważne` research runs on Opus, not flaky
+  Fable — fixes the intermittent research CRITICAL of execs 1868/1910); `decide-research` resolves the two
+  research models via the helper and WARNs once if a round fell back; research keeps its leaf-based cost
+  logging (ADR-035) but now prices each round against the **served** model. Also fixed a pre-existing defect:
+  `Collect Research Results` (a multi-input leaf) was dropping `web_findings`; it now reads the research payload
+  from its incoming item, so findings reach the caller. `Niski` stays on Haiku (the cheap-Gemini swap in the
+  ADR was not taken — alias not provisioned in LiteLLM). **Pending (ADR-047 Block B):** `Invoke Model (v1)`
+  adopts the same seam for its text and image paths (amending ADR-037's hardcoded Opus fallback into the
+  top-tier case of one-tier-below); it is **untouched so far**. Open item there: `Wysoki` and `Krytycznie`
+  image share `gpt-image-2`, so one-tier-below gives no real image fallback at the top tier.
+
 - **Multimodal I/O (input + image-gen pipelines LIVE, ADR-036/038/040).** Image attachments from ClickUp
   tasks pass as vision content blocks to the model; Docling extracts text from non-image files
   (PDF/DOCX/XLSX) into the prompt — a PDF therefore routes as `modality='text'` → Claude. Image *input*

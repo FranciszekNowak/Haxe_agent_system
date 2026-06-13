@@ -199,7 +199,7 @@
       "position": [1328, 208],
       "notes": "Resolves research model + depth/results from research_parameters and builds the research prompt. Reads inputs from SW1 trigger (When Called).",
       "parameters": {
-        "jsCode": "const inp = $('When Called').first().json;\nconst reviewer = (inp.reviewer_user_id || '2521617').toString();\nlet rr = null; try { const r = $('Lookup Research Routing').first().json; if (r && r.litellm_model) rr = r; } catch(e) {}\nconst litellm_model = rr ? rr.litellm_model : 'haxe-sonnet-4-6-direct';\nconst max_tokens = (rr && rr.max_tokens != null) ? Number(rr.max_tokens) : 4000;\nconst temperature = (rr && rr.temperature != null && rr.temperature !== '') ? Number(rr.temperature) : null;\nlet rp = null; try { const p = $('Lookup Research Params').first().json; if (p && p.max_research_rounds != null) rp = p; } catch(e) {}\nconst max_research_rounds = (rp && rp.max_research_rounds != null) ? Number(rp.max_research_rounds) : 3;\nconst tavily_max_results = (rp && rp.tavily_max_results != null) ? Number(rp.tavily_max_results) : 5;\nconst tcomment = (inp.triggering_comment_text || '').toString();\nconst userPrompt = 'Jestes asystentem researchu. Zbierz z internetu aktualne, zewnetrzne informacje potrzebne do wykonania ponizszego zadania (np. ceny, kursy, specyfikacje, biezace fakty). Wykonaj potrzebne wyszukiwania, a nastepnie zwroc ZWIEZLE ustalenia (fakty + liczby), bez wykonywania samego zadania. NIE umieszczaj w zapytaniach danych osobowych (nazwiska, e-maile, numery zamowien).\\n\\nZADANIE:\\n' + (inp.task_name || '') + '\\n' + (inp.task_description || '') + (tcomment ? ('\\n\\nWIADOMOSC UZYTKOWNIKA:\\n' + tcomment) : '');\nconst messages = JSON.stringify([{ role: 'user', content: userPrompt }]);\nreturn [{ json: {\n  litellm_model: litellm_model,\n  messages: messages,\n  max_tokens: max_tokens,\n  temperature: temperature,\n  depth: 0,\n  max_depth: max_research_rounds,\n  acc_in: 0, acc_out: 0, acc_usd: 0, acc_searches: 0,\n  sources: '[]',\n  tavily_max_results: tavily_max_results,\n  calls: '[]',\n  clickup_task_id: inp.clickup_task_id || '',\n  caller_user_id: reviewer,\n  process_type: inp.process_type || '',\n  triggered_by: inp.triggered_by || 'explicit_command',\n  invocation_type: inp.invocation_type || 'explicit',\n  impact: inp.impact || ''\n} }];"
+        "jsCode": "const inp = $('When Called').first().json;\nconst reviewer = (inp.reviewer_user_id || '2521617').toString();\nconst primary = $('Pick Primary').first().json || {};\nconst litellm_model = primary.litellm_model || 'haxe-sonnet-4-6-direct';\nconst max_tokens = (primary.max_tokens != null) ? Number(primary.max_tokens) : 4000;\nconst temperature = (primary.temperature != null && primary.temperature !== '') ? Number(primary.temperature) : null;\nlet fb = null; try { fb = $('Resolve Lower Fallback').first().json; } catch (e) {}\nconst fallback_model = (fb && fb.floor !== true && fb.litellm_model) ? fb.litellm_model : '';\nlet rp = null; try { const p = $('Lookup Research Params').first().json; if (p && p.max_research_rounds != null) rp = p; } catch(e) {}\nconst max_research_rounds = (rp && rp.max_research_rounds != null) ? Number(rp.max_research_rounds) : 3;\nconst tavily_max_results = (rp && rp.tavily_max_results != null) ? Number(rp.tavily_max_results) : 5;\nconst tcomment = (inp.triggering_comment_text || '').toString();\nconst userPrompt = 'Jestes asystentem researchu. Zbierz z internetu aktualne, zewnetrzne informacje potrzebne do wykonania ponizszego zadania (np. ceny, kursy, specyfikacje, biezace fakty). Wykonaj potrzebne wyszukiwania, a nastepnie zwroc ZWIEZLE ustalenia (fakty + liczby), bez wykonywania samego zadania. NIE umieszczaj w zapytaniach danych osobowych (nazwiska, e-maile, numery zamowien).\\n\\nZADANIE:\\n' + (inp.task_name || '') + '\\n' + (inp.task_description || '') + (tcomment ? ('\\n\\nWIADOMOSC UZYTKOWNIKA:\\n' + tcomment) : '');\nconst messages = JSON.stringify([{ role: 'user', content: userPrompt }]);\nreturn [{ json: {\n  litellm_model: litellm_model,\n  messages: messages,\n  max_tokens: max_tokens,\n  temperature: temperature,\n  fallback_model: fallback_model,\n  acc_fell_back: false,\n  depth: 0,\n  max_depth: max_research_rounds,\n  acc_in: 0, acc_out: 0, acc_usd: 0, acc_searches: 0,\n  sources: '[]',\n  tavily_max_results: tavily_max_results,\n  calls: '[]',\n  clickup_task_id: inp.clickup_task_id || '',\n  caller_user_id: reviewer,\n  process_type: inp.process_type || '',\n  triggered_by: inp.triggered_by || 'explicit_command',\n  invocation_type: inp.invocation_type || 'explicit',\n  impact: inp.impact || ''\n} }];"
       }
     },
     {
@@ -236,7 +236,9 @@
             "process_type": "={{ $json.process_type }}",
             "triggered_by": "={{ $json.triggered_by }}",
             "invocation_type": "={{ $json.invocation_type }}",
-            "impact": "={{ $json.impact }}"
+            "impact": "={{ $json.impact }}",
+            "fallback_model": "={{ $json.fallback_model }}",
+            "acc_fell_back": "={{ $json.acc_fell_back }}"
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,
@@ -339,8 +341,133 @@
       "position": [1984, 304],
       "notes": "Terminal node: all branches (NIE, gate-fail, research-success, research-fail) converge here. Returns { web_findings, web_sources } for the caller.",
       "parameters": {
-        "jsCode": "let web_findings = '', web_sources = [];\ntry {\n  const rw = $('Call Research the web').first().json;\n  if (rw) {\n    web_findings = rw.completion || '';\n    web_sources = rw.sources || [];\n  }\n} catch(e) {}\nreturn [{ json: { web_findings, web_sources } }];"
+        "jsCode": "let web_findings = '', web_sources = [];\nlet rw = null;\nconst src = $input.first() ? $input.first().json : null;\nif (src && (src.completion !== undefined || src.sources !== undefined)) { rw = src; }\nif (!rw) { try { rw = $('Call Research the web').first().json; } catch (e) {} }\nif (rw) { web_findings = rw.completion || ''; web_sources = rw.sources || []; }\nreturn [{ json: { web_findings: web_findings, web_sources: web_sources } }];"
       }
+    },
+    {
+      "id": "59aee86b-17b3-40bb-ac55-2f9383b852ac",
+      "name": "Resolve Lower Primary",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [820, 384],
+      "notes": "ADR-047: research runs one tier BELOW the task. Resolve the lower text-tier model via the shared Resolve Lower Tier helper. onError=continueRegularOutput -> DB hiccup degrades to the floor clamp (Pick Primary) instead of CRITICAL.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "GNO6ZsIcSpvYUJDq",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "impact": "={{ $('When Called').first().json.impact }}",
+            "modality": "text"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "5a4dfd6c-4ef5-48b7-873f-c54be35077b9",
+      "name": "Pick Primary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1040, 384],
+      "notes": "Floor clamp: use the one-tier-below row if present; if the task is at the floor (Niski/unknown -> helper returns floor), research on the task's own routing row (Lookup Research Routing).",
+      "parameters": {
+        "jsCode": "const low = $('Resolve Lower Primary').first().json || {};\nconst taskRow = $('Lookup Research Routing').first().json || {};\nlet primary;\nif (low && low.floor !== true && low.litellm_model) {\n  primary = { impact: low.impact, litellm_model: low.litellm_model, max_tokens: (low.max_tokens != null ? Number(low.max_tokens) : null), temperature: (low.temperature != null && low.temperature !== '' ? Number(low.temperature) : null) };\n} else {\n  primary = { impact: (taskRow.impact || 'Niski'), litellm_model: (taskRow.litellm_model || 'haxe-haiku-4-5-direct'), max_tokens: (taskRow.max_tokens != null ? Number(taskRow.max_tokens) : 8000), temperature: (taskRow.temperature != null && taskRow.temperature !== '' ? Number(taskRow.temperature) : null) };\n}\nreturn [{ json: primary }];"
+      }
+    },
+    {
+      "id": "e6f35814-3cdf-48b9-ab2f-4e565c5ff7e0",
+      "name": "Resolve Lower Fallback",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1260, 384],
+      "notes": "ADR-047: the research fallback is one tier below the research PRIMARY (two below the task), within text modality. Empty at the floor. onError=continueRegularOutput -> no fallback rather than CRITICAL.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "GNO6ZsIcSpvYUJDq",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "impact": "={{ $('Pick Primary').first().json.impact }}",
+            "modality": "text"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "1771a7a1-fd4c-4d8e-bce4-1ee3bd5a3314",
+      "name": "Research Fell Back?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1760, 480],
+      "notes": "ADR-047: did the research seam fall back one tier? Inline in the degradation path (after Check Research Degradation) so the run stays linear and Collect Research Results still receives exactly one item.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "fb1",
+              "leftValue": "={{ $('Call Research the web').first().json.fell_back }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "8a365bac-3cc4-45ce-9e0e-087188c2cfe5",
+      "name": "Alert Research Fell Back",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1968, 560],
+      "notes": "ADR-047 WARN: research served on the one-tier-below fallback model. Loud-but-non-blocking; reconverges to Collect Research Results.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "decide-research/research",
+            "message": "Web research zdegradowany do modelu zapasowego (fallback o jeden poziom niżej).",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; fallback_model={{ $('Resolve Research Inputs').first().json.fallback_model }}; impact={{ $('When Called').first().json.impact }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -399,7 +526,7 @@
       "main": [
         [
           {
-            "node": "Lookup Research Routing",
+            "node": "Resolve Lower Primary",
             "type": "main",
             "index": 0
           }
@@ -407,17 +534,6 @@
         [
           {
             "node": "Collect Research Results",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Lookup Research Routing": {
-      "main": [
-        [
-          {
-            "node": "Lookup Research Params",
             "type": "main",
             "index": 0
           }
@@ -486,7 +602,51 @@
         ],
         [
           {
-            "node": "Collect Research Results",
+            "node": "Research Fell Back?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Lower Primary": {
+      "main": [
+        [
+          {
+            "node": "Lookup Research Routing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Research Routing": {
+      "main": [
+        [
+          {
+            "node": "Pick Primary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Primary": {
+      "main": [
+        [
+          {
+            "node": "Resolve Lower Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Lower Fallback": {
+      "main": [
+        [
+          {
+            "node": "Lookup Research Params",
             "type": "main",
             "index": 0
           }
@@ -494,6 +654,35 @@
       ]
     },
     "Alert Research Degraded": {
+      "main": [
+        [
+          {
+            "node": "Research Fell Back?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Research Fell Back?": {
+      "main": [
+        [
+          {
+            "node": "Alert Research Fell Back",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Collect Research Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Research Fell Back": {
       "main": [
         [
           {
