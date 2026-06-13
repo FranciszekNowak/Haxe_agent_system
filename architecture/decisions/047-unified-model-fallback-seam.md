@@ -1,7 +1,8 @@
 # ADR-047: Unified model fallback via shared primitives (one seam, one tier rule)
 
-Status: Accepted. Block A (research path) landed and verified 2026-06-13. Block B
-(Invoke Model adopts the seam for both modalities) is pending — see "Implementation status".
+Status: Accepted and fully landed 2026-06-13. Block A (research path) and Block B
+(Invoke Model adopts the seam for both modalities) both landed and verified live on
+2026-06-13 — see "Implementation status".
 Date: 2026-06-13
 Deciders: Franciszek (operator), with design review
 
@@ -145,14 +146,38 @@ research path. The legacy `fell_back_to_opus` name exists only in Invoke Model a
   `Collect Research Results` returned empty `web_findings` because it is a multi-input
   "run once for all items" leaf where `$('Call Research the web').first()` failed to resolve; it now
   reads the research payload from its incoming item, so findings reach the caller.
-- **Block B (pending):** Invoke Model adopts the seam for text + image (Decision §6), renames
-  `fell_back_to_opus → fell_back`, and resolves the image top-tier fallback open item. Invoke Model
-  is untouched so far.
+- **Block B (landed, verified 2026-06-13):** `Invoke Model (v1)` now routes both modalities through
+  the seam. Text: `Output Is Image?`(false) → `Resolve Lower Tier Text` → `Call Model Text` (seam,
+  `/v1/chat/completions`, `success_path` empty); seam success → `Parse Response`, seam both-down throw
+  → `Retry Text-Only` (Opus text-only safety net, kept). Image: `Output Is Image?`(true) → `Resolve
+  Lower Tier Image` → `Lookup Fallback Image Prices` → `Call Model Image` (seam,
+  `/v1/images/generations`, `success_path = data.0.b64_json`); seam success/both-down both → `Parse
+  Image` (both-down → `succeeded:false`, non-blocking). The old `Call LiteLLM` + `Fallback to Opus`
+  and `Call Image Gen` + `Fallback Image Gen` nodes were removed. `fell_back_to_opus` renamed to
+  `fell_back` (Parse Response, Normalize Model Result, Check Degradation `d3`, Alert Degradation).
+  Image cost layering keys the token-math/per-image-floor backups off the **served** model via the new
+  `Lookup Fallback Image Prices` node (the live `x-litellm-response-cost` header stays authoritative);
+  this avoided extending the Block A helper or hardcoding a drift-prone price map. Verified live across
+  the ADR-036/037 surface: text normal (Średni→Sonnet, no alert); text forced fallback (Wysoki→Sonnet
+  one-tier-below, Krytycznie ważne→Opus top-tier special case, one WARN each); text both-down no image
+  → Retry Text-Only on Opus (one WARN); corrupt image both-down → image-unprocessable WARN, image
+  dropped, text answer; image normal (gemini-3-pro-image-preview); image forced fallback
+  (→gemini-2.5-flash-image, image_degraded, served-model prices applied); image both-down →
+  `success:false`, **no CRITICAL**; served (fallback) model logged to `agent_runs`. Zero CRITICAL across
+  the run. The Block A seam (`jBqu7znBIOMBF9HI`) and helper (`GNO6ZsIcSpvYUJDq`) were not modified.
+  - **Not force-tested** (each exercises a path Block B did not change; could not be triggered without
+    breaking infra/DB): a genuine non-image total failure CRITICAL (would need the Opus `Retry
+    Text-Only` to also fail — unchanged, still no `onError` → throws → CRITICAL); the image 2xx-empty →
+    `success_path` fallback (cannot make LiteLLM return a 2xx with no image; `success_path =
+    data.0.b64_json` is wired and the predicate mechanism was proven in Block A); the routing-missing
+    CRITICAL (needs a 0-row `model_routing` lookup; `Lookup Routing`/`Resolve Routing`/`Routing Missing?`
+    are untouched). The image cost-header-missing WARN *did* fire live (on the failed-image test).
 
 ## References
 
 ADR-037 (Fable→Opus fallback in Invoke Model — amended here), ADR-042 (impact tiers, `REAL_TIERS`),
-ADR-036 (image path / Block 6 text-only retry, untouched so far), ADR-035 (Log Model Run, sole cost
+ADR-036 (image path / Block 6 text-only retry — `Retry Text-Only` kept, now reached via the text seam's
+both-down output), ADR-035 (Log Model Run, sole cost
 writer), ADR-018 (build n8n via the MCP). Live evidence: executions 1868, 1910 (CRITICALs); 1935,
 1961 (pre-existing empty-findings); Block A verification runs 1998 and the gold-price run
 (2026-06-13).

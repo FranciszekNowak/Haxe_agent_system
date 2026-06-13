@@ -145,7 +145,7 @@ they slot in additively. See the corresponding ADRs.
   columns + Bedrock-EU rows were dropped in **Block 3** (migration 021); the table collapsed to one row per
   `(impact, modality)`. Fail-safe preserved: DB-down falls back to `haxe-sonnet-4-6-direct` + WARN.
 
-- **Unified model fallback seam (ADR-047; research path LIVE 2026-06-13).** Fallback for any model is the
+- **Unified model fallback seam (ADR-047; research + Invoke Model both LIVE 2026-06-13).** Fallback for any model is the
   model **one impact tier below, within the same modality**, derived from `REAL_TIERS =
   ['Niski','Średni','Wysoki','Krytycznie ważne']` — no `fallback_model` column (it would duplicate the
   tiering). Two new shared sub-workflows: `Resolve Lower Tier (v1)` (`GNO6ZsIcSpvYUJDq`, sole owner of the
@@ -158,10 +158,18 @@ they slot in additively. See the corresponding ADRs.
   logging (ADR-035) but now prices each round against the **served** model. Also fixed a pre-existing defect:
   `Collect Research Results` (a multi-input leaf) was dropping `web_findings`; it now reads the research payload
   from its incoming item, so findings reach the caller. `Niski` stays on Haiku (the cheap-Gemini swap in the
-  ADR was not taken — alias not provisioned in LiteLLM). **Pending (ADR-047 Block B):** `Invoke Model (v1)`
-  adopts the same seam for its text and image paths (amending ADR-037's hardcoded Opus fallback into the
-  top-tier case of one-tier-below); it is **untouched so far**. Open item there: `Wysoki` and `Krytycznie`
-  image share `gpt-image-2`, so one-tier-below gives no real image fallback at the top tier.
+  ADR was not taken — alias not provisioned in LiteLLM). **Invoke Model (ADR-047 Block B, LIVE 2026-06-13):**
+  `Invoke Model (v1)` now routes **both** paths through the seam. Text → `Resolve Lower Tier Text` →
+  `Call Model Text` (seam, `/v1/chat/completions`, `success_path` empty); on both-down the seam throws and the
+  existing `Retry Text-Only` (Opus, images stripped) catches it as the floor safety net. Image → `Resolve Lower
+  Tier Image` → `Lookup Fallback Image Prices` → `Call Model Image` (seam, `/v1/images/generations`,
+  `success_path = data.0.b64_json` so a 2xx-with-no-image triggers fallback); both-down → `success:false`
+  (image stays non-blocking, never a CRITICAL). This **amends ADR-037**: its hardcoded Opus fallback is now the
+  top-tier case of one-tier-below (only `Krytycznie ważne`/Fable still lands on Opus). `fell_back_to_opus` was
+  renamed to `fell_back` throughout. Image cost layering keys the token-math/per-image-floor backups off the
+  **served** model (`Lookup Fallback Image Prices`), with the live cost header still authoritative. Resolved open
+  item: `Wysoki` and `Krytycznie ważne` image both resolve to `gpt-image-2`, so one-tier-below gives no real image
+  fallback at the top tier — accepted (a top-tier image-model outage yields `success:false`, non-blocking).
 
 - **Multimodal I/O (input + image-gen pipelines LIVE, ADR-036/038/040).** Image attachments from ClickUp
   tasks pass as vision content blocks to the model; Docling extracts text from non-image files
@@ -1086,9 +1094,13 @@ Block 9, ADR-036) and optional `requested_size`/`aspect`). Node chain:
 `Lookup Routing` (Supabase `model_routing`, composite PK `(impact, modality)`, `__default__` fail-safe row,
 `LEFT JOIN image_gen_params` for `resolution`, DB-error tolerant) → `Resolve Routing` (in-code Sonnet
 last-resort + deliberation-nudge prepend; builds the image request when `requested_modality_of_output='image'`)
-→ **`Output Is Image?`** forks: **text** → `Call LiteLLM` →(Opus fallback → text-only retry, ADR-037/Block 6)→
-`Parse Response`; **image (Block 9)** → `Call Image Gen` (`/v1/images/generations`, 240 s timeout) →(onError:
-one `Fallback Image Gen` hop to `gemini-2.5-flash-image`)→ `Parse Image`. Both branches converge at
+→ **`Output Is Image?`** forks (ADR-047 Block B — both legs now run through the shared fallback seam
+`Call Model with Fallback (v1)`): **text** → `Resolve Lower Tier Text` → `Call Model Text` (seam,
+`/v1/chat/completions`, `success_path` empty) →`Parse Response`, with the seam's both-down throw routed to
+`Retry Text-Only` (Opus text-only safety net, Block 6); **image (Block 9)** → `Resolve Lower Tier Image` →
+`Lookup Fallback Image Prices` → `Call Model Image` (seam, `/v1/images/generations`, `success_path =
+data.0.b64_json`) → `Parse Image` (both-down → `succeeded:false`, non-blocking). The seam's `Call Primary`
+uses a 180 s timeout (was 240 s on the old image node — accepted). Both branches converge at
 **`Normalize Model Result`** (one uniform schema) → `Call Log Model Run` (the sole `agent_runs` writer + FX/PLN,
 ADR-035) → degradation chain (`Image Unprocessable?` / `Image Degraded?` / `Cost Header Missing?` /
 `Routing Missing?` / `Check Degradation`, each WARN reconverging) → **`Shape Output`** (sole branch-free leaf;
@@ -1114,7 +1126,9 @@ credential + HTTP Request cannot sign Bedrock — only the native node can; ADR-
     the image branch above produces one image per call, priced via live header → token-math (migration 024
     filled `price_out`: flash 0.030 / pro 0.120 / gpt-image-2 0.030, each = Block 8 measured cost ÷ output
     tokens) → per-image `fallback_price_per_unit` floor; a header-miss fires `invoke-model/image-cost-header-missing`,
-    a fallback hop fires `invoke-model/image-degrade`. gpt-image-2 high ≈ 176 s (timeout 240 s); gemini ≈ 5 s.
+    a fallback hop fires `invoke-model/image-degrade`. gpt-image-2 high ≈ 176 s; gemini ≈ 5 s. ⚠ After ADR-047
+  Block B the call goes through the seam whose `Call Primary` timeout is **180 s** (down from the old image
+  node's 240 s) — gpt-image-2 high (~176 s) fits but with little margin; watch for timeouts on the top tier.
   `agent_runs.model_used` stores the versioned model ID from the LiteLLM response body. Migrations 008
   (composite PK), 013 (image tiers), 014 (Gemini multimodal), 020 (max_tokens by tier), **021 — PD-blind
   collapse to `(impact, modality)`, Bedrock rows dropped, Gemini aliases renamed `-eu`→none**, **023 —
@@ -1159,15 +1173,16 @@ credential + HTTP Request cannot sign Bedrock — only the native node can; ADR-
   **one shape — always an array**: `[{type:'text', text:prompt}]` plus `{type:'image_url', image_url:{url:
   <clickup_url>}}` parts when the caller passes `image_blocks_json` (input image refs from `Read Input
   (v1)`). LiteLLM fetches the URLs (no bytes cross workflow boundaries; ADR-036 reference-not-bytes). The
-  routed multimodal model is **Gemini** (flash/pro by tier, ADR-042/043); `Call LiteLLM` sends the
-  image-bearing messages, `Fallback to Opus` retries them on Opus.
-- **Unprocessable-image robustness (ADR-036 Block 6, PD-blind per ADR-043) — DONE.** A corrupt/1×1 input
-  image (or a hypothetical non-vision routed model) 4xxs the whole request. A **final text-only safety
-  net** closes it: `Call LiteLLM` (with images) →err→ `Fallback to Opus` (with images — recovers
-  *transient* errors, image kept) →err→ **`Retry Text-Only`** (Opus, images **stripped** + a `[BRAK: obraz
-  nieczytelny na bieżącym providerze]` marker). The chain discriminates by construction (no HTTP-status
-  parsing): a transient error on a good image is recovered with the image; a genuinely-bad image fails both
-  image-bearing calls and is rescued text-only (`Parse Response` sets `image_unprocessable=true`, fires a
+  routed multimodal model is **Gemini** (flash/pro by tier, ADR-042/043); the text seam (`Call Model Text`)
+  sends the image-bearing messages with the primary model, and one-tier-below as the seam fallback.
+- **Unprocessable-image robustness (ADR-036 Block 6, PD-blind per ADR-043) — DONE; reached via the seam
+  (ADR-047 Block B).** A corrupt/1×1 input image (or a hypothetical non-vision routed model) 4xxs the whole
+  request. A **final text-only safety net** closes it: `Call Model Text` (the seam tries the routed model
+  **then one tier below**, both with images) →both-down throw→ **`Retry Text-Only`** (Opus, images
+  **stripped** + a `[BRAK: obraz nieczytelny na bieżącym providerze]` marker). The chain discriminates by
+  construction (no HTTP-status parsing): a transient error on a good image is recovered with the image (by the
+  seam's fallback); a genuinely-bad image fails both image-bearing calls and is rescued text-only
+  (`Parse Response` sets `image_unprocessable=true` when images were present, fires a
   WARN `multimodal/image-unprocessable`, the draft still posts); a real non-image failure fails all three →
   CRITICAL (not masked). `Retry Text-Only` success still flows through `Call Log Model Run` (one priced
   Opus row); the WARN reconverges into `Routing Missing?` so `Shape Output` stays the sole leaf. Decision:

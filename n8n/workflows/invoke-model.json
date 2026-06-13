@@ -93,49 +93,14 @@
       }
     },
     {
-      "id": "call-litellm",
-      "name": "Call LiteLLM",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [656, 320],
-      "notes": "Multimodal (ADR-036 Block 5): messages now comes from Resolve Routing (content array with optional image_url parts). onError=continueErrorOutput: a non-2xx routes to Fallback to Opus (ADR-037).",
-      "parameters": {
-        "method": "POST",
-        "url": "http://litellm:4000/v1/chat/completions",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ model: $json.litellm_model, messages: $json.messages, max_tokens: $json.max_tokens }, $json.temperature != null ? { temperature: $json.temperature } : {})) }}",
-        "options": {
-          "response": {
-            "response": {
-              "fullResponse": true,
-              "responseFormat": "json"
-            }
-          },
-          "timeout": 120000
-        }
-      },
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "396fqTZqWdFosVpT",
-          "name": "LiteLLM master key"
-        }
-      },
-      "onError": "continueErrorOutput",
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 2000
-    },
-    {
       "id": "parse-response",
       "name": "Parse Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [896, 352],
+      "notes": "ADR-047 Block B: reads the text seam (Call Model Text). out0 item = seam contract {fell_back, model_used, body, headers} (primary or one-tier-below fallback). out1 routes to Retry Text-Only (Opus text-only); that item carries statusCode, used to distinguish the branch. fell_back replaces fell_back_to_opus (renamed). image_unprocessable set only when images were present on the Retry branch.",
       "parameters": {
-        "jsCode": "const routing = $('Resolve Routing').first().json;\n\n// Pick whichever LLM branch produced a real completion. Order: primary -> Opus fallback (transient\n// error, ADR-037, image kept) -> Retry Text-Only (Block 6: image stripped after a 4xx on the image).\nlet okCall = null, okFb = null, okRetry = null;\ntry { okCall = $('Call LiteLLM').first().json; } catch (e) {}\ntry { okFb = $('Fallback to Opus').first().json; } catch (e) {}\ntry { okRetry = $('Retry Text-Only').first().json; } catch (e) {}\nconst hasBody = (x) => x && x.body && x.body.choices;\nlet resp = {}, fell_back = false, image_unprocessable = false;\nif (hasBody(okCall)) { resp = okCall; }\nelse if (hasBody(okFb)) { resp = okFb; fell_back = true; }\nelse if (hasBody(okRetry)) { resp = okRetry; image_unprocessable = true; }\nelse { resp = (okCall && okCall.body) ? okCall : ((okFb && okFb.body) ? okFb : (okRetry || {})); }\n\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\nconst ch = headers['x-litellm-response-cost'];\nconst usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\n\n// Both the Opus fallback and the text-only retry run on opus-4-8-direct.\nconst onOpus = fell_back || image_unprocessable;\nconst fbAlias = 'haxe-opus-4-8-direct';\nconst alias = onOpus ? fbAlias : (routing.litellm_model || '');\nconst model_used = (body.model && body.model.trim()) ? body.model.trim() : alias;\nconst provider = alias.includes('gemini') ? 'litellm/vertex' : 'litellm/anthropic-direct';\n\n// On any Opus path the model differs from the routed one. LiteLLM's response-cost header is\n// authoritative; these price columns are only a dormant backup. Keep them roughly correct for Opus 4.8.\nconst price_in = onOpus ? 0.015 : routing.price_in_usd_per_1k;\nconst price_out = onOpus ? 0.075 : routing.price_out_usd_per_1k;\n\nreturn [{ json: {\n  completion,\n  model_used,\n  provider,\n  input_tokens, output_tokens, usd_cost,\n  price_in_usd_per_1k: price_in,\n  price_out_usd_per_1k: price_out,\n  routing_default_used: !!routing.routing_default_used,\n  routing_row_missing: !!routing.routing_row_missing,\n  fell_back_to_opus: fell_back,\n  image_unprocessable,\n  images_dropped: image_unprocessable ? (routing.image_count || 0) : 0,\n  impact: routing.impact,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
+        "jsCode": "// ADR-047 Block B: read the text fallback seam (out0) OR the Retry Text-Only safety net (out1).\n// $input.first() is the branch that fired (exactly one per run -> multi-input determinism).\nconst routing = $('Resolve Routing').first().json;\nconst it = $input.first() ? $input.first().json : {};\n\nlet body = {}, headers = {}, model_used = '', fell_back = false, image_unprocessable = false;\nif (it && it.statusCode !== undefined) {\n  // Retry Text-Only branch: routed + one-tier fallback BOTH failed -> recovered on Opus text-only.\n  body = it.body || {};\n  headers = it.headers || {};\n  model_used = (body.model && String(body.model).trim()) ? String(body.model).trim() : 'haxe-opus-4-8-direct';\n  // One WARN per sub-case: image present -> image-unprocessable WARN; no image -> degradation WARN.\n  image_unprocessable = !!routing.had_images;\n  fell_back = !routing.had_images;\n} else {\n  // Seam branch: primary OR one-tier-below fallback served.\n  body = (it && it.body) ? it.body : {};\n  headers = (it && it.headers) ? it.headers : {};\n  model_used = (it && it.model_used) ? it.model_used : ((body.model && String(body.model).trim()) ? String(body.model).trim() : (routing.litellm_model || ''));\n  fell_back = !!(it && it.fell_back);\n  image_unprocessable = false;\n}\n\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\nlet completion = '';\ntry { completion = body.choices[0].message.content || ''; } catch (e) {}\nconst ch = headers['x-litellm-response-cost'];\nconst usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\n\n// Header (usd_cost) is authoritative; price columns are a dormant backup. On a fallback the served\n// model may differ from the routed row, but for text the header is reliably present, so keep the\n// routed (primary) prices as the rough backup rather than hardcoding a model-specific price.\nconst provider = String(model_used).includes('gemini') ? 'litellm/vertex' : 'litellm/anthropic-direct';\n\nreturn [{ json: {\n  completion,\n  model_used,\n  provider,\n  input_tokens, output_tokens, usd_cost,\n  price_in_usd_per_1k: routing.price_in_usd_per_1k,\n  price_out_usd_per_1k: routing.price_out_usd_per_1k,\n  routing_default_used: !!routing.routing_default_used,\n  routing_row_missing: !!routing.routing_row_missing,\n  fell_back: fell_back,\n  image_unprocessable,\n  images_dropped: image_unprocessable ? (routing.image_count || 0) : 0,\n  impact: routing.impact,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
       }
     },
     {
@@ -143,7 +108,7 @@
       "name": "Call Log Model Run",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1072, 144],
+      "position": [1056, 80],
       "notes": "ADR-035: the shared agent_runs writer also owns cost math (FX, PLN, token-price fallback). Returns cost_pln_total + cost_missing.",
       "parameters": {
         "workflowId": {
@@ -184,10 +149,10 @@
       "parameters": {
         "conditions": {
           "options": {
-            "caseSensitive": true,
+            "version": 3,
             "leftValue": "",
-            "typeValidation": "strict",
-            "version": 3
+            "caseSensitive": true,
+            "typeValidation": "strict"
           },
           "conditions": [
             {
@@ -212,7 +177,7 @@
             },
             {
               "id": "d3",
-              "leftValue": "={{ $('Normalize Model Result').first().json.fell_back_to_opus }}",
+              "leftValue": "={{ $('Normalize Model Result').first().json.fell_back }}",
               "rightValue": true,
               "operator": {
                 "type": "boolean",
@@ -241,7 +206,7 @@
       "name": "Alert Degradation",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1568, 208],
+      "position": [1520, 240],
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -253,8 +218,8 @@
           "value": {
             "severity": "WARN",
             "source": "invoke-model",
-            "message": "Degradacja w Invoke Model: fallback na Opus (model podstawowy zawiódł), routing fail-safe, i/lub brak danych o koszcie.",
-            "details": "=fell_back_to_opus={{ $('Normalize Model Result').first().json.fell_back_to_opus }}; routing_default_used={{ $('Normalize Model Result').first().json.routing_default_used }}; routing_row_missing={{ $('Normalize Model Result').first().json.routing_row_missing }}; cost_missing={{ $('Call Log Model Run').first().json.cost_missing }}; impact={{ $('Normalize Model Result').first().json.impact }}; model={{ $('Normalize Model Result').first().json.model_used }}; task={{ $('Normalize Model Result').first().json.clickup_task_id }}"
+            "message": "Degradacja w Invoke Model: fallback na model o jeden poziom niżej (model podstawowy zawiódł), routing fail-safe, i/lub brak danych o koszcie.",
+            "details": "=fell_back={{ $('Normalize Model Result').first().json.fell_back }}; routing_default_used={{ $('Normalize Model Result').first().json.routing_default_used }}; routing_row_missing={{ $('Normalize Model Result').first().json.routing_row_missing }}; cost_missing={{ $('Call Log Model Run').first().json.cost_missing }}; impact={{ $('Normalize Model Result').first().json.impact }}; model={{ $('Normalize Model Result').first().json.model_used }}; task={{ $('Normalize Model Result').first().json.clickup_task_id }}"
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,
@@ -401,42 +366,6 @@
       }
     },
     {
-      "id": "fallback-opus",
-      "name": "Fallback to Opus",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [704, 544],
-      "notes": "Auto-fallback (ADR-037): primary model call failed -> retry once on Opus, to opus-4-8-direct. Uses the same multimodal messages from Resolve Routing (ADR-036 Block 5). Success feeds Parse Response with fell_back=true -> WARN. If Opus ALSO fails it throws -> Execute LLM Call CRITICAL.",
-      "parameters": {
-        "method": "POST",
-        "url": "http://litellm:4000/v1/chat/completions",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: 'haxe-opus-4-8-direct', messages: $('Resolve Routing').first().json.messages, max_tokens: $('Resolve Routing').first().json.max_tokens }) }}",
-        "options": {
-          "response": {
-            "response": {
-              "fullResponse": true,
-              "responseFormat": "json"
-            }
-          },
-          "timeout": 120000
-        }
-      },
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "396fqTZqWdFosVpT",
-          "name": "LiteLLM master key"
-        }
-      },
-      "onError": "continueErrorOutput",
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 2000
-    },
-    {
       "id": "f0a48bdb-0be1-4611-9603-7e201c2fc2ea",
       "name": "Routing Missing?",
       "type": "n8n-nodes-base.if",
@@ -537,7 +466,7 @@
       "name": "Image Unprocessable?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [1232, 144],
+      "position": [1232, 80],
       "notes": "Block 6: true when the routed model could not consume the input image and the run degraded to a text-only retry. True -> WARN multimodal/image-unprocessable. Both branches reconverge into Call Log Model Run so Shape Output stays the sole branch-free leaf (sub-workflow return determinism), mirroring Routing Missing? -> Check Degradation.",
       "parameters": {
         "conditions": {
@@ -569,7 +498,7 @@
       "name": "Alert Image Unprocessable",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1440, 144],
+      "position": [1440, 64],
       "notes": "Block 6 WARN via Post Alert (v1): a corrupt/non-vision input image was dropped and the answer was produced text-only. Loud-but-non-blocking; reconverges to Call Log Model Run (not a leaf).",
       "parameters": {
         "workflowId": {
@@ -625,83 +554,14 @@
       }
     },
     {
-      "id": "call-image-gen",
-      "name": "Call Image Gen",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [880, 848],
-      "notes": "Block 9: tiered image generation via LiteLLM /v1/images/generations. model/size/quality from Resolve Routing (impact, modality=image). onError=continueErrorOutput -> single fallback hop to gemini-2.5-flash-image.",
-      "parameters": {
-        "method": "POST",
-        "url": "http://litellm:4000/v1/images/generations",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify(Object.assign({ model: $json.image_model, prompt: $json.image_prompt, size: $json.size, n: 1 }, $json.image_quality ? { quality: $json.image_quality } : {})) }}",
-        "options": {
-          "response": {
-            "response": {
-              "fullResponse": true,
-              "responseFormat": "json"
-            }
-          },
-          "timeout": 240000
-        }
-      },
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "396fqTZqWdFosVpT",
-          "name": "LiteLLM master key"
-        }
-      },
-      "onError": "continueErrorOutput"
-    },
-    {
-      "id": "fallback-image-gen",
-      "name": "Fallback Image Gen",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1088, 944],
-      "notes": "Block 9: single cross-provider fallback hop (cheap reliable floor model) when the primary image model errors. onError=continueErrorOutput so a total failure still reaches Parse Image -> success:false (caller drops the block, no throw).",
-      "parameters": {
-        "method": "POST",
-        "url": "http://litellm:4000/v1/images/generations",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: 'vertex_ai/gemini-2.5-flash-image', prompt: $('Resolve Routing').first().json.image_prompt, size: $('Resolve Routing').first().json.size, n: 1 }) }}",
-        "options": {
-          "response": {
-            "response": {
-              "fullResponse": true,
-              "responseFormat": "json"
-            }
-          },
-          "timeout": 120000
-        }
-      },
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "396fqTZqWdFosVpT",
-          "name": "LiteLLM master key"
-        }
-      },
-      "onError": "continueErrorOutput",
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 2000
-    },
-    {
       "id": "parse-image",
       "name": "Parse Image",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [1488, 832],
-      "notes": "Block 9: normalise one image attempt; success gated on data[0].b64_json payload, not HTTP status. Feeds Normalize Model Result.",
+      "notes": "ADR-047 Block B: normalise one image attempt from the seam. Success gated on data[0].b64_json (the seam already applied success_path; out1 = both-down -> succeeded:false, non-blocking). image_degraded = seam.fell_back; model_used = seam served model. Prices key off the served model (fallback row via Lookup Fallback Image Prices) so token-math/floor backups are correct on a fallback. Feeds Normalize Model Result.",
       "parameters": {
-        "jsCode": "// Block 9: normalise one image-generation attempt. Success is gated on the PAYLOAD (data[0].b64_json),\n// not HTTP status (the Docling gotcha). Reads the primary call, then the single fallback hop.\nconst routing = $('Resolve Routing').first().json;\nlet ok = null, fb = null;\ntry { ok = $('Call Image Gen').first().json; } catch (e) {}\ntry { fb = $('Fallback Image Gen').first().json; } catch (e) {}\n\nconst getImg = (x) => {\n  try { return (x && x.body && x.body.data && x.body.data[0] && x.body.data[0].b64_json) ? x : null; }\n  catch (e) { return null; }\n};\n\nlet resp = null, degraded = false, model_used = routing.image_model;\nif (getImg(ok)) { resp = ok; }\nelse if (getImg(fb)) { resp = fb; degraded = true; model_used = 'vertex_ai/gemini-2.5-flash-image'; }\nconst succeeded = !!resp;\n\nlet b64 = null, mime = 'image/png', header_cost = null, itok = 0, otok = null;\nif (resp) {\n  const body = resp.body || {};\n  const headers = resp.headers || {};\n  try { b64 = body.data[0].b64_json || null; } catch (e) {}\n  const usage = body.usage || {};\n  const out = (usage.output_tokens != null) ? usage.output_tokens\n            : ((usage.completion_tokens != null) ? usage.completion_tokens\n            : ((usage.total_tokens != null) ? usage.total_tokens : null));\n  otok = (out != null) ? Number(out) : null;\n  const inp = (usage.input_tokens != null) ? usage.input_tokens\n            : ((usage.prompt_tokens != null) ? usage.prompt_tokens : 0);\n  itok = (inp != null) ? Number(inp) : 0;\n  const ch = headers['x-litellm-response-cost'];\n  header_cost = (ch != null && ch !== '') ? Number(ch) : null;\n}\n\nreturn [{ json: {\n  is_image_result: true,\n  succeeded,\n  b64_json: b64,\n  mime,\n  model_used,\n  header_cost,\n  input_tokens: itok,\n  output_tokens: otok,\n  image_degraded: degraded,\n  size: routing.size,\n  size_overridden: !!routing.size_overridden,\n  resolution_note: routing.resolution_note || '',\n  floor: (routing.fallback_price_per_unit != null) ? Number(routing.fallback_price_per_unit) : null,\n  price_in_usd_per_1k: routing.price_in_usd_per_1k,\n  price_out_usd_per_1k: routing.price_out_usd_per_1k,\n  impact: routing.impact,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type,\n  invocation_type: routing.invocation_type\n} }];\n"
+        "jsCode": "// ADR-047 Block B: read the image fallback seam (Call Model Image). $input.first() is the branch\n// that fired: out0 = seam success {fell_back, model_used, body, headers}; out1 = both-down throw\n// (error item, no body) -> succeeded:false. Exactly one branch per run (multi-input determinism).\nconst routing = $('Resolve Routing').first().json;\nconst it = $input.first() ? $input.first().json : {};\n\nconst getB64 = (x) => { try { return (x && x.body && x.body.data && x.body.data[0] && x.body.data[0].b64_json) ? x.body.data[0].b64_json : null; } catch (e) { return null; } };\nconst b64 = getB64(it);\nconst succeeded = !!b64;\nconst fell_back = !!(it && it.fell_back);\nconst model_used = (it && it.model_used) ? it.model_used : routing.image_model;\n\n// Cost layering keys off the SERVED model: on a fallback, price from the one-tier-below row\n// (Lookup Fallback Image Prices); otherwise the primary routing prices. The live response-cost\n// header still wins in Normalize when present; these only feed the token-math / per-image-floor backups.\nlet pin = routing.price_in_usd_per_1k, pout = routing.price_out_usd_per_1k, floor = routing.fallback_price_per_unit;\nif (fell_back) {\n  let fp = {};\n  try { fp = $('Lookup Fallback Image Prices').first().json || {}; } catch (e) {}\n  if (fp.price_in_usd_per_1k != null) pin = Number(fp.price_in_usd_per_1k);\n  if (fp.price_out_usd_per_1k != null) pout = Number(fp.price_out_usd_per_1k);\n  if (fp.fallback_price_per_unit != null) floor = Number(fp.fallback_price_per_unit);\n}\n\nlet mime = 'image/png', header_cost = null, itok = 0, otok = null;\nif (succeeded) {\n  const body = it.body || {};\n  const headers = it.headers || {};\n  const usage = body.usage || {};\n  const out = (usage.output_tokens != null) ? usage.output_tokens\n            : ((usage.completion_tokens != null) ? usage.completion_tokens\n            : ((usage.total_tokens != null) ? usage.total_tokens : null));\n  otok = (out != null) ? Number(out) : null;\n  const inp = (usage.input_tokens != null) ? usage.input_tokens\n            : ((usage.prompt_tokens != null) ? usage.prompt_tokens : 0);\n  itok = (inp != null) ? Number(inp) : 0;\n  const ch = headers['x-litellm-response-cost'];\n  header_cost = (ch != null && ch !== '') ? Number(ch) : null;\n}\n\nreturn [{ json: {\n  is_image_result: true,\n  succeeded,\n  b64_json: b64,\n  mime,\n  model_used,\n  header_cost,\n  input_tokens: itok,\n  output_tokens: otok,\n  image_degraded: fell_back,\n  size: routing.size,\n  size_overridden: !!routing.size_overridden,\n  resolution_note: routing.resolution_note || '',\n  floor: (floor != null) ? Number(floor) : null,\n  price_in_usd_per_1k: pin,\n  price_out_usd_per_1k: pout,\n  impact: routing.impact,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type,\n  invocation_type: routing.invocation_type\n} }];"
       }
     },
     {
@@ -712,7 +572,7 @@
       "position": [1520, 560],
       "notes": "Block 9: single convergence of the text + image branches into one uniform schema. Keeps Shape Output the sole branch-free leaf (return determinism).",
       "parameters": {
-        "jsCode": "// Block 9: single convergence point for the text and image branches. Reads whichever Parse node ran\n// (try/catch absolute refs) and emits ONE uniform schema for Log Model Run + the degradation chain +\n// Shape Output. Keeps Shape Output the sole branch-free leaf (sub-workflow return determinism).\nlet img = null, txt = null;\ntry { img = $('Parse Image').first().json; } catch (e) {}\ntry { txt = $('Parse Response').first().json; } catch (e) {}\nconst isImg = !!(img && img.is_image_result);\nlet rrm = false;\ntry { rrm = !!$('Resolve Routing').first().json.routing_row_missing; } catch (e) {}\n\nif (isImg) {\n  // Cost layering: live header (>0) -> token-math (filled price_out) -> per-image floor. A header miss\n  // sets cost_header_missing regardless of which layer prices it (drives the WARN).\n  const header = (img.header_cost != null && Number(img.header_cost) > 0) ? Number(img.header_cost) : null;\n  let usd_cost = null, cost_header_missing = false;\n  let input_tokens = img.input_tokens, output_tokens = img.output_tokens;\n  if (header != null) {\n    usd_cost = header;\n  } else {\n    cost_header_missing = true;\n    if (img.output_tokens != null) {\n      usd_cost = null; // Log Model Run prices by token-math (input_tokens default 0 + filled price_out)\n    } else {\n      usd_cost = (img.floor != null) ? img.floor : null; // per-image floor, last resort\n      input_tokens = null; output_tokens = null;\n    }\n  }\n  const provider = (String(img.model_used || '').indexOf('openai') >= 0) ? 'litellm/openai' : 'litellm/vertex';\n  return [{ json: {\n    output_modality: 'image',\n    success: !!img.succeeded,\n    completion: '',\n    b64_json: img.b64_json || null,\n    mime: img.mime || 'image/png',\n    size: img.size || null,\n    size_overridden: !!img.size_overridden,\n    resolution_note: img.resolution_note || '',\n    image_degraded: !!img.image_degraded,\n    cost_header_missing,\n    model_used: img.model_used,\n    provider,\n    input_tokens, output_tokens, usd_cost,\n    price_in_usd_per_1k: img.price_in_usd_per_1k,\n    price_out_usd_per_1k: img.price_out_usd_per_1k,\n    impact: img.impact,\n    task_type: img.task_type || '',\n    clickup_task_id: img.clickup_task_id || '',\n    triggered_by: 'image_gen',\n    invocation_type: img.invocation_type || 'explicit',\n    caller_user_id: img.caller_user_id || '',\n    process_type: img.process_type || '',\n    routing_default_used: false,\n    routing_row_missing: rrm,\n    fell_back_to_opus: false,\n    image_unprocessable: false,\n    images_dropped: 0\n  } }];\n}\n\nconst t = txt || {};\nreturn [{ json: {\n  output_modality: 'text',\n  success: true,\n  completion: t.completion || '',\n  b64_json: null,\n  mime: null,\n  size: null,\n  size_overridden: false,\n  image_degraded: false,\n  cost_header_missing: false,\n  model_used: t.model_used,\n  provider: t.provider,\n  input_tokens: (t.input_tokens != null) ? t.input_tokens : null,\n  output_tokens: (t.output_tokens != null) ? t.output_tokens : null,\n  usd_cost: (t.usd_cost != null) ? t.usd_cost : null,\n  price_in_usd_per_1k: t.price_in_usd_per_1k,\n  price_out_usd_per_1k: t.price_out_usd_per_1k,\n  impact: t.impact,\n  task_type: t.task_type || '',\n  clickup_task_id: t.clickup_task_id || '',\n  triggered_by: t.triggered_by || 'explicit_command',\n  invocation_type: t.invocation_type || 'explicit',\n  caller_user_id: t.caller_user_id || '',\n  process_type: t.process_type || '',\n  routing_default_used: !!t.routing_default_used,\n  routing_row_missing: !!t.routing_row_missing,\n  fell_back_to_opus: !!t.fell_back_to_opus,\n  image_unprocessable: !!t.image_unprocessable,\n  images_dropped: t.images_dropped || 0\n} }];\n"
+        "jsCode": "// Block 9: single convergence point for the text and image branches. Reads whichever Parse node ran\n// (try/catch absolute refs) and emits ONE uniform schema for Log Model Run + the degradation chain +\n// Shape Output. Keeps Shape Output the sole branch-free leaf (sub-workflow return determinism).\nlet img = null, txt = null;\ntry { img = $('Parse Image').first().json; } catch (e) {}\ntry { txt = $('Parse Response').first().json; } catch (e) {}\nconst isImg = !!(img && img.is_image_result);\nlet rrm = false;\ntry { rrm = !!$('Resolve Routing').first().json.routing_row_missing; } catch (e) {}\n\nif (isImg) {\n  // Cost layering: live header (>0) -> token-math (filled price_out) -> per-image floor. A header miss\n  // sets cost_header_missing regardless of which layer prices it (drives the WARN).\n  const header = (img.header_cost != null && Number(img.header_cost) > 0) ? Number(img.header_cost) : null;\n  let usd_cost = null, cost_header_missing = false;\n  let input_tokens = img.input_tokens, output_tokens = img.output_tokens;\n  if (header != null) {\n    usd_cost = header;\n  } else {\n    cost_header_missing = true;\n    if (img.output_tokens != null) {\n      usd_cost = null; // Log Model Run prices by token-math (input_tokens default 0 + filled price_out)\n    } else {\n      usd_cost = (img.floor != null) ? img.floor : null; // per-image floor, last resort\n      input_tokens = null; output_tokens = null;\n    }\n  }\n  const provider = (String(img.model_used || '').indexOf('openai') >= 0) ? 'litellm/openai' : 'litellm/vertex';\n  return [{ json: {\n    output_modality: 'image',\n    success: !!img.succeeded,\n    completion: '',\n    b64_json: img.b64_json || null,\n    mime: img.mime || 'image/png',\n    size: img.size || null,\n    size_overridden: !!img.size_overridden,\n    resolution_note: img.resolution_note || '',\n    image_degraded: !!img.image_degraded,\n    cost_header_missing,\n    model_used: img.model_used,\n    provider,\n    input_tokens, output_tokens, usd_cost,\n    price_in_usd_per_1k: img.price_in_usd_per_1k,\n    price_out_usd_per_1k: img.price_out_usd_per_1k,\n    impact: img.impact,\n    task_type: img.task_type || '',\n    clickup_task_id: img.clickup_task_id || '',\n    triggered_by: 'image_gen',\n    invocation_type: img.invocation_type || 'explicit',\n    caller_user_id: img.caller_user_id || '',\n    process_type: img.process_type || '',\n    routing_default_used: false,\n    routing_row_missing: rrm,\n    fell_back: false,\n    image_unprocessable: false,\n    images_dropped: 0\n  } }];\n}\n\nconst t = txt || {};\nreturn [{ json: {\n  output_modality: 'text',\n  success: true,\n  completion: t.completion || '',\n  b64_json: null,\n  mime: null,\n  size: null,\n  size_overridden: false,\n  image_degraded: false,\n  cost_header_missing: false,\n  model_used: t.model_used,\n  provider: t.provider,\n  input_tokens: (t.input_tokens != null) ? t.input_tokens : null,\n  output_tokens: (t.output_tokens != null) ? t.output_tokens : null,\n  usd_cost: (t.usd_cost != null) ? t.usd_cost : null,\n  price_in_usd_per_1k: t.price_in_usd_per_1k,\n  price_out_usd_per_1k: t.price_out_usd_per_1k,\n  impact: t.impact,\n  task_type: t.task_type || '',\n  clickup_task_id: t.clickup_task_id || '',\n  triggered_by: t.triggered_by || 'explicit_command',\n  invocation_type: t.invocation_type || 'explicit',\n  caller_user_id: t.caller_user_id || '',\n  process_type: t.process_type || '',\n  routing_default_used: !!t.routing_default_used,\n  routing_row_missing: !!t.routing_row_missing,\n  fell_back: !!t.fell_back,\n  image_unprocessable: !!t.image_unprocessable,\n  images_dropped: t.images_dropped || 0\n} }];\n"
       }
     },
     {
@@ -780,7 +640,7 @@
       "name": "Cost Header Missing?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [2288, 480],
+      "position": [2304, 480],
       "parameters": {
         "conditions": {
           "options": {
@@ -834,6 +694,144 @@
         "options": {}
       },
       "onError": "continueRegularOutput"
+    },
+    {
+      "id": "8b6e9b5a-1961-4d12-a5d9-d86ae406a0bc",
+      "name": "Resolve Lower Tier Text",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [520, 200],
+      "notes": "ADR-047 Block B: resolve the one-tier-below TEXT model for the fallback seam (ResolveLowerTier, GNO6ZsIcSpvYUJDq). Returns {floor:true} at Niski -> empty litellm_model -> seam re-sends primary -> both-down -> Retry Text-Only Opus safety net keeps the text floor degrading rather than CRITICALing.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "GNO6ZsIcSpvYUJDq",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "impact": "={{ $('Resolve Routing').first().json.impact }}",
+            "modality": "text"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "9745a292-536d-4306-83ae-90a93f31d786",
+      "name": "Call Model Text",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [760, 320],
+      "notes": "ADR-047 Block B: text path via the shared fallback seam (Call Model with Fallback v1) on /v1/chat/completions. Primary = routed model; fallback = one-tier-below text model. success_path empty (2xx+body; text tiers are all Claude, no empty-content risk). onError=continueErrorOutput: out0 -> Parse Response (primary OR one-tier fallback served); out1 (both-down throw) -> Retry Text-Only (Opus text-only safety net, ADR-036 Block 6). Replaces the old Call LiteLLM + Fallback to Opus; ADR-037 Opus fallback is now the top-tier case of one-tier-below (Krytycznie/Fable -> Opus).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "jBqu7znBIOMBF9HI",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "endpoint_url": "http://litellm:4000/v1/chat/completions",
+            "request_body": "={{ JSON.stringify(Object.assign({ model: $('Resolve Routing').first().json.litellm_model, messages: $('Resolve Routing').first().json.messages, max_tokens: $('Resolve Routing').first().json.max_tokens }, $('Resolve Routing').first().json.temperature != null ? { temperature: $('Resolve Routing').first().json.temperature } : {})) }}",
+            "fallback_model": "={{ $('Resolve Lower Tier Text').first().json.litellm_model || '' }}",
+            "extra_headers": "{}",
+            "success_path": ""
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "e4aad3ac-2a47-4519-b14f-9402aee62f91",
+      "name": "Resolve Lower Tier Image",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [520, 700],
+      "notes": "ADR-047 Block B: resolve the one-tier-below IMAGE model for the fallback seam. At Krytycznie wazne this returns the Wysoki row (gpt-image-2 = same model as primary -> no real top-tier image fallback, accepted per ADR-047 resolved item). At Niski (floor) returns {floor:true} -> empty fallback -> both-down -> Parse Image succeeded:false (image stays NON-BLOCKING).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "GNO6ZsIcSpvYUJDq",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "impact": "={{ $('Resolve Routing').first().json.impact }}",
+            "modality": "image"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "2b5e6f00-a721-4d81-a6bf-d155e381cee0",
+      "name": "Lookup Fallback Image Prices",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [760, 700],
+      "notes": "ADR-047 Block B: prices of the one-tier-below image model so cost layering (token-math / per-image floor BACKUPS) keys off the SERVED model on a fallback, not the primary routing row. The x-litellm-response-cost header stays authoritative; this only feeds the backup path. At floor/no-fallback returns 0 rows (alwaysOutputData -> empty item) -> Parse Image keeps the primary prices.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select price_in_usd_per_1k, price_out_usd_per_1k, fallback_price_per_unit\nfrom model_routing\nwhere impact = $1 and modality = 'image' and active = true\nlimit 1;",
+        "options": {
+          "queryReplacement": "={{ [ $('Resolve Lower Tier Image').first().json.impact || '__none__' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "f6064c01-7ecb-4449-aad4-c29920d36036",
+      "name": "Call Model Image",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [980, 848],
+      "notes": "ADR-047 Block B: image path via the shared fallback seam on /v1/images/generations. Primary = tier image model; fallback = one-tier-below image model. success_path=data.0.b64_json so a 2xx-with-no-image (the Docling gotcha) triggers fallback INSIDE the seam. onError=continueErrorOutput: out0 -> Parse Image (served image); out1 (both-down throw) -> Parse Image succeeded:false (image stays NON-BLOCKING, never CRITICAL). Replaces the old Call Image Gen + Fallback Image Gen. NOTE: seam Call Primary timeout is 180s (was 240s) - accepted per Block A design.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "jBqu7znBIOMBF9HI",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "endpoint_url": "http://litellm:4000/v1/images/generations",
+            "request_body": "={{ JSON.stringify(Object.assign({ model: $('Resolve Routing').first().json.image_model, prompt: $('Resolve Routing').first().json.image_prompt, size: $('Resolve Routing').first().json.size, n: 1 }, $('Resolve Routing').first().json.image_quality ? { quality: $('Resolve Routing').first().json.image_quality } : {})) }}",
+            "fallback_model": "={{ $('Resolve Lower Tier Image').first().json.litellm_model || '' }}",
+            "extra_headers": "{}",
+            "success_path": "data.0.b64_json"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
     }
   ],
   "connections": {
@@ -877,60 +875,6 @@
         ]
       ]
     },
-    "Output Is Image?": {
-      "main": [
-        [
-          {
-            "node": "Call Image Gen",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Call LiteLLM",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Call LiteLLM": {
-      "main": [
-        [
-          {
-            "node": "Parse Response",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Fallback to Opus",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Fallback to Opus": {
-      "main": [
-        [
-          {
-            "node": "Parse Response",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Retry Text-Only",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Retry Text-Only": {
       "main": [
         [
@@ -947,42 +891,6 @@
         [
           {
             "node": "Normalize Model Result",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Call Image Gen": {
-      "main": [
-        [
-          {
-            "node": "Parse Image",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Fallback Image Gen",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Fallback Image Gen": {
-      "main": [
-        [
-          {
-            "node": "Parse Image",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Parse Image",
             "type": "main",
             "index": 0
           }
@@ -1173,6 +1081,93 @@
           {
             "node": "Basic LLM Chain (fallback)",
             "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output Is Image?": {
+      "main": [
+        [
+          {
+            "node": "Resolve Lower Tier Image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resolve Lower Tier Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Lower Tier Text": {
+      "main": [
+        [
+          {
+            "node": "Call Model Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Model Text": {
+      "main": [
+        [
+          {
+            "node": "Parse Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry Text-Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Lower Tier Image": {
+      "main": [
+        [
+          {
+            "node": "Lookup Fallback Image Prices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Fallback Image Prices": {
+      "main": [
+        [
+          {
+            "node": "Call Model Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Model Image": {
+      "main": [
+        [
+          {
+            "node": "Parse Image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parse Image",
+            "type": "main",
             "index": 0
           }
         ]
