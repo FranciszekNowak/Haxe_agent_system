@@ -55,7 +55,7 @@
               "responseFormat": "json"
             }
           },
-          "timeout": 180000
+          "timeout": 240000
         }
       },
       "credentials": {
@@ -146,7 +146,7 @@
               "responseFormat": "json"
             }
           },
-          "timeout": 180000
+          "timeout": 240000
         }
       },
       "credentials": {

@@ -809,7 +809,7 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [980, 848],
-      "notes": "ADR-047 Block B: image path via the shared fallback seam on /v1/images/generations. Primary = tier image model; fallback = one-tier-below image model. success_path=data.0.b64_json so a 2xx-with-no-image (the Docling gotcha) triggers fallback INSIDE the seam. onError=continueErrorOutput: out0 -> Parse Image (served image); out1 (both-down throw) -> Parse Image succeeded:false (image stays NON-BLOCKING, never CRITICAL). Replaces the old Call Image Gen + Fallback Image Gen. NOTE: seam Call Primary timeout is 180s (was 240s) - accepted per Block A design.",
+      "notes": "ADR-047 Block B: image path via the shared fallback seam on /v1/images/generations. Primary = tier image model; fallback = one-tier-below image model. success_path=data.0.b64_json so a 2xx-with-no-image (the Docling gotcha) triggers fallback INSIDE the seam. onError=continueErrorOutput: out0 -> Parse Image (served image); out1 (both-down throw) -> Parse Image succeeded:false (image stays NON-BLOCKING, never CRITICAL). Replaces the old Call Image Gen + Fallback Image Gen. NOTE: seam Call Primary/Fallback timeout is 240s (raised from 180s to give gpt-image-2 high-quality gen margin).",
       "parameters": {
         "workflowId": {
           "__rl": true,

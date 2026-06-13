@@ -1099,8 +1099,9 @@ last-resort + deliberation-nudge prepend; builds the image request when `request
 `/v1/chat/completions`, `success_path` empty) →`Parse Response`, with the seam's both-down throw routed to
 `Retry Text-Only` (Opus text-only safety net, Block 6); **image (Block 9)** → `Resolve Lower Tier Image` →
 `Lookup Fallback Image Prices` → `Call Model Image` (seam, `/v1/images/generations`, `success_path =
-data.0.b64_json`) → `Parse Image` (both-down → `succeeded:false`, non-blocking). The seam's `Call Primary`
-uses a 180 s timeout (was 240 s on the old image node — accepted). Both branches converge at
+data.0.b64_json`) → `Parse Image` (both-down → `succeeded:false`, non-blocking). The seam's `Call Primary`/
+`Call Fallback` use a 240 s timeout (raised from 180 s to keep gpt-image-2 high-quality gen comfortably
+inside the limit). Both branches converge at
 **`Normalize Model Result`** (one uniform schema) → `Call Log Model Run` (the sole `agent_runs` writer + FX/PLN,
 ADR-035) → degradation chain (`Image Unprocessable?` / `Image Degraded?` / `Cost Header Missing?` /
 `Routing Missing?` / `Check Degradation`, each WARN reconverging) → **`Shape Output`** (sole branch-free leaf;
@@ -1126,9 +1127,9 @@ credential + HTTP Request cannot sign Bedrock — only the native node can; ADR-
     the image branch above produces one image per call, priced via live header → token-math (migration 024
     filled `price_out`: flash 0.030 / pro 0.120 / gpt-image-2 0.030, each = Block 8 measured cost ÷ output
     tokens) → per-image `fallback_price_per_unit` floor; a header-miss fires `invoke-model/image-cost-header-missing`,
-    a fallback hop fires `invoke-model/image-degrade`. gpt-image-2 high ≈ 176 s; gemini ≈ 5 s. ⚠ After ADR-047
-  Block B the call goes through the seam whose `Call Primary` timeout is **180 s** (down from the old image
-  node's 240 s) — gpt-image-2 high (~176 s) fits but with little margin; watch for timeouts on the top tier.
+    a fallback hop fires `invoke-model/image-degrade`. gpt-image-2 high ≈ 176 s; gemini ≈ 5 s. After ADR-047
+  Block B the call goes through the seam, whose `Call Primary`/`Call Fallback` timeout is **240 s** — so
+  gpt-image-2 high (~176 s) stays comfortably inside the limit.
   `agent_runs.model_used` stores the versioned model ID from the LiteLLM response body. Migrations 008
   (composite PK), 013 (image tiers), 014 (Gemini multimodal), 020 (max_tokens by tier), **021 — PD-blind
   collapse to `(impact, modality)`, Bedrock rows dropped, Gemini aliases renamed `-eu`→none**, **023 —
