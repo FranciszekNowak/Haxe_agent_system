@@ -121,6 +121,18 @@ Large changes run as a sequence of self-contained **Blocks** against one durable
   `current.md`/ADRs are the durable record of what changed; the master plan file is the artifact
   that survives `/clear`.
 
+## Reuse and unification (default to one path)
+
+- **If a solution is used in more than one workflow, promote it to a separate sub-workflow.**
+  Duplicated logic across workflows means a future change has to be made in N places and will
+  drift; a shared sub-workflow (called via `executeWorkflow`) makes the change once and keeps the
+  callers honest. The moment a second caller needs the same behaviour, extract it.
+- **Whenever a unified approach is possible — one contract shape, one workflow, one table — that
+  is the default choice.** Adding a separate, parallel path (a second contract, a forked workflow,
+  a second table for the same concept) is an **exception that must be documented and explained**
+  (typically as an ADR stating why unification was not viable). Do not introduce a divergent path
+  silently — the burden of proof is on the divergence, not on unification.
+
 ## File conventions
 
 - All documentation in markdown
