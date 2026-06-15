@@ -8,7 +8,7 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.3,
       "position": [0, 300],
-      "notes": "ADR-048 Block 4 dead-man's-switch for the zip-inner-images 24h pg_cron purge ('purge-zip-inner-images'). INDEPENDENT of pg_cron on purpose: if the pg_cron daemon stops entirely, a pg_cron-based watchdog would also be dead and never alert. This n8n schedule is a separate scheduler, so it still fires and catches 'cron silently stopped', 'function errored', 'Vault key rotated/missing' — every failure mode collapses into the same observable symptom: objects older than retention still present. Runs every 6h so a failed purge is caught within ~6h of an object crossing the 26h threshold.",
+      "notes": "ADR-048 Block 4 dead-man's-switch for the zip-inner-images daily-05:00 pg_cron purge ('purge-zip-inner-images', migration 030: once daily 05:00 Warsaw, deletes >12h objects). INDEPENDENT of pg_cron on purpose: if the pg_cron daemon stops entirely, a pg_cron-based watchdog would also be dead and never alert. This n8n schedule is a separate scheduler, so it still fires and catches 'cron silently stopped', 'function errored', 'Vault key missing/invalid' — every failure mode collapses into the same observable symptom: objects older than retention still present. Runs every 6h so a failed purge is caught within ~6h of an object crossing the 40h threshold (healthy ceiling ~36h).",
       "parameters": {
         "rule": {
           "interval": [
@@ -56,10 +56,10 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [240, 300],
-      "notes": "stale = any object in zip-inner-images older than 26h. Healthy ceiling is ~25h (24h to become purge-eligible + up to 1h to the next hourly pg_cron run + async delete lag); 26h adds margin so a healthy system never trips. stale=true => the purge is not keeping up (cron stopped, function errored, or the Vault service_role_key is missing/rotated) => WARN.",
+      "notes": "stale = any object in zip-inner-images older than 40h. The purge runs ONCE DAILY at 05:00 Europe/Warsaw deleting >12h objects (migration 030), so a file created in the evening/overnight is <12h old at one 05:00 run and is deleted at the NEXT run — a legitimate lifetime up to ~36h. 40h adds margin so a healthy system never trips; >40h => the daily purge isn't running (cron stopped, function errored, or the Vault key missing/invalid) => WARN.",
       "parameters": {
         "operation": "executeQuery",
-        "query": "select\n  count(*) as stale_count,\n  coalesce(round(max(extract(epoch from (now() - created_at)) / 3600)::numeric, 1), 0) as oldest_age_hours,\n  (count(*) > 0) as stale\nfrom storage.objects\nwhere bucket_id = 'zip-inner-images'\n  and created_at < now() - interval '26 hours';",
+        "query": "select\n  count(*) as stale_count,\n  coalesce(round(max(extract(epoch from (now() - created_at)) / 3600)::numeric, 1), 0) as oldest_age_hours,\n  (count(*) > 0) as stale\nfrom storage.objects\nwhere bucket_id = 'zip-inner-images'\n  and created_at < now() - interval '40 hours';",
         "options": {}
       },
       "credentials": {
@@ -121,8 +121,8 @@
           "value": {
             "severity": "WARN",
             "source": "zip-purge-freshness",
-            "message": "Bucket zip-inner-images ma obiekty starsze niż retencja 24h — purga pg_cron prawdopodobnie nie działa (ryzyko naruszenia zobowiązania retencyjnego GDPR).",
-            "details": "=Przeterminowane obiekty: {{ $json.stale_count }}, najstarszy: {{ $json.oldest_age_hours }}h (próg 26h). Sprawdź zadanie pg_cron 'purge-zip-inner-images' (cron.job / cron.job_run_details), log public.storage_purge_runs oraz obecność sekretu Vault 'service_role_key'."
+            "message": "Bucket zip-inner-images ma obiekty starsze niż ~36h (dzienna purga 05:00 Warsaw) — purga pg_cron prawdopodobnie nie działa (ryzyko naruszenia zobowiązania retencyjnego GDPR).",
+            "details": "=Przeterminowane obiekty: {{ $json.stale_count }}, najstarszy: {{ $json.oldest_age_hours }}h (próg 40h). Sprawdź zadanie pg_cron 'purge-zip-inner-images' (cron.job / cron.job_run_details), log public.storage_purge_runs oraz obecność/ważność sekretu Vault 'service_role_key'."
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,

@@ -1035,15 +1035,20 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   Supabase involvement), and **`invoke-model.json` is untouched**: a Supabase URL is a drop-in for the existing
   image ref. File limits live in the **global `file_processing_config`** keys (migration 027): `zip_max_entries`
   50, `zip_max_file_mb` 25, `zip_max_total_uncompressed_mb` **250** (migration 028 lowered it 500 → 250 because
-  the compression node decompresses in-memory). **Retention (Block 4):** zip-inner images are purged at 24h by
-  an **hourly pg_cron job `purge-zip-inner-images`** (migration 029) that deletes through the **Storage REST API
-  so the bytes are freed, not orphaned** — a bare `delete from storage.objects` would drop the metadata row but
-  leave the S3 object (and the personal data) behind. The job reads its service_role key from **Supabase Vault**;
-  a missing key writes a `SKIPPED` row to `storage_purge_runs` rather than silently no-op'ing. Schedule note: the
-  ADR says "daily", but daily + ">24h" yields up to ~48h real lifetime, so this runs **hourly** to honour the
-  24h commitment (~25h worst case). A **dead-man's-switch independent of pg_cron** — the n8n
+  the compression node decompresses in-memory). **Retention (Block 4):** zip-inner images are purged by the
+  **pg_cron job `purge-zip-inner-images`** (migrations 029 → 030) that deletes through the **Storage REST API so
+  the bytes are freed, not orphaned** — a bare `delete from storage.objects` would drop the metadata row but
+  leave the S3 object (and the personal data) behind. The job reads its key from **Supabase Vault** (a legacy
+  `service_role` JWT or a new `sb_secret_…` key both work); a missing/invalid key writes a `SKIPPED` row to
+  `storage_purge_runs` rather than silently no-op'ing. Schedule (operator decision, 2026-06-15): runs **once
+  daily at 05:00 Europe/Warsaw**, deleting objects older than **12h** — the 12h floor guarantees an in-flight
+  run's attachment is never deleted mid-process; pg_cron has no per-job timezone, so the job fires at 03:00 and
+  04:00 UTC and an in-function `Europe/Warsaw` hour-gate makes exactly one fire act (DST-correct). Consequence:
+  once-daily + a 12h floor lets evening/overnight files live up to **~36h** (documented in the GDPR record;
+  ≤24h would need more than one run/day). A **dead-man's-switch independent of pg_cron** — the n8n
   **`Zip Image Purge Watchdog (v1)`** (`2L4W4OQ7Qmmnl1Z1`), every 6h — WARNs through `Post Alert (v1)` if any
-  object exceeds 26h (catches cron-stopped, function-errored, or Vault-key-missing alike). See ADR-048.
+  object exceeds **40h** (healthy ceiling ~36h; catches cron-stopped, function-errored, or Vault-key-missing/invalid
+  alike). See ADR-048.
 
 - **`Build Prompt`** (Code, stub assembler) composes one prompt string from, in order: the
   **GLOBAL agent-rules doc + the caller's personal agent-preferences doc** (CU Docs v3,

@@ -42,7 +42,7 @@ The total-uncompressed value is the only outage-relevant guard, and its safety d
 
 ### 5. 24-hour cleanup via pg_cron.
 
-Supabase has no native object lifecycle (verified), so a pg_cron job deletes input-bucket objects older than 24 hours using the proper storage deletion path (a bare `delete from storage.objects` orphans the bytes; use the storage delete so bytes are freed). DB-native, not an n8n scheduled workflow, so it respects the event-driven-n8n principle, and it serves data minimization (aligns with ADR-044). (Implemented **hourly** rather than daily — a daily sweep of ">24h" objects allows up to ~48h real lifetime, breaking the 24h commitment; see Block 4 outcomes.)
+Supabase has no native object lifecycle (verified), so a pg_cron job deletes input-bucket objects older than 24 hours using the proper storage deletion path (a bare `delete from storage.objects` orphans the bytes; use the storage delete so bytes are freed). DB-native, not an n8n scheduled workflow, so it respects the event-driven-n8n principle, and it serves data minimization (aligns with ADR-044). (Schedule + floor revised by operator decision on 2026-06-15 to **once daily at 05:00 Europe/Warsaw, deleting objects older than 12h**; see Block 4 outcomes for the reasoning and the accepted ~36h retention consequence.)
 
 ### 6. Docling tuning (low-hanging fruit only).
 
@@ -76,21 +76,26 @@ Measure first (is OCR firing on documents that do not need it; per-document time
   `public.purge_zip_inner_images()` (SECURITY DEFINER), using **pg_net** for the HTTP DELETE, with the
   service_role key read from **Supabase Vault** (`vault.decrypted_secrets`, name `service_role_key`) so no
   secret is committed. Object keys are `<task_id>/<sanitized att_id>` (URL-safe), so no percent-encoding.
-- **Schedule: HOURLY, not daily (deliberate deviation).** A *daily* purge of ">24h" objects yields up to
-  **~48h** worst-case lifetime (an object created just after a run waits ~a day to become eligible, then
-  ~another day to the next run) — which would make the GDPR record's "24h retention" claim false. Hourly +
-  ">24h" caps real lifetime at **~25h**, so the commitment is honest. Cost is negligible (a no-op run is one
-  indexed COUNT). The cron expression is `0 * * * *`; revert to `0 3 * * *` for daily if ~48h is ever deemed
-  acceptable. The GDPR record (`compliance/gdpr-processing-decisions.md` §6) and `current.md` were flipped from
-  "enforced manually" to "enforced by pg_cron (hourly)".
+- **Schedule + floor — landed hourly/>24h, then revised to once-daily 05:00 Warsaw / >12h (operator decision, 2026-06-15, migration 030).**
+  Originally landed hourly with a >24h floor (migration 029) to cap lifetime at ~25h. The operator then chose a
+  **single daily run at 05:00 Europe/Warsaw with a 12h floor**. The floor's purpose is to guarantee an in-flight
+  agent run's attachment is never deleted mid-process (a run lasts minutes; 12h is a large margin). Red-team
+  raised and the operator accepted: once-daily + *any* non-zero floor **cannot** hold ≤24h — an evening/overnight
+  file is <12h old at the 05:00 run and waits for the next day, so real lifetime is up to **~36h**. That is an
+  accepted, documented minimisation posture (24h was self-imposed, not legal); the GDPR record and `current.md`
+  were updated from "24h" to "purged daily, ≤~36h". To restore a ≤24h guarantee, run more than once per day
+  (e.g. `0 */6 * * *`). **DST:** pg_cron has no per-job timezone and the DB is UTC, so the job is scheduled
+  `0 3,4 * * *` UTC and an in-function `Europe/Warsaw` hour-gate makes exactly one of the two fires act at 05:00
+  local year-round (a `p_force` argument bypasses the gate for manual/verification runs).
 - **Silent-degradation coverage.** The purge is a classic "fails without throwing" risk: if the cron stops,
   the function errors, or the Vault key is rotated away, objects accumulate past retention with nobody noticing.
   Two guards: (1) a missing Vault key writes a `SKIPPED` row to `public.storage_purge_runs` instead of a silent
   no-op or a crash; (2) an **independent** n8n dead-man's-switch, **`Zip Image Purge Watchdog (v1)`**
   (`2L4W4OQ7Qmmnl1Z1`), runs **every 6h** on its own scheduler (not pg_cron — a pg_cron-based watchdog would die
   with the thing it watches) and routes a **WARN** through `Post Alert (v1)` if any object in the bucket exceeds
-  **26h** (the healthy ceiling is ~25h). Every failure mode collapses to the same observable symptom: objects
-  older than retention still present.
+  **40h** (the healthy ceiling is ~36h under the daily/>12h schedule; the threshold was 26h under the original
+  hourly/>24h schedule). Every failure mode collapses to the same observable symptom: objects older than
+  retention still present.
 - **Live verification (2026-06-15).** Extensions `pg_cron` 1.6.4 + `pg_net` 0.20.3 enabled; the cron job
   `purge-zip-inner-images` is registered, active, hourly. The function runs cleanly and, with no Vault key yet
   set, correctly logged the `SKIPPED` row (no crash, no silent no-op). The watchdog was exercised end-to-end:
@@ -100,6 +105,18 @@ Measure first (is OCR firing on documents that do not need it; per-document time
   Vault (`select vault.create_secret('<KEY>', 'service_role_key', '…');`) so the purge can authenticate; until
   then the watchdog is the safety net. After the key is set, a single run on a backdated object will confirm a
   Storage-API `200` + the `storage.objects` row gone = bytes freed.
+- **Revision + byte-free verification status (2026-06-15, same day).** (1) Schedule/floor revised to daily-05:00
+  Warsaw / >12h (migration 030, above); the watchdog was retuned 26h → 40h and re-verified healthy, and the new
+  function was verified live (the DST hour-gate correctly no-ops a non-forced call outside 05:00 Warsaw; a forced
+  call runs and logs `nothing to purge`). (2) The byte-free deletion probe was **attempted but is still pending a
+  valid key**: the operator inserted a Vault secret, but the value was a 16-char non-token (not a JWT / not an
+  `sb_secret_`), so the Storage API returned `403 "Invalid Compact JWS"` and nothing was deleted. The correct
+  value is a `service_role` JWT or a new `sb_secret_…` secret key from **Settings → API Keys** (the renamed
+  panel — "service keys" no longer exists by that name; legacy `service_role` sits under the *Legacy API Keys*
+  tab). The function accepts either (it sends the key in both `apikey` and `Authorization: Bearer`, which Supabase
+  permits for secret keys when the two header values are identical, and both key classes bypass RLS). Update the
+  secret with `vault.update_secret(...)` (not a second `create_secret`), then the backdate→purge→confirm-`200`
+  check closes this out.
 
 ## References
 
