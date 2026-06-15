@@ -1,0 +1,186 @@
+{
+  "name": "Zip Image Purge Watchdog (v1)",
+  "active": false,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Every 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [0, 300],
+      "notes": "ADR-048 Block 4 dead-man's-switch for the zip-inner-images 24h pg_cron purge ('purge-zip-inner-images'). INDEPENDENT of pg_cron on purpose: if the pg_cron daemon stops entirely, a pg_cron-based watchdog would also be dead and never alert. This n8n schedule is a separate scheduler, so it still fires and catches 'cron silently stopped', 'function errored', 'Vault key rotated/missing' — every failure mode collapses into the same observable symptom: objects older than retention still present. Runs every 6h so a failed purge is caught within ~6h of an object crossing the 26h threshold.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "form-check",
+      "name": "Check now (manual)",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [0, 480],
+      "webhookId": "zip-purge-watchdog-manual-check",
+      "notes": "Manual harness to run the staleness check on demand (a Schedule Trigger cannot be fired via the n8n API). Used for Definition-of-Done verification.",
+      "parameters": {
+        "formTitle": "Zip purge watchdog check",
+        "formDescription": "Press submit to evaluate zip-inner-images staleness now.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "confirm",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "run"
+                  }
+                ]
+              },
+              "requiredField": true
+            }
+          ]
+        },
+        "responseMode": "lastNode"
+      }
+    },
+    {
+      "id": "check-stale",
+      "name": "Check Stale Zip Images",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [240, 300],
+      "notes": "stale = any object in zip-inner-images older than 26h. Healthy ceiling is ~25h (24h to become purge-eligible + up to 1h to the next hourly pg_cron run + async delete lag); 26h adds margin so a healthy system never trips. stale=true => the purge is not keeping up (cron stopped, function errored, or the Vault service_role_key is missing/rotated) => WARN.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  count(*) as stale_count,\n  coalesce(round(max(extract(epoch from (now() - created_at)) / 3600)::numeric, 1), 0) as oldest_age_hours,\n  (count(*) > 0) as stale\nfrom storage.objects\nwhere bucket_id = 'zip-inner-images'\n  and created_at < now() - interval '26 hours';",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "if-stale",
+      "name": "If Stale",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [480, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-stale",
+              "leftValue": "={{ $json.stale }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "alert",
+      "name": "Alert Stale Purge",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [720, 200],
+      "notes": "Routes a WARN through the centralized Post Alert (v1) seam (ADR-025) — never post to ClickUp directly. Side branch only: the watchdog has no main result to protect, but the seam keeps the channel swappable.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "zip-purge-freshness",
+            "message": "Bucket zip-inner-images ma obiekty starsze niż retencja 24h — purga pg_cron prawdopodobnie nie działa (ryzyko naruszenia zobowiązania retencyjnego GDPR).",
+            "details": "=Przeterminowane obiekty: {{ $json.stale_count }}, najstarszy: {{ $json.oldest_age_hours }}h (próg 26h). Sprawdź zadanie pg_cron 'purge-zip-inner-images' (cron.job / cron.job_run_details), log public.storage_purge_runs oraz obecność sekretu Vault 'service_role_key'."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 6h": {
+      "main": [
+        [
+          {
+            "node": "Check Stale Zip Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check now (manual)": {
+      "main": [
+        [
+          {
+            "node": "Check Stale Zip Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Stale Zip Images": {
+      "main": [
+        [
+          {
+            "node": "If Stale",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Stale": {
+      "main": [
+        [
+          {
+            "node": "Alert Stale Purge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}

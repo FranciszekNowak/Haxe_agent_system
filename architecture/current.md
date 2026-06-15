@@ -1020,6 +1020,31 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   C owns every ClickUp side-effect (comment, cost, status, and — once multimodal lands, ADR-036 —
   image upload + temp cleanup).
 
+- **Input file handling v2 — `.zip` unpacking + zip-inner-image object storage (ADR-048; Blocks 1–4
+  landed 2026-06-15, Block 5 Docling tuning pending).** `Read Input (v1)` now unpacks a `.zip` attachment
+  instead of degrading it to `[BRAK]` (supersedes the ADR-036 `.zip`-unsupported note). After
+  `Explode Attachments` a `Zip?` switch routes archives down a decompress branch
+  (`Fetch Zip Binary → Stamp Zip Filename → Decompress → Explode Zip Entries`) that fans inner files out,
+  interleaved at the parent zip's ordinal position; everything else (including the no-attachment sentinel)
+  flows to `Classify Attachment` unchanged. Inner **images** are uploaded to a **private EU Supabase
+  Storage bucket `zip-inner-images`** (`haxe-agent-prod` / `eu-west-1`) and referenced **only by a
+  short-TTL signed URL** — the heavy bytes never enter execution data (the OOM fix; the rejected v1 inlined
+  base64). Inner **documents** join the shared Docling path; junk is silently skipped; nested-zip / oversize /
+  too-many / over-total degrade to `[BRAK]` blocks carrying `multimodal/zip-*` WARNs through `Post Alert (v1)`.
+  **Loose images and loose documents are byte-for-byte unchanged** (loose images keep their ClickUp URL — no
+  Supabase involvement), and **`invoke-model.json` is untouched**: a Supabase URL is a drop-in for the existing
+  image ref. File limits live in the **global `file_processing_config`** keys (migration 027): `zip_max_entries`
+  50, `zip_max_file_mb` 25, `zip_max_total_uncompressed_mb` **250** (migration 028 lowered it 500 → 250 because
+  the compression node decompresses in-memory). **Retention (Block 4):** zip-inner images are purged at 24h by
+  an **hourly pg_cron job `purge-zip-inner-images`** (migration 029) that deletes through the **Storage REST API
+  so the bytes are freed, not orphaned** — a bare `delete from storage.objects` would drop the metadata row but
+  leave the S3 object (and the personal data) behind. The job reads its service_role key from **Supabase Vault**;
+  a missing key writes a `SKIPPED` row to `storage_purge_runs` rather than silently no-op'ing. Schedule note: the
+  ADR says "daily", but daily + ">24h" yields up to ~48h real lifetime, so this runs **hourly** to honour the
+  24h commitment (~25h worst case). A **dead-man's-switch independent of pg_cron** — the n8n
+  **`Zip Image Purge Watchdog (v1)`** (`2L4W4OQ7Qmmnl1Z1`), every 6h — WARNs through `Post Alert (v1)` if any
+  object exceeds 26h (catches cron-stopped, function-errored, or Vault-key-missing alike). See ADR-048.
+
 - **`Build Prompt`** (Code, stub assembler) composes one prompt string from, in order: the
   **GLOBAL agent-rules doc + the caller's personal agent-preferences doc** (CU Docs v3,
   `q7wz-16892`; core-model step 3, so output follows firm rules + person style); the

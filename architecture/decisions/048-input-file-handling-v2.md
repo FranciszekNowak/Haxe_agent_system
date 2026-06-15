@@ -1,7 +1,7 @@
 # ADR-048: Input file handling v2 — zip unpacking, Supabase object storage for zip-inner images, a global file-processing config, and Docling tuning
 
-Status: Accepted. Blocks 1–3 landed (global config + lookup; EU bucket + Store step; zip unpacking wired). Block 4 (24h pg_cron purge) and Block 5 (Docling tuning) remain. Two build-time gates inside (large-image provider acceptance; compression-node memory behavior) confirm one correctness point and tune one guard value — gate B resolved in Block 3 (see Consequences); gate A is covered by the existing full-size loose-image contract plus gate D, with a >15 MB zip-path confirmation left to the operator (see Consequences).
-Date: 2026-06-13 (Blocks 1–3 landed 2026-06-15)
+Status: Accepted. Blocks 1–4 landed (global config + lookup; EU bucket + Store step; zip unpacking wired; 24h pg_cron purge + dead-man's-switch). Block 5 (Docling tuning) remains. Two build-time gates inside (large-image provider acceptance; compression-node memory behavior) confirm one correctness point and tune one guard value — gate B resolved in Block 3 (see Consequences); gate A is covered by the existing full-size loose-image contract plus gate D, with a >15 MB zip-path confirmation left to the operator (see Consequences).
+Date: 2026-06-13 (Blocks 1–3 landed 2026-06-15; Block 4 landed 2026-06-15)
 Deciders: Franciszek (operator), with design review
 
 Numbering note: confirm 048 is the next free ADR and that each migration here gets the next free number, against the live repo before committing. ADR-047 (fallback seam) precedes this.
@@ -42,7 +42,7 @@ The total-uncompressed value is the only outage-relevant guard, and its safety d
 
 ### 5. 24-hour cleanup via pg_cron.
 
-Supabase has no native object lifecycle (verified), so a daily pg_cron job deletes input-bucket objects older than 24 hours using the proper storage deletion path (a bare `delete from storage.objects` orphans the bytes; use the storage delete so bytes are freed). DB-native, not an n8n scheduled workflow, so it respects the event-driven-n8n principle, and it serves data minimization (aligns with ADR-044).
+Supabase has no native object lifecycle (verified), so a pg_cron job deletes input-bucket objects older than 24 hours using the proper storage deletion path (a bare `delete from storage.objects` orphans the bytes; use the storage delete so bytes are freed). DB-native, not an n8n scheduled workflow, so it respects the event-driven-n8n principle, and it serves data minimization (aligns with ADR-044). (Implemented **hourly** rather than daily — a daily sweep of ">24h" objects allows up to ~48h real lifetime, breaking the 24h commitment; see Block 4 outcomes.)
 
 ### 6. Docling tuning (low-hanging fruit only).
 
@@ -64,6 +64,42 @@ Measure first (is OCR firing on documents that do not need it; per-document time
 - **Gate A (large-image acceptance) — covered by contract; >15 MB zip-path probe deferred to operator.** The unique new variable is image byte-size. The existing loose-image path already passes full-size ClickUp images (up to the 25 MB attachment limit) to the same LiteLLM→provider route in production, and gate D (2026-06-15) proved Supabase-signed-URL delivery is fetched and tokenized by the provider. Binary delivery of a *valid small* zip into the reader was solved (see integrated verification below: an in-infrastructure n8n store/serve webhook on the VPS, fetched server-side by ClickUp via `file_url` — no binary ever transcribed through text). A dedicated **>15 MB** zip-path probe still could not be run: the VPS nginx caps the test-harness store webhook body at ~1 MB (`413`), and external file hosts / public buckets / SSH were all denied. This nginx cap is a **test-harness limit only** — the production reader downloads the archive from ClickUp's own host (`clickup-attachments.com`), not through that nginx, so real multi-MB zips up to ClickUp's 25 MB attachment cap are unaffected. No per-file cap beyond the existing 25 MB guard was added. **Operator follow-up:** attach a real ~12 MB-image zip to a task and @-mention the agent; if the provider rejects on size, add a provider-limit cap (Decision 3 caveat).
 - **Degradation verification (reader exec 2132).** `Zip? Switch` correctly routes a `.zip` to the zip branch and everything else to `Classify Attachment` unchanged; `Fetch Zip Binary` downloads the archive; `Decompress` + `Explode Zip Entries` gracefully degrade an undecompressable archive to a single `zip_extraction_failed` drop (`warn_source: multimodal/zip-extraction-failed`) with the run completing `success` and no CRITICAL — the reactive error path is not tripped.
 - **Integrated happy-path verification (reader run via the production `When Called` path, 2026-06-15).** A real `mixed.zip` (two HTML docs, two JPEGs, a nested `inner.zip`, a `.DS_Store`) was attached to a live ClickUp task — delivered byte-faithfully by having ClickUp download it server-side (`clickup_attach_task_file` `file_url`) from an in-infrastructure n8n store/serve webhook — and the reader was invoked with `{ clickup_task_id }` exactly as Stage A calls it. It returned the correct interleaved `blocks`: order 0.001/0.002 = the two docs as Docling markdown; order 0.003/0.004 = the two JPEGs as **Supabase private-bucket signed URLs** (one verified fetchable: HTTP 200, `image/jpeg`, correct byte length); order 0.005 = `[BRAK: nested_zip inner.zip]`. The `.DS_Store` was silently skipped; `warnings` carried the single `multimodal/zip-nested-skipped`. This exercises the full zip path end-to-end: `Stamp Zip Filename` → `Decompress` → `Explode Zip Entries` (fan-out, interleave, junk-skip, nested-drop, guards) → `Classify Zip Entry` 3-way fan → image branch (Zip Image Key → Upload → Sign → Compose → Build Zip Image Block), document branch (Merge Extractable → shared Docling Convert → Build Text Block), drop branch (Build Dropped Zip Block), all converging through the widened 5-input `Merge Branches` into the branch-free `Aggregate Blocks`. The workflow validates clean (0 errors, 29 connections). The only alert during testing was one CRITICAL from a malformed test-harness form POST (wrong content-type to the Form Trigger), unrelated to the zip path.
+
+### Block 4 outcomes (24h pg_cron purge + dead-man's-switch, 2026-06-15)
+
+- **Byte-free deletion mechanism — confirmed: there is no SQL-native helper that frees the bytes.** The
+  `storage` schema exposes only a `protect_delete` trigger; no `storage.delete_object`-style function exists,
+  and the bytes live in S3, reachable only through the storage service. So the purge **must** call the Storage
+  REST API (`DELETE /storage/v1/object/{bucket}/{key}`), which removes both the S3 object and the
+  `storage.objects` row. A bare `delete from storage.objects` would drop the row and **orphan the bytes** (the
+  personal data would survive) — exactly what the ADR warned against. Implemented in `migration 029` as
+  `public.purge_zip_inner_images()` (SECURITY DEFINER), using **pg_net** for the HTTP DELETE, with the
+  service_role key read from **Supabase Vault** (`vault.decrypted_secrets`, name `service_role_key`) so no
+  secret is committed. Object keys are `<task_id>/<sanitized att_id>` (URL-safe), so no percent-encoding.
+- **Schedule: HOURLY, not daily (deliberate deviation).** A *daily* purge of ">24h" objects yields up to
+  **~48h** worst-case lifetime (an object created just after a run waits ~a day to become eligible, then
+  ~another day to the next run) — which would make the GDPR record's "24h retention" claim false. Hourly +
+  ">24h" caps real lifetime at **~25h**, so the commitment is honest. Cost is negligible (a no-op run is one
+  indexed COUNT). The cron expression is `0 * * * *`; revert to `0 3 * * *` for daily if ~48h is ever deemed
+  acceptable. The GDPR record (`compliance/gdpr-processing-decisions.md` §6) and `current.md` were flipped from
+  "enforced manually" to "enforced by pg_cron (hourly)".
+- **Silent-degradation coverage.** The purge is a classic "fails without throwing" risk: if the cron stops,
+  the function errors, or the Vault key is rotated away, objects accumulate past retention with nobody noticing.
+  Two guards: (1) a missing Vault key writes a `SKIPPED` row to `public.storage_purge_runs` instead of a silent
+  no-op or a crash; (2) an **independent** n8n dead-man's-switch, **`Zip Image Purge Watchdog (v1)`**
+  (`2L4W4OQ7Qmmnl1Z1`), runs **every 6h** on its own scheduler (not pg_cron — a pg_cron-based watchdog would die
+  with the thing it watches) and routes a **WARN** through `Post Alert (v1)` if any object in the bucket exceeds
+  **26h** (the healthy ceiling is ~25h). Every failure mode collapses to the same observable symptom: objects
+  older than retention still present.
+- **Live verification (2026-06-15).** Extensions `pg_cron` 1.6.4 + `pg_net` 0.20.3 enabled; the cron job
+  `purge-zip-inner-images` is registered, active, hourly. The function runs cleanly and, with no Vault key yet
+  set, correctly logged the `SKIPPED` row (no crash, no silent no-op). The watchdog was exercised end-to-end:
+  with the bucket healthy it reported `stale=false` and fired no alert; after a test object was backdated to
+  ~30h it reported `stale_count=1` and posted the WARN to the Alerts task through `Post Alert (v1)`; the test
+  object's timestamp was then restored. **Operator follow-up (one step):** insert the service_role key into
+  Vault (`select vault.create_secret('<KEY>', 'service_role_key', '…');`) so the purge can authenticate; until
+  then the watchdog is the safety net. After the key is set, a single run on a backdated object will confirm a
+  Storage-API `200` + the `storage.objects` row gone = bytes freed.
 
 ## References
 
