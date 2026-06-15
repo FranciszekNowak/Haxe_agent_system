@@ -254,6 +254,21 @@ Date
   This silently broke in-thread replies in the CU Webhook Producer's `Detect Mention` node
   (it preferred `comment.parent`); the fix reads `comment.id` first (ADR-035). Verify against
   the producer's real webhook payload, not assumptions.
+- **Live-testing a sub-workflow reader: spin up a throwaway `Webhook → Set → Execute Workflow`
+  caller; don't POST the Form Trigger as url-encoded.** A sub-workflow whose production entry is a
+  `When Called` (`executeWorkflowTrigger`) node can't be hit over HTTP directly. Two ways to drive it
+  live without wiring the parent pipeline: (1) the workflow's own **Form Trigger** test harness — but
+  its production endpoint (`https://agents.haxe.ai/form/<webhookId>`) **requires `multipart/form-data`**;
+  a `--data-urlencode` POST fails instantly with HTTP 500 "Workflow could not be started" / "Expected
+  multipart/form-data", and because the reader sets `Error Handler (v1)` as its `errorWorkflow`, that
+  failed trigger **fires a CRITICAL** to the Alerts channel (a self-inflicted false alarm — explain it,
+  don't chase it). (2) More reliable: create a **throwaway caller workflow** — `Webhook` (responseMode
+  `lastNode`) → `Set` (put `clickup_task_id` at top level) → **`Execute Workflow` (typeVersion 1.1**, the
+  resourceMapper-free version: `source: database`, `workflowId` resource-locator, `mode: once`) targeting
+  the reader — then `curl` the webhook to get the reader's output back inline, and inspect the reader's
+  `integrated` execution node-by-node with `scripts/inspect-execution.mjs`. Activate it, run, **delete it
+  + any test ClickUp tasks** after (ClickUp has no delete-attachment API, so prefer a fresh disposable
+  task over re-using one). Found landing ADR-048 Block 5.
 
 ## Definition of done
 
