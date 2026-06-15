@@ -205,7 +205,9 @@
       "typeVersion": 3.2,
       "position": [1568, 240],
       "notes": "Converge the image-passthrough branch (input 0) and the Docling-extract branch (input 1) into ONE stream so Aggregate keeps a SINGLE input (a run-once-for-all-items node with N input connections runs once per connection and drops items - Block 2 trap, CLAUDE.md). Append = concat all items. VERIFY at build: must not stall when one branch is empty (all-text OR all-image task); if it stalls, apply ADR-036 fallback (alwaysOutputData on tails / single run-once-for-each builder).",
-      "parameters": {}
+      "parameters": {
+        "numberInputs": 3
+      }
     },
     {
       "id": "r-aggregate",
@@ -217,6 +219,29 @@
       "parameters": {
         "jsCode": "const rows = $input.all().map(i => i.json).filter(j => j && j.block);\nconst blocks = rows.map(j => j.block).sort((a, b) => (a.order || 0) - (b.order || 0));\nconst warnings = [];\nfor (const j of rows) {\n  if (j.needs_alert) warnings.push({ source: j.warn_source || 'multimodal/extraction-failed', title: j.title, err: j.err || 'unknown' });\n  else if (j.has_embedded) warnings.push({ source: 'multimodal/embedded-image-skipped', title: j.title });\n}\nlet taskId = null;\ntry { taskId = $('When Called').first().json.clickup_task_id; } catch (e) {}\nif (!taskId) { try { taskId = $('Form Trigger').first().json.taskId; } catch (e) {} }\nif (!taskId) { const f = rows.find(j => j.clickup_task_id); taskId = f ? f.clickup_task_id : null; }\nreturn [{ json: { blocks, clickup_task_id: taskId, warnings } }];"
       }
+    },
+    {
+      "id": "r-lookup-fpc",
+      "name": "Lookup File Processing Config",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [240, 500],
+      "notes": "Global file-processing limits (config.zip_max_entries / zip_max_file_mb / zip_max_total_uncompressed_mb; migration 027, ADR-048 Block 1). Pivots the 3 keys into ONE typed row so Block 3's zip guards read $('Lookup File Processing Config').first().json.zip_max_*. Hung off Get Task (runs once per execution) and fed into Merge Branches so it is NOT a dangling leaf: Aggregate Blocks filters to items carrying `block`, so this row is dropped from output and Aggregate stays the sole branch-free terminal (return-value safety, CLAUDE.md). alwaysOutputData so a 0-row result still emits and never nulls the chain. Enforcement of these limits lands in Block 3 (not here).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  max(value::int) filter (where key = 'zip_max_entries')               as zip_max_entries,\n  max(value::int) filter (where key = 'zip_max_file_mb')               as zip_max_file_mb,\n  max(value::int) filter (where key = 'zip_max_total_uncompressed_mb') as zip_max_total_uncompressed_mb\nfrom config;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
     }
   ],
   "connections": {
@@ -247,6 +272,11 @@
         [
           {
             "node": "Explode Attachments",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Lookup File Processing Config",
             "type": "main",
             "index": 0
           }
@@ -333,6 +363,17 @@
             "node": "Aggregate Blocks",
             "type": "main",
             "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup File Processing Config": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 2
           }
         ]
       ]
