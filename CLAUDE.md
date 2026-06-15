@@ -271,21 +271,30 @@ Date
   This silently broke in-thread replies in the CU Webhook Producer's `Detect Mention` node
   (it preferred `comment.parent`); the fix reads `comment.id` first (ADR-035). Verify against
   the producer's real webhook payload, not assumptions.
-- **Live-testing a sub-workflow reader: spin up a throwaway `Webhook → Set → Execute Workflow`
-  caller; don't POST the Form Trigger as url-encoded.** A sub-workflow whose production entry is a
-  `When Called` (`executeWorkflowTrigger`) node can't be hit over HTTP directly. Two ways to drive it
-  live without wiring the parent pipeline: (1) the workflow's own **Form Trigger** test harness — but
-  its production endpoint (`https://agents.haxe.ai/form/<webhookId>`) **requires `multipart/form-data`**;
-  a `--data-urlencode` POST fails instantly with HTTP 500 "Workflow could not be started" / "Expected
-  multipart/form-data", and because the reader sets `Error Handler (v1)` as its `errorWorkflow`, that
-  failed trigger **fires a CRITICAL** to the Alerts channel (a self-inflicted false alarm — explain it,
-  don't chase it). (2) More reliable: create a **throwaway caller workflow** — `Webhook` (responseMode
-  `lastNode`) → `Set` (put `clickup_task_id` at top level) → **`Execute Workflow` (typeVersion 1.1**, the
-  resourceMapper-free version: `source: database`, `workflowId` resource-locator, `mode: once`) targeting
-  the reader — then `curl` the webhook to get the reader's output back inline, and inspect the reader's
-  `integrated` execution node-by-node with `scripts/inspect-execution.mjs`. Activate it, run, **delete it
-  + any test ClickUp tasks** after (ClickUp has no delete-attachment API, so prefer a fresh disposable
-  task over re-using one). Found landing ADR-048 Block 5.
+- **Live-testing any workflow: use `scripts/test-subworkflow.mjs`, not a hand-built harness and not
+  the Form Trigger over the API.** A sub-workflow whose production entry is a `When Called`
+  (`executeWorkflowTrigger`) node can't be hit over HTTP directly. The script automates the throwaway
+  harness: `node scripts/test-subworkflow.mjs <workflowId> --file input.json` stands up a temporary
+  `Webhook → Execute → Respond` caller, maps every declared `When Called` input from the POST body,
+  returns the workflow's output inline, prints the real `integrated` execution id, and tears the harness
+  down. Then inspect with `scripts/inspect-execution.mjs <execId>` (node-by-node), scan
+  `scripts/alerts-since.mjs`, and for anything that writes `agent_runs` check the row(s) and **delete
+  test rows + any test ClickUp tasks afterward** (ClickUp has no delete-attachment API, so prefer a fresh
+  disposable task over re-using one). Three traps that have each cost a debugging cycle:
+  - **Don't trigger the orchestrator spine through its Form Trigger over the API** (`/form/<webhookId>`).
+    The n8n production form endpoint does **not** map `FormData`/url-encoded field names the way the
+    browser form does, so the run starts with **all-null fields** → a ClickUp call on a null task id
+    fails → a **cascade of CRITICAL alerts** (self-inflicted; explain it, don't chase it). A
+    `--data-urlencode` POST also fails outright ("Expected multipart/form-data"). To drive the full
+    spine, call the orchestrator's `When Called` via `test-subworkflow.mjs` with the producer's exact
+    inputs (`triggered_by=explicit_mention`, `invocation_type=explicit`, a real `reviewer_user_id`).
+  - **Build the input JSON with Node (`JSON.stringify`), never by hand-escaping in a heredoc.** Fields
+    like `output_blocks_json` are JSON-inside-JSON; hand-written `\n`/`\"` double-encode, the inner
+    `JSON.parse` silently throws, and the node emits **0 items** (looks like a logic bug, isn't). Write
+    the input file with a tiny Node script instead.
+  - **Use a project-relative path for the input file** (e.g. `./input.json`). Node on Windows resolves
+    `/tmp` to `C:\tmp` while Git Bash maps `/tmp` elsewhere, so a script that writes `/tmp/x.json` and a
+    reader that reads `/tmp/x.json` silently disagree. Found landing ADR-048 Block 5 / ADR-051 Block 4.
 
 ## Definition of done
 
