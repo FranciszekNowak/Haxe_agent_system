@@ -88,6 +88,13 @@ Block 8 — not a sub-processor; Vertex Imagen was retired ahead of Google's ~20
 | Operational low-sensitivity data (customer service, B2B) | Long retention under a documented purpose (operations, learning system, continuity); **periodic review** ("do we still need records this old") as the backstop — no fixed cadence | Art 5(1)(e) purpose-bound |
 | Employee wage & address data | Statutory employment-records period — **~10 years** post-employment for employees hired from 2019; **~50 years** for pre-2019 hires (Polish Labour Code post-2019 reform). **Confirm exact figure with counsel.** Erasure is overridden during this period (Art 17(3)(b)) | Art 6(1)(c) legal obligation |
 | Permanent learning store | No raw identifiable personal data is stored, so storage limitation does not bite | n/a |
+| Zip-inner input images (Supabase Storage bucket `zip-inner-images`, `haxe-agent-prod` / `eu-west-1`, **private**) | **24h** — a daily pg_cron job purges objects older than 24h via the storage-delete path (frees the bytes, not just the row). Bucket **provisioned** in ADR-048 Block 2 (2026-06-15); the automated purge job **lands in ADR-048 Block 4** — until then, treat retention as enforced manually. | Art 5(1)(e) data-minimization; ADR-048 / ADR-044 |
+
+Processing note (ADR-048): a `.zip` attached to a task may contain photos of people, so the bucket is
+treated as potentially personal-data-bearing even under the PD-blind posture (ADR-043). Mitigations:
+EU-only bucket, private (no public URLs — only short-lived signed URLs), 24h purge, and the same
+provider egress base64 would have produced (no new residency surface). No new sub-processor: it is the
+same Supabase EU project already listed in §4 for the database.
 
 Optional future: pseudonymize the historical wage series past the statutory period to keep analytical
 value without indefinite raw-identity retention. Not now.

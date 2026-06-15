@@ -242,6 +242,104 @@
       "maxTries": 2,
       "waitBetweenTries": 2000,
       "alwaysOutputData": true
+    },
+    {
+      "id": "r-zip-img-key",
+      "name": "Zip Image Key",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [688, 620],
+      "notes": "ADR-048 Block 2: ENTRY of the 'Store Zip Image' step (zip-inner image branch ONLY - loose images never touch this; they keep their ClickUp URL ref). Computes the Supabase object key <clickup_task_id>/<sanitized att_id> and carries entry meta (title, order, mime) + the image binary forward. att_id arrives as `<parentAttId>:<i>` (Block 3) - sanitized to a safe key ([^A-Za-z0-9._-] -> '_'); the original att_id is preserved in json for source_ref. Binary must arrive in property `data` (Block 3's Explode Zip Entries normalizes it). The internal chain Key->Upload->Sign->Compose is wired now (Block 2); Block 3 connects Classify-inner-image -> here and Compose -> zip image block -> Merge Branches. Until then this chain has no trigger path, so it never executes - the live reader is unchanged.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const m = $input.item.json || {};\nconst b = $input.item.binary;\nconst taskId = m.clickup_task_id;\nconst attId = m.att_id;\nconst mime = m.mime || (b && b.data && b.data.mimeType) || 'image/jpeg';\nconst safe = String(attId == null ? '' : attId).replace(/[^a-zA-Z0-9._-]/g, '_');\nreturn { json: { clickup_task_id: taskId, att_id: attId, title: m.title, order: m.order, mime: mime, storage_path: taskId + '/' + safe }, binary: b };"
+      }
+    },
+    {
+      "id": "r-zip-img-upload",
+      "name": "Upload Zip Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [912, 620],
+      "notes": "ADR-048 Block 2: upload the ORIGINAL zip-inner image bytes to the private EU bucket `zip-inner-images` at <storage_path> via Supabase Storage REST (POST /storage/v1/object/{bucket}/{path}, x-upsert:true). Auth = predefined supabaseApi cred (service_role; bypasses RLS on the private bucket). Original size, NEVER base64 (ADR-048 Decision 3 - the heavy bytes stay out of execution data, which is the whole OOM fix). cache-control max-age=3600 (objects are purged at 24h by Block 4's pg_cron, so caching is short). continueRegularOutput: a failed upload returns no Key, so Sign/Compose yield an empty ref and Block 3 degrades that entry to a dropped block + warn rather than throwing. Gate D verified the full upload->sign->provider-fetch path end-to-end 2026-06-15.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://hkeslnosxibeuesxndnz.supabase.co/storage/v1/object/zip-inner-images/{{ $json.storage_path }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-upsert",
+              "value": "true"
+            },
+            {
+              "name": "cache-control",
+              "value": "max-age=3600"
+            },
+            {
+              "name": "Content-Type",
+              "value": "={{ $json.mime }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "54fKsl6xiVi9NhV1",
+          "name": "Supabase account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "r-zip-img-sign",
+      "name": "Sign Zip Image URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1136, 620],
+      "notes": "ADR-048 Block 2: mint a signed URL (expiresIn 21600s = 6h) for the just-uploaded object (POST /storage/v1/object/sign/{Key}; Key comes from the upload response, e.g. `zip-inner-images/<task>/<att>`). The private bucket means only a signed URL is fetchable. 6h TTL outlives the reader->invoke-model gap, which in queue mode includes inter-stage queue latency, yet stays well under the 24h cleanup (ADR-048 Consequences). The provider fetches this URL through LiteLLM - gate D confirmed Gemini read the image (1089 image_tokens, correct description) 2026-06-15. continueRegularOutput + retry so a transient sign failure degrades to an empty ref rather than throwing.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://hkeslnosxibeuesxndnz.supabase.co/storage/v1/object/sign/{{ $json.Key }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ expiresIn: 21600 }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "54fKsl6xiVi9NhV1",
+          "name": "Supabase account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "r-zip-img-compose",
+      "name": "Compose Signed URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1360, 620],
+      "notes": "ADR-048 Block 2: assemble the absolute signed URL (HOST + /storage/v1 + signedURL) into `ref`, and re-attach the entry meta (clickup_task_id, att_id, title, order, mime) via pairedItem from Zip Image Key (verified to survive the two HTTP hops in gate D). `ref` is the zip-inner image's downstream reference and a DROP-IN for the loose-image URL ref - Resolve Routing passes it verbatim into image_url.url, so a Supabase signed URL needs no contract change. stored=false (empty ref) signals an upload/sign failure for Block 3 to drop+warn. NEVER base64. Block 3 wraps this into the zip image block (same envelope as Build Image Block) and feeds Merge Branches.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const k = $('Zip Image Key').item.json;\nconst r = $json || {};\nconst signed = r.signedURL || (r.body && r.body.signedURL) || '';\nconst HOST = 'https://hkeslnosxibeuesxndnz.supabase.co';\nconst ref = signed ? (HOST + '/storage/v1' + signed) : '';\nreturn { json: { clickup_task_id: k && k.clickup_task_id, att_id: k && k.att_id, title: k && k.title, order: k && k.order, mime: k && k.mime, ref: ref, stored: !!ref } };"
+      }
     }
   ],
   "connections": {
@@ -374,6 +472,39 @@
             "node": "Merge Branches",
             "type": "main",
             "index": 2
+          }
+        ]
+      ]
+    },
+    "Zip Image Key": {
+      "main": [
+        [
+          {
+            "node": "Upload Zip Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Zip Image": {
+      "main": [
+        [
+          {
+            "node": "Sign Zip Image URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign Zip Image URL": {
+      "main": [
+        [
+          {
+            "node": "Compose Signed URL",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
