@@ -21,6 +21,15 @@ the per-image floor (mirrors `Invoke Model`'s `Normalize Model Result` both-down
 during testing surfaced this. Not a regression (the old path does the same); a one-line change in
 `Explode Results` would bill 0 for failures if desired.
 
+**Post-review cleanup (2026-06-15, same session):** an early draft re-derived the step-down ordering
+inline (a duplicated tier array) and hardcoded the gpt upgrade prices. Both were removed: a
+`Resolve Lower Tier Image` node now calls `Resolve Lower Tier (v1)` once (single owner of the
+step-down), and the upgrade + fallback prices are read from the image-tier rows — so the only literals
+left are the two irreducible DB-down last-resorts. Re-verified: Średni → step-down resolves to the
+Niski gemini row with its DB prices; Niski + shaped → upgrades to gpt-image-2 at the correct DB price
+`0.005` (the old inline `0.0003` quirk is gone) and decodes 1536×1024; 3-image concurrency and a clean
+alert channel both intact.
+
 ## Context
 
 A single agent run can emit several `generate` image blocks (the drafting model's output-block
@@ -84,7 +93,13 @@ Two constraints shaped the design:
    2xx-with-empty `b64_json`, retry once with the next-lower-tier image model; a failure after that
    becomes a `warnings[]` entry (non-blocking, never a CRITICAL — image stays non-blocking per
    ADR-047 Block B). Top-tier (gpt-image-2) has no lower image tier, so its fallback is a no-op, as
-   today.
+   today. **Only the HTTP retry is inline** — the *step-down rule* (which tier is one below) is **not**
+   re-derived in the batch: it reuses `Resolve Lower Tier (v1)` (the sole owner of the ordering),
+   called **once** for the run's shared impact (so it does not re-serialize the parallel calls), and
+   the lower tier's prices are read from the image-tier rows by the returned impact. Likewise every
+   model name and price is DB-sourced (`model_routing`); the only literals in the resolve step are
+   irreducible DB-down last-resorts (a gemini safety net when the routing read returns no image row,
+   and gpt-image-2's upgrade prices when the tier read is empty).
 
 6. **Auth via a dedicated, revocable, image-scoped LiteLLM key in Supabase Vault.** Enable LiteLLM
    **key management** (was off — `litellm-config.yaml` had only `general_settings.master_key`, no

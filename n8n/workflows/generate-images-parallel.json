@@ -94,7 +94,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [660, 300],
-      "notes": "ADR-051: all active real-tier image rows (model + prices + per-image floor) so Resolve Batch Requests can compute the one-tier-below fallback model + its prices inline (mirrors Invoke Model's Resolve Lower Tier Image + Lookup Fallback Image Prices, but for the whole batch in one read). onError=continueRegularOutput + alwaysOutputData: no rows -> no fallback (images still run on the primary).",
+      "notes": "ADR-051: all active real-tier image rows = the PRICE MAP for the fallback tier (its model comes from Resolve Lower Tier (v1)) and for the gemini->gpt-image-2 upgrade. No tier ORDERING lives here. onError=continueRegularOutput + alwaysOutputData: no rows -> no fallback prices (images still run on the primary).",
       "parameters": {
         "operation": "executeQuery",
         "query": "select impact, litellm_model, price_in_usd_per_1k, price_out_usd_per_1k, fallback_price_per_unit\nfrom model_routing\nwhere modality = 'image' and active = true\n  and impact in ('Niski','Średni','Wysoki','Krytycznie ważne');",
@@ -118,9 +118,9 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [880, 300],
-      "notes": "ADR-051: inline port of Invoke Model's Resolve Routing image logic, applied PER request (ADR-045): size from requested_size > aspect > 1024 default; gemini->gpt-image-2 shape-intent upgrade (explicit size OR non-1:1 aspect on a non-gpt tier, with a Polish resolution_note); gpt size validate/snap; tier->quality. Emits one item per image carrying the resolved primary model + the shared one-tier-below fallback model and both price sets. Faithful port keeps Invoke Model's quirk of pin=0.0003 on the gemini->gpt upgrade (cost is header/floor-driven for gpt, so the input-price backup is moot).",
+      "notes": "ADR-051: inline port of Invoke Model's Resolve Routing image logic, applied PER request (ADR-045): size from requested_size > aspect > 1024 default; gemini->gpt-image-2 shape-intent upgrade (explicit size OR non-1:1 aspect on a non-gpt tier, with a Polish resolution_note); gpt size validate/snap; tier->quality. Model selection + ALL tier prices are DB-sourced (Lookup Routing primary row; Lookup Image Tiers price map; Resolve Lower Tier v1 owns the step-down). The only literals are irreducible DB-down last-resorts (gemini safety net when Lookup Routing returns no image row; gpt upgrade prices when the tier map is empty).",
       "parameters": {
-        "jsCode": "const wc = $('When Called').first().json;\nlet requests = [];\ntry { requests = JSON.parse(wc.requests_json || '[]'); } catch (e) { requests = []; }\nif (!Array.isArray(requests)) requests = [];\nconst impact = (wc.impact || '').toString().trim();\n\nlet row = null;\ntry { const r = $('Lookup Routing').first().json; if (r && r.litellm_model) row = r; } catch (e) {}\nlet primary_model, primary_pin, primary_pout, primary_floor, resolution;\nif (row && String(row.litellm_model).indexOf('image') >= 0) {\n  primary_model = row.litellm_model;\n  primary_pin = Number(row.price_in_usd_per_1k || 0);\n  primary_pout = Number(row.price_out_usd_per_1k || 0);\n  primary_floor = (row.fallback_price_per_unit != null) ? Number(row.fallback_price_per_unit) : null;\n  resolution = row.resolution || 'high';\n} else {\n  primary_model = 'vertex_ai/gemini-2.5-flash-image';\n  primary_pin = 0.0003; primary_pout = 0.030; primary_floor = 0.038703; resolution = 'high';\n}\n\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\nlet tiers = [];\ntry { tiers = $('Lookup Image Tiers').all().map(function(i){return i.json;}).filter(function(r){return r && r.impact;}); } catch (e) {}\nconst tierByImpact = {};\nfor (const t of tiers) tierByImpact[t.impact] = t;\nconst tIdx = REAL_TIERS.indexOf(impact);\nlet fb = { model: '', pin: null, pout: null, floor: null };\nif (tIdx > 0) {\n  const below = tierByImpact[REAL_TIERS[tIdx - 1]];\n  if (below && below.litellm_model) {\n    fb = { model: below.litellm_model, pin: Number(below.price_in_usd_per_1k || 0), pout: Number(below.price_out_usd_per_1k || 0), floor: (below.fallback_price_per_unit != null) ? Number(below.fallback_price_per_unit) : null };\n  }\n}\n\nfunction aspectToSize(aspect, base) { if (!aspect) return base + 'x' + base; const p = String(aspect).split(':'); if (p.length !== 2) return base + 'x' + base; const w = Number(p[0]), h = Number(p[1]); if (!w || !h) return base + 'x' + base; if (w >= h) return base + 'x' + Math.round(base * h / w); return Math.round(base * w / h) + 'x' + base; }\nfunction parseWH(s){ const p=String(s||'').toLowerCase().split('x'); const w=Number(p[0]),h=Number(p[1]); return (w&&h)?{w:w,h:h}:null; }\nfunction gptValid(wh){ if(!wh) return false; const w=wh.w, h=wh.h; if (w%16!==0||h%16!==0) return false; const r=w/h; if (r>3||r<1/3) return false; if (Math.max(w,h)>3840) return false; const px=w*h; if (px<655360||px>8294400) return false; return true; }\nfunction snapGptValid(wh, fallback){ if(!wh) return fallback; let w=wh.w, h=wh.h; const r=w/h; if (r>3) h=w/3; else if (r<1/3) w=h/3; const mx=Math.max(w,h); if (mx>3840){ const s=3840/mx; w*=s; h*=s; } let px=w*h; if (px<655360){ const k=Math.sqrt(655360/px)*1.02; w*=k; h*=k; } px=w*h; if (px>8294400){ const k=Math.sqrt(8294400/px); w*=k; h*=k; } const r16=function(x){return Math.max(16, Math.round(x/16)*16);}; return r16(w)+'x'+r16(h); }\n\nconst base = 1024;\nconst out = [];\nfor (const rq of requests) {\n  const reqSize = (rq.size != null && String(rq.size).trim() !== '') ? String(rq.size).trim() : null;\n  const aspect = (rq.aspect != null && String(rq.aspect).trim() !== '') ? String(rq.aspect).trim() : null;\n  const size_requested = reqSize || (aspect ? aspectToSize(aspect, base) : (base + 'x' + base));\n  let size = size_requested;\n  let resolution_note = '';\n  let image_model = primary_model;\n  let pin = primary_pin, pout = primary_pout, floor = primary_floor;\n  let isGpt = String(image_model).indexOf('openai/') === 0;\n  const reqWH = parseWH(size_requested);\n  const wantsShape = !!reqSize || (reqWH && reqWH.w !== reqWH.h);\n  if (wantsShape && !isGpt) {\n    image_model = 'openai/gpt-image-2';\n    pin = 0.0003; pout = 0.030; floor = 0.210805;\n    isGpt = true;\n    resolution_note = reqSize\n      ? ('Aby zachować żądaną rozdzielczość ' + size_requested + ', użyto modelu OpenAI gpt-image-2 zamiast domyślnego modelu Gemini dla tego priorytetu (modele Gemini nie honorują wymuszonej rozdzielczości ani proporcji przez bramę LiteLLM).')\n      : ('Aby zachować żądane proporcje obrazu (' + aspect + '), użyto modelu OpenAI gpt-image-2 zamiast domyślnego modelu Gemini dla tego priorytetu (modele Gemini nie honorują wymuszonych proporcji przez bramę LiteLLM).');\n  }\n  if (isGpt) {\n    if (reqSize && gptValid(reqWH)) { size = size_requested; }\n    else {\n      size = snapGptValid(reqWH, '1024x1024');\n      if (reqSize && size !== size_requested) {\n        const snapMsg = 'Żądana rozdzielczość ' + size_requested + ' nie jest w pełni obsługiwana; wygenerowano w najbliższej zgodnej: ' + size + '.';\n        resolution_note = resolution_note ? (resolution_note + ' ' + snapMsg) : snapMsg;\n      }\n    }\n  }\n  const image_quality = (String(image_model).indexOf('openai/') === 0) ? (resolution === 'max' ? 'high' : (resolution === 'high' ? 'medium' : 'low')) : null;\n  out.push({ json: {\n    placeholder_id: rq.placeholder_id || '', block_order: (rq.block_order != null) ? rq.block_order : 99,\n    caption: rq.caption || '', alt: rq.alt || '', prompt: rq.prompt || '',\n    primary_model: image_model, size: size, quality: image_quality, resolution_note: resolution_note,\n    primary_pin: pin, primary_pout: pout, primary_floor: floor,\n    fallback_model: fb.model, fallback_pin: fb.pin, fallback_pout: fb.pout, fallback_floor: fb.floor,\n    impact: impact,\n    clickup_task_id: wc.clickup_task_id || '', triggered_by: wc.triggered_by || 'image_gen',\n    invocation_type: wc.invocation_type || 'explicit', caller_user_id: wc.caller_user_id || '', process_type: wc.process_type || ''\n  } });\n}\nreturn out;\n"
+        "jsCode": "const wc = $('When Called').first().json;\nlet requests = [];\ntry { requests = JSON.parse(wc.requests_json || '[]'); } catch (e) { requests = []; }\nif (!Array.isArray(requests)) requests = [];\nconst impact = (wc.impact || '').toString().trim();\n\n// Primary routing row from model_routing (Lookup Routing). DB-down -> safe gemini floor: irreducible,\n// since the DB read itself failed there is no row to read (mirrors Invoke Model's Resolve Routing).\nlet row = null;\ntry { const r = $('Lookup Routing').first().json; if (r && r.litellm_model) row = r; } catch (e) {}\nlet primary_model, primary_pin, primary_pout, primary_floor, resolution;\nif (row && String(row.litellm_model).indexOf('image') >= 0) {\n  primary_model = row.litellm_model;\n  primary_pin = Number(row.price_in_usd_per_1k || 0);\n  primary_pout = Number(row.price_out_usd_per_1k || 0);\n  primary_floor = (row.fallback_price_per_unit != null) ? Number(row.fallback_price_per_unit) : null;\n  resolution = row.resolution || 'high';\n} else {\n  primary_model = 'vertex_ai/gemini-2.5-flash-image';\n  primary_pin = 0.0003; primary_pout = 0.030; primary_floor = 0.038703; resolution = 'high';\n}\n\n// All image-tier rows (Lookup Image Tiers) -> a model->prices map: the single price source for the\n// fallback tier and the gpt upgrade. No tier ORDERING here (the step-down owner is Resolve Lower Tier v1).\nlet tiers = [];\ntry { tiers = $('Lookup Image Tiers').all().map(function(i){return i.json;}).filter(function(r){return r && r.litellm_model;}); } catch (e) {}\nconst tierByImpact = {};\nfor (const t of tiers) tierByImpact[t.impact] = t;\nfunction pricesFromRow(r) { return r ? { pin: Number(r.price_in_usd_per_1k||0), pout: Number(r.price_out_usd_per_1k||0), floor: (r.fallback_price_per_unit!=null)?Number(r.fallback_price_per_unit):null } : null; }\nfunction pricesForModel(model) { for (const t of tiers) { if (t.litellm_model === model) return pricesFromRow(t); } return null; }\n\n// One-tier-below fallback: the MODEL + below-impact come from Resolve Lower Tier (v1) (the sole owner of\n// the step-down rule, called once for the shared impact); its PRICES come from the tier map by that impact.\n// floor:true (Niski has no lower tier) or a passthrough on error (no `floor` key) -> no fallback (Fire re-sends primary).\nlet fb = { model: '', pin: null, pout: null, floor: null };\nlet lower = null;\ntry { lower = $('Resolve Lower Tier Image').first().json; } catch (e) {}\nif (lower && lower.floor === false && lower.litellm_model) {\n  fb.model = lower.litellm_model;\n  const bp = pricesFromRow(tierByImpact[lower.impact]);\n  if (bp) { fb.pin = bp.pin; fb.pout = bp.pout; fb.floor = bp.floor; }\n}\n\nfunction aspectToSize(aspect, base) { if (!aspect) return base + 'x' + base; const p = String(aspect).split(':'); if (p.length !== 2) return base + 'x' + base; const w = Number(p[0]), h = Number(p[1]); if (!w || !h) return base + 'x' + base; if (w >= h) return base + 'x' + Math.round(base * h / w); return Math.round(base * w / h) + 'x' + base; }\nfunction parseWH(s){ const p=String(s||'').toLowerCase().split('x'); const w=Number(p[0]),h=Number(p[1]); return (w&&h)?{w:w,h:h}:null; }\nfunction gptValid(wh){ if(!wh) return false; const w=wh.w, h=wh.h; if (w%16!==0||h%16!==0) return false; const r=w/h; if (r>3||r<1/3) return false; if (Math.max(w,h)>3840) return false; const px=w*h; if (px<655360||px>8294400) return false; return true; }\nfunction snapGptValid(wh, fallback){ if(!wh) return fallback; let w=wh.w, h=wh.h; const r=w/h; if (r>3) h=w/3; else if (r<1/3) w=h/3; const mx=Math.max(w,h); if (mx>3840){ const s=3840/mx; w*=s; h*=s; } let px=w*h; if (px<655360){ const k=Math.sqrt(655360/px)*1.02; w*=k; h*=k; } px=w*h; if (px>8294400){ const k=Math.sqrt(8294400/px); w*=k; h*=k; } const r16=function(x){return Math.max(16, Math.round(x/16)*16);}; return r16(w)+'x'+r16(h); }\n\nconst base = 1024;\nconst out = [];\nfor (const rq of requests) {\n  const reqSize = (rq.size != null && String(rq.size).trim() !== '') ? String(rq.size).trim() : null;\n  const aspect = (rq.aspect != null && String(rq.aspect).trim() !== '') ? String(rq.aspect).trim() : null;\n  const size_requested = reqSize || (aspect ? aspectToSize(aspect, base) : (base + 'x' + base));\n  let size = size_requested;\n  let resolution_note = '';\n  let image_model = primary_model;\n  let pin = primary_pin, pout = primary_pout, floor = primary_floor;\n  let isGpt = String(image_model).indexOf('openai/') === 0;\n  const reqWH = parseWH(size_requested);\n  const wantsShape = !!reqSize || (reqWH && reqWH.w !== reqWH.h);\n  if (wantsShape && !isGpt) {\n    image_model = 'openai/gpt-image-2';\n    const gp = pricesForModel('openai/gpt-image-2') || { pin: 0.005, pout: 0.030, floor: 0.210805 };\n    pin = gp.pin; pout = gp.pout; floor = gp.floor;\n    isGpt = true;\n    resolution_note = reqSize\n      ? ('Aby zachować żądaną rozdzielczość ' + size_requested + ', użyto modelu OpenAI gpt-image-2 zamiast domyślnego modelu Gemini dla tego priorytetu (modele Gemini nie honorują wymuszonej rozdzielczości ani proporcji przez bramę LiteLLM).')\n      : ('Aby zachować żądane proporcje obrazu (' + aspect + '), użyto modelu OpenAI gpt-image-2 zamiast domyślnego modelu Gemini dla tego priorytetu (modele Gemini nie honorują wymuszonych proporcji przez bramę LiteLLM).');\n  }\n  if (isGpt) {\n    if (reqSize && gptValid(reqWH)) { size = size_requested; }\n    else {\n      size = snapGptValid(reqWH, '1024x1024');\n      if (reqSize && size !== size_requested) {\n        const snapMsg = 'Żądana rozdzielczość ' + size_requested + ' nie jest w pełni obsługiwana; wygenerowano w najbliższej zgodnej: ' + size + '.';\n        resolution_note = resolution_note ? (resolution_note + ' ' + snapMsg) : snapMsg;\n      }\n    }\n  }\n  const image_quality = (String(image_model).indexOf('openai/') === 0) ? (resolution === 'max' ? 'high' : (resolution === 'high' ? 'medium' : 'low')) : null;\n  out.push({ json: {\n    placeholder_id: rq.placeholder_id || '', block_order: (rq.block_order != null) ? rq.block_order : 99,\n    caption: rq.caption || '', alt: rq.alt || '', prompt: rq.prompt || '',\n    primary_model: image_model, size: size, quality: image_quality, resolution_note: resolution_note,\n    primary_pin: pin, primary_pout: pout, primary_floor: floor,\n    fallback_model: fb.model, fallback_pin: fb.pin, fallback_pout: fb.pout, fallback_floor: fb.floor,\n    impact: impact,\n    clickup_task_id: wc.clickup_task_id || '', triggered_by: wc.triggered_by || 'image_gen',\n    invocation_type: wc.invocation_type || 'explicit', caller_user_id: wc.caller_user_id || '', process_type: wc.process_type || ''\n  } });\n}\nreturn out;\n"
       }
     },
     {
@@ -193,6 +193,33 @@
       "parameters": {
         "jsCode": "const explode = $('Explode Results').all().map(function(i){ return i.json; });\nconst logs = $input.all().map(function(i){ return i.json; });\nconst out = [];\nfor (let i = 0; i < explode.length; i++) {\n  const e = explode[i];\n  const lg = logs[i] || {};\n  const cost_pln = (lg.cost_pln_total != null && !isNaN(Number(lg.cost_pln_total))) ? Number(lg.cost_pln_total) : 0;\n  const success = !!(e.succeeded && e.b64_json);\n  const warnings = [];\n  if (!success) warnings.push('multimodal/image-gen-failed: ' + (e.error || 'no output'));\n  if (success && e.fell_back) warnings.push('image-batch/degrade: użyto modelu zapasowego o jeden poziom niżej (' + (e.model_used || '') + ')');\n  if (success && e.cost_header_missing) warnings.push('image-batch/cost-header-missing: brak nagłówka kosztu LiteLLM — koszt wyceniony zapasowo');\n  out.push({ json: {\n    placeholder_id: e.placeholder_id || '', block_order: (e.block_order != null) ? e.block_order : 99,\n    success: success, b64_json: success ? (e.b64_json || null) : null, mime: e.mime || 'image/png',\n    model: e.model_used || '', cost_pln: cost_pln, size: e.size || null,\n    degraded: !!e.fell_back, cost_header_missing: !!e.cost_header_missing,\n    resolution_note: e.resolution_note || '', caption: e.caption || '', alt: e.alt || '',\n    warnings: warnings\n  } });\n}\nreturn out;\n"
       }
+    },
+    {
+      "id": "resolve-lower-tier-image",
+      "name": "Resolve Lower Tier Image",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [560, 300],
+      "notes": "ADR-051: the SOLE owner of the one-tier-below step-down rule (Resolve Lower Tier v1, GNO6ZsIcSpvYUJDq), called ONCE for the run's shared impact — runs on a single item (after Get Image Key) so it neither re-serializes the parallel calls nor fans out. Returns the below image tier's {impact, litellm_model} (or {floor:true} at Niski). Resolve Batch Requests reads that impact and looks the tier's prices up in Lookup Image Tiers. onError=continueRegularOutput: a resolver failure -> no fallback (images still fire on the primary), never blocks or CRITICALs.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "GNO6ZsIcSpvYUJDq",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "impact": "={{ $('When Called').first().json.impact }}",
+            "modality": "image"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -212,17 +239,6 @@
         [
           {
             "node": "Get Image Key",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Get Image Key": {
-      "main": [
-        [
-          {
-            "node": "Lookup Image Tiers",
             "type": "main",
             "index": 0
           }
@@ -278,6 +294,28 @@
         [
           {
             "node": "Assemble Batch Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Image Key": {
+      "main": [
+        [
+          {
+            "node": "Resolve Lower Tier Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Lower Tier Image": {
+      "main": [
+        [
+          {
+            "node": "Lookup Image Tiers",
             "type": "main",
             "index": 0
           }
