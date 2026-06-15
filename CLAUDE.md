@@ -178,6 +178,18 @@ stage the component is at, and why no commodity/off-the-shelf option covers it
 commoditized component in-house is the exception that must be justified — the
 burden of proof is on the build, mirroring the unification rule above.
 
+## Default to the design that ages well
+
+When two designs both solve the problem, **the default is the one that is better in 5–10 years
+and at 2× / 5× scale** — less fragile, more secure, lower maintenance as usage, data, and the
+number of integrations grow. The **burden of proof is on the design that works now but degrades
+later**: rising maintenance cost, concentrating risk in one place, a shared secret or bottleneck
+that gets worse with every new consumer, a schema or interface that needs rework at scale. A
+higher one-time setup cost is *not* a strike against a design if it buys lower long-run
+fragility; a low setup cost does *not* redeem a design whose cost curve bends upward. State the
+long-horizon comparison explicitly when you choose, and if you pick the works-now option anyway,
+say why the future cost is acceptable — and prefer recording that as an ADR.
+
 ## File conventions
 
 - All documentation in markdown
@@ -209,8 +221,13 @@ Date
   (`N8N_BLOCK_ENV_ACCESS_IN_NODE`). Consequences: do HMAC/hashing with the
   **native Crypto node** (not a Code node), and store secrets a Code node can't
   reach as **n8n credentials** — the Crypto node's HMAC action reads its key from
-  a `crypto` credential (`hmacSecret`). Note `$vars` works in expressions but
-  `$env` does not.
+  a `crypto` credential (`hmacSecret`). Note `$env` is blocked in Code nodes (above)
+  **and** `$vars` (n8n Variables) is a **licensed feature — unavailable on this
+  self-hosted community edition** (the `$vars` expression syntax resolves, but you
+  cannot create/store variables without a paid license). So a Code node has **no**
+  built-in way to read a secret. For a workflow-readable secret, store it in **Supabase
+  Vault** and read it via a credentialed Postgres node (a `SECURITY DEFINER` getter over
+  `vault.decrypted_secrets`) — see ADR-051 (image key) and ADR-046/048 (storage-purge key).
 - **No `Execute Command` node; `Read/Write Files` cannot delete; no disk-temp schemes.** This n8n
   (2.x) does not ship a usable `Execute Command` node — the API rejects `n8n-nodes-base.executeCommand`
   with "Unrecognized node type" even with no `NODES_EXCLUDE` set — so there is **no shell** (no `rm`,

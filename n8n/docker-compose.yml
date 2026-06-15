@@ -113,6 +113,13 @@ services:
       - "127.0.0.1:4000:4000"   # loopback only (SSH-tunnel for debugging); never public
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      # Key management (ADR-051): DB-backed virtual keys + per-key revocation/spend. Reuses the
+      # n8n-postgres container via a SEPARATE `litellm` database (create it BEFORE first deploy —
+      # see ADR-051 runbook; LiteLLM runs its key-store migrations on boot). STORE_MODEL_IN_DB stays
+      # false so model_list is sourced from the committed litellm-config.yaml, never the DB.
+      DATABASE_URL: postgresql://n8n:${POSTGRES_PASSWORD}@n8n-postgres:5432/litellm
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}     # encrypts stored virtual keys at rest; set in .env, never commit
+      STORE_MODEL_IN_DB: "false"
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION_NAME: ${AWS_REGION_NAME}
@@ -130,6 +137,9 @@ services:
       - ./vertex-key.json:/secrets/vertex-key.json:ro
     networks:
       - n8n-internal
+    depends_on:
+      n8n-postgres:
+        condition: service_healthy   # litellm now needs the `litellm` DB (key management, ADR-051)
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
       interval: 30s
