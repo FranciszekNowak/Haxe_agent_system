@@ -972,8 +972,8 @@ the canonical form going forward.
 | **`Execute LLM Call (v1)`** (Stage B) | Invoke Model → drafted reply + cost | **LIVE** |
 | **`Post Reply (v1)`** (Stage C) | Post draft comment, cost field, status flip (owns CU side-effects) | **LIVE** |
 | **`Context Gather (v1)`** | Assemble labelled task context (task + ancestor chain + fields) | **LIVE** |
-| **`Invoke Model (v1)`** | Centralized model-call seam: route → LiteLLM → exact PLN cost → log | **LIVE** |
-| **`Generate Images Parallel (v1)`** (id `2keb6XVWq5PG0leK`, ADR-051) | Concurrent image-gen batch: `Promise.all` over a bounded pool (cap `config.image_concurrency_cap`=4) fires all of a run's `generate` images at once (wall-clock ≈ slowest single, not the sum); inline image-resolution (ADR-045) + per-image one-tier-below fallback; reuses `Log Model Run` for per-image cost; returns per-image results + `warnings[]`. Auth via the image-scoped LiteLLM key in Supabase Vault (`get_litellm_image_key()`). | **Built + standalone-verified (Block 3, 2026-06-15); not yet wired — `Image Resolver` repoints to it in Block 4** |
+| **`Invoke Model (v1)`** | Centralized model-call seam: route → LiteLLM → exact PLN cost → log. **Text + multimodal-INPUT only** since ADR-051 Block 5 (image generation moved to `Generate Images Parallel`) | **LIVE** |
+| **`Generate Images Parallel (v1)`** (id `2keb6XVWq5PG0leK`, ADR-051) | Concurrent image-gen batch: `Promise.all` over a bounded pool (cap `config.image_concurrency_cap`=4) fires all of a run's `generate` images at once (wall-clock ≈ slowest single, not the sum); inline image-resolution (ADR-045) + per-image one-tier-below fallback; reuses `Log Model Run` for per-image cost; returns per-image results + `warnings[]`. Auth via the image-scoped LiteLLM key in Supabase Vault (`get_litellm_image_key()`). Cap raised 4→5 (migration 033). | **LIVE — the sole image-gen path: `Image Resolver`'s generate branch calls it (Block 4), and `Invoke Model`'s dead image branch was deleted (Block 5, 2026-06-15)** |
 | **`Search (v1)`** | Comment + external-artifact retrieval, Layer-B scoped | **LIVE** |
 | **`CU Webhook Producer (v1)`** | Comment-webhook trigger → verify → detect mention → call spine | **LIVE (@-mention)** |
 | **`Post Alert (v1)`** | Centralized alert seam → ClickUp Alerts task | **LIVE** |
@@ -1131,25 +1131,26 @@ was a task-node link-rendering / pre-grant artifact).
 
 `n8n/workflows/invoke-model.json`, n8n id `XcOIVdZnVCCWNPeb`. The ADR-013 model-call seam,
 running on the self-hosted **LiteLLM gateway** (`litellm` container, `127.0.0.1:4000`, v1.87.0
-pinned by digest; ADR-024/030). Typed Execute-Workflow contract (`prompt` / `impact` / `modality` /
-`task_type`; **plus `requested_modality_of_output`** (default `text`; `image` selects image generation —
-Block 9, ADR-036) and optional `requested_size`/`aspect`). Node chain:
+pinned by digest; ADR-024/030). **Text + multimodal-INPUT only** — since ADR-051 Block 5 (2026-06-15)
+image OUTPUT generation lives solely in `Generate Images Parallel (v1)`, so this workflow's dead
+`requested_modality_of_output='image'` branch (`Output Is Image?` fork, `Resolve Lower Tier Image` →
+`Lookup Fallback Image Prices` → `Call Model Image` → `Parse Image`, and the `Image Degraded?` /
+`Cost Header Missing?` image alerts) was deleted. Typed Execute-Workflow contract (`prompt` / `impact` /
+`modality` / `task_type`; `image_blocks_json` for input image refs; the `requested_modality_of_output` /
+`requested_size` / `aspect` inputs remain on the `When Called` node but are **inert** — no caller sends
+`image` any more). Node chain:
 
 `Lookup Routing` (Supabase `model_routing`, composite PK `(impact, modality)`, `__default__` fail-safe row,
-`LEFT JOIN image_gen_params` for `resolution`, DB-error tolerant) → `Resolve Routing` (in-code Sonnet
-last-resort + deliberation-nudge prepend; builds the image request when `requested_modality_of_output='image'`)
-→ **`Output Is Image?`** forks (ADR-047 Block B — both legs now run through the shared fallback seam
-`Call Model with Fallback (v1)`): **text** → `Resolve Lower Tier Text` → `Call Model Text` (seam,
-`/v1/chat/completions`, `success_path` empty) →`Parse Response`, with the seam's both-down throw routed to
-`Retry Text-Only` (Opus text-only safety net, Block 6); **image (Block 9)** → `Resolve Lower Tier Image` →
-`Lookup Fallback Image Prices` → `Call Model Image` (seam, `/v1/images/generations`, `success_path =
-data.0.b64_json`) → `Parse Image` (both-down → `succeeded:false`, non-blocking). The seam's `Call Primary`/
-`Call Fallback` use a 240 s timeout (raised from 180 s to keep gpt-image-2 high-quality gen comfortably
-inside the limit). Both branches converge at
-**`Normalize Model Result`** (one uniform schema) → `Call Log Model Run` (the sole `agent_runs` writer + FX/PLN,
-ADR-035) → degradation chain (`Image Unprocessable?` / `Image Degraded?` / `Cost Header Missing?` /
-`Routing Missing?` / `Check Degradation`, each WARN reconverging) → **`Shape Output`** (sole branch-free leaf;
-union return `{ completion | b64_json, output_modality, model, provider, cost_pln, usd_cost, size, degraded, … }`).
+DB-error tolerant) → `Resolve Routing` (in-code Sonnet last-resort + deliberation-nudge prepend; builds the
+`messages` array — text plus any `image_url` input parts) → `Resolve Lower Tier Text` → `Call Model Text`
+(the shared fallback seam `Call Model with Fallback (v1)`, `/v1/chat/completions`, `success_path` empty;
+ADR-047 Block B — tries the routed model then one tier below) → `Parse Response`, with the seam's both-down
+throw routed to `Retry Text-Only` (Opus text-only safety net, Block 6). → **`Normalize Model Result`**
+(one uniform schema) → `Call Log Model Run` (the sole `agent_runs` writer + FX/PLN, ADR-035) → degradation
+chain (`Image Unprocessable?` — the multimodal-INPUT degradation WARN, see below — then `Routing Missing?`
+and `Check Degradation`, each WARN reconverging) → **`Shape Output`** (sole branch-free leaf; union return
+`{ completion, output_modality:'text', model, provider, cost_pln, usd_cost, … }`; the vestigial image fields
+`b64_json`/`size`/`degraded` are always null/empty/false now).
 The native AWS Bedrock node + `Basic LLM Chain` are **retained disabled** as a fallback path (a generic AWS
 credential + HTTP Request cannot sign Bedrock — only the native node can; ADR-021).
 
@@ -1165,20 +1166,21 @@ credential + HTTP Request cannot sign Bedrock — only the native node can; ADR-
     `'litellm/vertex'`. ⚠ Gemini 3.x uses **thinking tokens** billed on top of text: ~65 reasoning + 1 text
     tokens per one-word reply (Flash), ~133 + 1 (Pro); bounded per-model via `reasoning_effort` (ADR-042).
     Real task cost will exceed text-token count alone.
-  - `modality='image'` → **image generation tiers** — Niski/__default__ `vertex_ai/gemini-2.5-flash-image`,
-    Średni `vertex_ai/gemini-3-pro-image-preview`, Wysoki/Krytycznie `openai/gpt-image-2` (ADR-036 Block 8,
-    migration 023; all three verified live via `/v1/images/generations`). **Generation is LIVE (Block 9):**
-    the image branch above produces one image per call, priced via live header → token-math (migration 024
-    filled `price_out`: flash 0.030 / pro 0.120 / gpt-image-2 0.030, each = Block 8 measured cost ÷ output
-    tokens) → per-image `fallback_price_per_unit` floor; a header-miss fires `invoke-model/image-cost-header-missing`,
-    a fallback hop fires `invoke-model/image-degrade`. gpt-image-2 high ≈ 176 s; gemini ≈ 5 s. After ADR-047
-  Block B the call goes through the seam, whose `Call Primary`/`Call Fallback` timeout is **240 s** — so
-  gpt-image-2 high (~176 s) stays comfortably inside the limit.
-  `agent_runs.model_used` stores the versioned model ID from the LiteLLM response body. Migrations 008
-  (composite PK), 013 (image tiers), 014 (Gemini multimodal), 020 (max_tokens by tier), **021 — PD-blind
-  collapse to `(impact, modality)`, Bedrock rows dropped, Gemini aliases renamed `-eu`→none**, **023 —
-  image-gen tiers refreshed to gemini-image + gpt-image-2 (Block 8)**, and **024 — image token prices filled
-  for Block 9 token-math** — all applied.
+  - `modality='image'` → **image-generation tiers, now consumed by `Generate Images Parallel (v1)` (ADR-051),
+    not Invoke Model.** The `model_routing` image rows stay the source of truth — Niski/__default__
+    `vertex_ai/gemini-2.5-flash-image`, Średni `vertex_ai/gemini-3-pro-image-preview`, Wysoki/Krytycznie
+    `openai/gpt-image-2` (ADR-036 Block 8, migration 023) — and the batch reads them per `(impact, modality)`,
+    owning the `/v1/images/generations` HTTP call, per-image one-tier-below fallback, and cost (live header →
+    token-math via migration 024's `price_out` — flash 0.030 / pro 0.120 / gpt-image-2 0.030 — → per-image
+    `fallback_price_per_unit` floor). The old `invoke-model/image-degrade` and
+    `invoke-model/image-cost-header-missing` alerts left with the deleted branch; the batch now surfaces these
+    as per-image `warnings[]` that the resolver folds in (ADR-051 Blocks 3–4). gpt-image-2 high ≈ 176 s;
+    gemini ≈ 5 s. `agent_runs.model_used` stores the versioned model ID from the LiteLLM response body.
+    Migrations 008 (composite PK), 013 (image tiers), 014 (Gemini multimodal), 020 (max_tokens by tier),
+    **021 — PD-blind collapse to `(impact, modality)`, Bedrock rows dropped, Gemini aliases renamed `-eu`→none**,
+    **023 — image-gen tiers refreshed to gemini-image + gpt-image-2 (Block 8)**, **024 — image token prices for
+    token-math**, **031/033 — `config.image_concurrency_cap` (=5)**, **032 — Vault image-key getter
+    `get_litellm_image_key()`** — all applied.
 - **Impact → tier (ADR-023):** `Niski`→Haiku 4.5, `Średni`→Sonnet 4.6, `Wysoki`→Opus,
   `Krytycznie ważne`→Opus at temp 0.2 / 16k tokens with a prepended deliberation nudge;
   `n/d`/empty/unknown→Sonnet (fail-safe).
@@ -1235,7 +1237,8 @@ credential + HTTP Request cannot sign Bedrock — only the native node can; ADR-
   column** (reactive 4xx catches the non-vision case too). Verified live on `869dhad2q` (3 junk+real
   images → Gemini/Opus 4xx → text-only Polish draft + one WARN, no CRITICAL, cost logged).
 
-See ADR-022 (shape), ADR-023 (routing), ADR-024 (LiteLLM/cost), ADR-030 (multi-provider), ADR-036 (Block 6).
+See ADR-022 (shape), ADR-023 (routing), ADR-024 (LiteLLM/cost), ADR-030 (multi-provider), ADR-036 (Block 6),
+ADR-051 (image generation moved out to the parallel batch).
 
 ### 15.5 `Search (v1)`
 

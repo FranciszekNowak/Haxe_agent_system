@@ -1,8 +1,8 @@
 # ADR-051: Parallel image generation
 
-**Status:** Proposed (build in progress — master plan `parallel image generation`). Block 1 done +
-verified: LiteLLM key management enabled (65 key-store tables, liveliness 200), image-scoped key in
-Vault, `get_litellm_image_key()` getter live. **Auth spike PASS (2026-06-15):** the pipeline's
+**Status:** Accepted (all blocks done + verified, 2026-06-15 — master plan `parallel image generation`).
+Block 1 done + verified: LiteLLM key management enabled (65 key-store tables, liveliness 200), image-scoped
+key in Vault, `get_litellm_image_key()` getter live. **Auth spike PASS (2026-06-15):** the pipeline's
 Postgres node (role `postgres`) reads the getter, and a Code-node `Promise.all` fired 2 concurrent
 authenticated `gemini-2.5-flash-image` calls in 6.25s (≈ one call, not ~12s sequential), both
 200 + b64.
@@ -41,8 +41,21 @@ folds per-image `warnings[]` into the resolver `warnings[]`, which `Assemble Out
 (A) in isolation — text + 2 generate + 1 embed → correct interleave order (text, gen_0, embed, gen_1), 2 `agent_runs`
 rows, `max_in_flight=2`, no warnings — and (B) end-to-end via a real Krytycznie-ważne @-mention on `869dhad2q` → 2
 `gpt-image-2` images rendered inline in order, footer cost 2.0332 PLN, batch concurrent (`max_in_flight=2`, **158.7 s
-≈ one image vs ~317 s sequential**), 0 alerts from the image path. Remaining: Block 5 (delete `Invoke Model`'s now-dead
-image branch, simplify `Resolve Routing` to text-only, finalize this ADR to "accepted").
+≈ one image vs ~317 s sequential**), 0 alerts from the image path.
+
+**Block 5 done + verified (2026-06-15):** `Invoke Model (v1)`'s now-dead image-OUTPUT branch was deleted — the
+`Output Is Image?` fork, `Resolve Lower Tier Image` → `Lookup Fallback Image Prices` → `Call Model Image` →
+`Parse Image`, and the `Image Degraded?` / `Cost Header Missing?` image alerts (9 nodes, 27→18) — and
+`Resolve Routing` + `Normalize Model Result` were simplified to text/multimodal-INPUT only (the
+`aspectToSize`/`gptValid`/`snapGptValid` helpers and the gemini→gpt-image-2 upgrade now live only in the
+batch). `Resolve Routing → Resolve Lower Tier Text` is the single path; the multimodal-INPUT
+`Image Unprocessable?` WARN seam now reconverges straight into `Routing Missing?`; `Shape Output` remains the
+sole branch-free leaf. Pushed live (`XcOIVdZnVCCWNPeb`), validated (0 errors), re-exported drift-clean.
+Verified before/after with a text-only run (identical `completion`/cost, path shortened to drop the removed
+nodes) and a multimodal-INPUT run (graceful degrade to the Opus text-only safety net, `success:true`, the
+expected `multimodal/image-unprocessable` WARN firing through the rewired connection); 0 CRITICAL and nothing
+from the deleted image-gen alerts. The batch is now the **sole** image-gen path — image-resolution logic and
+the image HTTP/fallback live in exactly one place (by deletion, not a shared helper).
 
 ## Context
 
@@ -147,8 +160,11 @@ Two constraints shaped the design:
   stays on — `$env` is never exposed to Code nodes.
 - **Base64 images ride n8n execution data** concurrently (bounded by the cap). Execution pruning
   (docker-compose `EXECUTIONS_DATA_*`) already bounds this; the cap keeps peak memory modest.
-- **Surgery on `Invoke Model`** (the central workflow) to call the extracted helper is regression-
-  verified in isolation (Block 2) before the batch depends on it.
+- **Surgery on `Invoke Model`** (the central workflow) is only the **deletion** of its now-dead, unreachable
+  image-OUTPUT branch (Block 5), done after the batch was proven the sole live image path (Block 4) — far lower
+  risk than rewiring a live path. The text and multimodal-INPUT paths were regression-verified before/after.
+  No shared helper was extracted (Block 2 was removed): the image logic ends in one place by deletion, not by
+  sharing a single-caller sub-workflow (CLAUDE.md: wait for a real second caller before unifying).
 
 ## Date
 
