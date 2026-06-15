@@ -544,7 +544,15 @@ Target: 7–9 weeks to v1.
   - `n8n-postgres` (postgres:16) — n8n's internal DB; named volume; healthcheck-gated.
   - `n8n-redis` (redis:7-alpine) — queue backing; AOF persistence enabled; named volume.
   - `n8n-main` (n8nio/n8n:2.22.5) — UI, webhooks, scheduler; binds to 127.0.0.1:5678 only.
+    Memory-capped `mem_limit: 1024m` + `NODE_OPTIONS=--max-old-space-size=768` (ADR-051 Block 6).
   - `n8n-worker` (n8nio/n8n:2.22.5) — queue consumer; concurrency 5.
+    **Memory-capped** `mem_limit: 1024m` + `NODE_OPTIONS=--max-old-space-size=768` (ADR-051 Block 6).
+    Image generation runs here (the parallel batch's base64 images ride execution data), and Node's
+    default heap ceiling on this 8 GB box is ~2.2 GB — unbounded, two n8n processes could crowd Docling
+    (which wants ≥4 GB when loaded) off the host. The heap ceiling sits *below* the cgroup limit so a
+    runaway hits a JS-heap OOM (fails its own execution, container restarts) instead of the kernel
+    OOM-killing Docling. Verified: a 5-image concurrent `gpt-image-2` batch peaked the worker at ~228 MiB
+    (image heap is trivial); the cap is a safety valve against a pathological runaway, not a tight fit.
   - `litellm` (ghcr.io/berriai/litellm, v1.87.0 pinned by digest) — **deployed + active** (ADR-024/030).
     Internal-only LLM gateway (127.0.0.1:4000): signs Bedrock, returns exact token usage + USD cost header,
     multi-provider. **IS the production model-call path** (§15). Chat aliases (PD-blind — ADR-043, migration 021):
@@ -553,7 +561,11 @@ Target: 7–9 weeks to v1.
     (`*-bedrock`) aliases were **removed in Block 3** (no routing row references them); the Gemini aliases were
     renamed from `-eu` (they run on the global endpoint, never EU-pinned). `ANTHROPIC_API_KEY` in `.env` and
     passed through via `docker-compose.yml`. Config in committed `n8n/litellm-config.yaml`; credentials in `.env`
-    (never committed). Native Bedrock node retained in n8n **disabled** (legacy). Gemini (ADR-038/040):
+    (never committed). **`litellm_settings.num_retries: 3` (ADR-051 Block 6):** the router retries retryable
+    errors (429/500/timeout) with exponential backoff and respects upstream `Retry-After` before returning to
+    n8n — so a transient OpenAI gpt-image-2 429 from a concurrent image burst is absorbed at the gateway and the
+    image stays on its top-tier model instead of silently tier-downgrading; only a sustained overload that
+    exhausts the retries reaches n8n's per-image fallback (loud, via `warnings[]`). Native Bedrock node retained in n8n **disabled** (legacy). Gemini (ADR-038/040):
     `haxe-gemini-flash` (`vertex_ai/gemini-3.5-flash`) and `haxe-gemini-pro`
     (`vertex_ai/gemini-3.1-pro-preview`), both `vertex_location: global` (ADR-039/042). Auth: ADC via
     `GOOGLE_APPLICATION_CREDENTIALS=/secrets/vertex-key.json`; the key file is mounted read-only from

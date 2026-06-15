@@ -57,6 +57,36 @@ expected `multimodal/image-unprocessable` WARN firing through the rewired connec
 from the deleted image-gen alerts. The batch is now the **sole** image-gen path — image-resolution logic and
 the image HTTP/fallback live in exactly one place (by deletion, not a shared helper).
 
+**Block 6 done + verified (2026-06-15) — memory hardening + 429 handling:**
+- **Memory.** The n8n containers had no `mem_limit` and Node's default heap ceiling on this 8 GB box is
+  ~2.2 GB, so two unbounded n8n processes could crowd Docling (≥4 GB when loaded) off the host. Set
+  `mem_limit: 1024m` + `NODE_OPTIONS=--max-old-space-size=768` on **both** `n8n-main` and `n8n-worker`
+  (`n8n/docker-compose.yml`); the heap ceiling sits below the cgroup limit so a runaway hits a JS-heap OOM
+  (fails its own execution, container restarts) rather than the kernel OOM-killing Docling. Deployed per
+  ADR-033 (`scp` + `docker compose up -d --force-recreate`, never `restart`). Verified: cgroup limit =
+  1073741824 bytes and the effective heap ceiling dropped from 2240→~816 MB (Node reports young-gen on top
+  of the 768 cap) on both; a 5-image concurrent `gpt-image-2` batch peaked the worker at **~228 MiB** —
+  image base64 heap is trivial, so the cap is purely a safety valve against a pathological runaway, not a
+  tight fit. (The literal "many large images while Docling loaded" worst case wasn't force-reproduced —
+  Docling wasn't co-loaded — but the measured heap shows headroom of >4×.)
+- **429 / rate limit (decision: Option 1, buy-before-build).** The concurrency cap bounds simultaneous
+  in-flight calls but doesn't pace requests-per-minute, so a burst can hit the OpenAI gpt-image-2 rate limit
+  (HTTP 429), which the batch's per-image fallback would treat like any failure and **tier-downgrade**
+  (silent quality loss — exposed only at the Wysoki tier; Krytycznie already re-sends gpt-image-2). Chosen
+  fix: **lean on LiteLLM's native retries** (`litellm_settings.num_retries: 3`, `n8n/litellm-config.yaml`) —
+  the router retries 429/500/timeout with exponential backoff and respects upstream `Retry-After` *before*
+  returning to n8n, so a transient 429 is absorbed at the gateway and the image stays on its routed top-tier
+  model; only a sustained overload that exhausts the retries reaches n8n's fallback (still loud, via
+  `warnings[]`). **Option 2 (batch-side 429-distinct retry) was deliberately NOT built** — the gateway now
+  absorbs the transient case, so adding inline retry logic is build we can avoid until Option 1 proves
+  insufficient (CLAUDE.md build-vs-buy gate). **Proactive `rpm` pacing was also not set** — it needs the
+  account's real images/min limit, which we don't have; guessing one would throttle throughput. Verified:
+  litellm rebooted clean with `num_retries: 3`, liveliness 200, and a 5-concurrent gpt-image-2 batch all
+  returned 200 (no 429, no downgrade) — confirming the setting is live and non-disruptive. A real
+  429-burst-induced retry was **not** force-tested (can't cheaply/reliably trigger OpenAI's rate limit, and
+  the cap-5 batch can't exceed the limit in one wave); the mechanism is LiteLLM's documented router behaviour.
+  The cap stays conservative at **5** until a real volume need justifies raising the OpenAI quota.
+
 ## Context
 
 A single agent run can emit several `generate` image blocks (the drafting model's output-block
@@ -159,7 +189,9 @@ Two constraints shaped the design:
   `vault.update_secret`; no workflow edit. The env-access block (`N8N_BLOCK_ENV_ACCESS_IN_NODE`)
   stays on — `$env` is never exposed to Code nodes.
 - **Base64 images ride n8n execution data** concurrently (bounded by the cap). Execution pruning
-  (docker-compose `EXECUTIONS_DATA_*`) already bounds this; the cap keeps peak memory modest.
+  (docker-compose `EXECUTIONS_DATA_*`) already bounds this; the cap keeps peak memory modest; and Block 6's
+  `mem_limit`/`NODE_OPTIONS` heap ceilings (above) make any pathological growth fail the worker's own
+  execution rather than OOM the box. Measured worker peak on a 5-image concurrent batch: ~228 MiB.
 - **Surgery on `Invoke Model`** (the central workflow) is only the **deletion** of its now-dead, unreachable
   image-OUTPUT branch (Block 5), done after the batch was proven the sole live image path (Block 4) — far lower
   risk than rewiring a live path. The text and multimodal-INPUT paths were regression-verified before/after.

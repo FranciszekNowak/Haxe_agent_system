@@ -36,9 +36,15 @@ services:
     image: n8nio/n8n:2.22.5
     container_name: n8n-main
     restart: unless-stopped
+    # Memory hardening (ADR-051 Block 6): on this 8 GB box Docling wants ≥4 GB when loaded, so an
+    # unbounded n8n process (Node's default heap ceiling here is ~2.2 GB) could crowd it out. mem_limit
+    # is the cgroup ceiling; NODE_OPTIONS heap ceiling sits BELOW it so a runaway hits a JS heap OOM
+    # (fails its own execution, container restarts) instead of the kernel OOM-killing Docling.
+    mem_limit: 1024m
     ports:
       - "127.0.0.1:5678:5678"
     environment:
+      NODE_OPTIONS: "--max-old-space-size=768"
       N8N_EXECUTIONS_MODE: queue
       QUEUE_BULL_REDIS_HOST: n8n-redis
       QUEUE_BULL_REDIS_PORT: "6379"
@@ -74,7 +80,12 @@ services:
     container_name: n8n-worker
     restart: unless-stopped
     command: worker
+    # Memory hardening (ADR-051 Block 6): image generation runs HERE (the parallel batch's base64 images
+    # ride execution data), so the worker is the runaway risk. Same scheme as n8n-main: mem_limit cgroup
+    # ceiling + a lower NODE_OPTIONS heap ceiling, sized to leave Docling its 4 GB on the 8 GB host.
+    mem_limit: 1024m
     environment:
+      NODE_OPTIONS: "--max-old-space-size=768"
       N8N_EXECUTIONS_MODE: queue
       QUEUE_BULL_REDIS_HOST: n8n-redis
       QUEUE_BULL_REDIS_PORT: "6379"

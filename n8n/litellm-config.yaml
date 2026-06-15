@@ -101,6 +101,16 @@ model_list:
 
 litellm_settings:
   drop_params: true          # ignore provider-unsupported params instead of erroring
+  # 429 / rate-limit handling (ADR-051 Block 6). The image batch's concurrency cap bounds simultaneous
+  # in-flight calls but does NOT pace requests-per-minute, so a burst can hit the OpenAI gpt-image-2
+  # rate limit (HTTP 429). Lean on LiteLLM's native retry (buy-before-build): the router retries
+  # retryable errors (429/500/timeout) with exponential backoff and respects the upstream Retry-After
+  # header BEFORE returning to n8n — so a transient 429 is absorbed at the gateway and the image stays
+  # on its routed (top-tier) model instead of silently tier-downgrading. Only a SUSTAINED overload that
+  # exhausts these retries reaches n8n, where the batch's one-tier-below fallback then degrades (loud,
+  # via warnings[]). Proactive rpm pacing was deliberately NOT set: it needs the account's real
+  # images/min limit, which we don't have — guessing one would throttle throughput (see ADR-051).
+  num_retries: 3
 
 # Web search backend (ADR-034). The agent owns a multi-round agentic loop in n8n
 # ("Model Turn (v1)") that executes each query via LiteLLM's
