@@ -231,7 +231,10 @@ returning `{ blocks, clickup_task_id, warnings }`. (This partially reverts Block
 takes a pre-classified list" shape, which was correct only under the two-reader assumption.) The
 reader stays a pure/branch-free function whose `warnings` are fired by its caller (Stage A) through
 `Post Alert (v1)`. Unsupported attachment types (`.zip`, `.mp4`, …) need no classifier — they fail
-Docling → `[BRAK]` + warning, handled by the same path.
+Docling → `[BRAK]` + warning, handled by the same path. **(Superseded for `.zip` by ADR-048, 2026-06-15:**
+the reader now unpacks a `.zip` — `Zip? Switch` → decompress → fan out inner files, images to Supabase
+object storage and documents to the shared Docling path — instead of degrading it to `[BRAK]`. `.mp4`
+and other unsupported types still take the Docling-fails-`[BRAK]` path described here.)
 
 **Plan impact:** Blocks 2 + 3 + 4 collapse toward a single `read-input`. Block 3 is no longer "build
 a second (visual) reader" but **"extend `read-input-text` → unified `read-input`"**: add the image
