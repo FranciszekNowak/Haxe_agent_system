@@ -7,6 +7,20 @@ Postgres node (role `postgres`) reads the getter, and a Code-node `Promise.all` 
 authenticated `gemini-2.5-flash-image` calls in 6.25s (≈ one call, not ~12s sequential), both
 200 + b64.
 
+**Block 3 done + verified (2026-06-15):** `Generate Images Parallel (v1)` built (id `2keb6XVWq5PG0leK`,
+`n8n/workflows/generate-images-parallel.json`) and verified standalone via a throwaway
+`Webhook → Set → Execute Workflow` caller (since deleted). Results: (A) 3-prompt Niski batch → 3 images,
+`max_in_flight`=3, Fire step 24.5s ≈ one single gemini call (sequential would be ~72s), 3 `agent_runs`
+rows at the real header cost (0.142 PLN each); (B) 6-prompt cap-4 batch → `max_in_flight`=4 (cap honored);
+(C) one empty prompt → 2 successes + 1 failure carrying a `warnings[]` entry, execution `success`, **0
+alerts** (image failures caught per-image, never CRITICAL); (D) shaped `1536x1024` request on Niski →
+upgraded to `openai/gpt-image-2`, decoded PNG **exactly 1536×1024**, which also proved the image-scoped
+Vault key authenticates to gpt-image-2 (Block 1's spike only proved gemini). **Known faithful-port
+behaviour flagged:** a hard-failed image (no b64 after fallback) still logs an `agent_runs` row priced at
+the per-image floor (mirrors `Invoke Model`'s `Normalize Model Result` both-down path); a 429 rate-limit
+during testing surfaced this. Not a regression (the old path does the same); a one-line change in
+`Explode Results` would bill 0 for failures if desired.
+
 ## Context
 
 A single agent run can emit several `generate` image blocks (the drafting model's output-block

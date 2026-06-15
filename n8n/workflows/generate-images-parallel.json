@@ -1,0 +1,292 @@
+{
+  "name": "Generate Images Parallel (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "notes": "ADR-051 parallel image batch. Inputs: requests_json (array of {placeholder_id,prompt,size,aspect,caption,alt,block_order}); impact (all images in a run share it); concurrency_cap (from config.image_concurrency_cap, passed by the caller); + passthrough clickup_task_id/triggered_by/invocation_type/caller_user_id/process_type.",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "requests_json"
+            },
+            {
+              "name": "impact"
+            },
+            {
+              "name": "concurrency_cap"
+            },
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "triggered_by"
+            },
+            {
+              "name": "invocation_type"
+            },
+            {
+              "name": "caller_user_id"
+            },
+            {
+              "name": "process_type"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "lookup-routing",
+      "name": "Lookup Routing",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [220, 300],
+      "notes": "ADR-051: primary image routing row for the shared impact (modality fixed to 'image'). Reuses Invoke Model's exact query incl. the image_gen_params resolution join and __default__ fallback. onError=continueRegularOutput + alwaysOutputData so a transient DB miss still flows; Resolve Batch Requests falls back to the safe gemini floor model if no image row.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select r.litellm_model, r.temperature, r.max_tokens, r.nudge,\n       r.price_in_usd_per_1k, r.price_out_usd_per_1k, r.fallback_price_per_unit, r.impact,\n       p.resolution\nfrom model_routing r\nleft join image_gen_params p on p.impact = r.impact\nwhere r.impact in ($1, '__default__') and r.modality = 'image' and r.active = true\norder by (r.impact = $1) desc\nlimit 1;",
+        "options": {
+          "queryReplacement": "={{ [ $json.impact || '__default__' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "get-image-key",
+      "name": "Get Image Key",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [440, 300],
+      "notes": "ADR-051: reads the dedicated, revocable LiteLLM image key from Supabase Vault via the SECURITY DEFINER getter public.get_litellm_image_key() (migration 032). Code nodes can't use credentials and $env/$vars are unavailable here, so a credentialed Postgres read is how the batch obtains a secret. NO onError: a missing key/secret throws -> Error Handler CRITICAL (auth broken = real failure, not a silent degrade).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_litellm_image_key() as key;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "lookup-image-tiers",
+      "name": "Lookup Image Tiers",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [660, 300],
+      "notes": "ADR-051: all active real-tier image rows (model + prices + per-image floor) so Resolve Batch Requests can compute the one-tier-below fallback model + its prices inline (mirrors Invoke Model's Resolve Lower Tier Image + Lookup Fallback Image Prices, but for the whole batch in one read). onError=continueRegularOutput + alwaysOutputData: no rows -> no fallback (images still run on the primary).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select impact, litellm_model, price_in_usd_per_1k, price_out_usd_per_1k, fallback_price_per_unit\nfrom model_routing\nwhere modality = 'image' and active = true\n  and impact in ('Niski','Średni','Wysoki','Krytycznie ważne');",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "resolve-batch",
+      "name": "Resolve Batch Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 300],
+      "notes": "ADR-051: inline port of Invoke Model's Resolve Routing image logic, applied PER request (ADR-045): size from requested_size > aspect > 1024 default; gemini->gpt-image-2 shape-intent upgrade (explicit size OR non-1:1 aspect on a non-gpt tier, with a Polish resolution_note); gpt size validate/snap; tier->quality. Emits one item per image carrying the resolved primary model + the shared one-tier-below fallback model and both price sets. Faithful port keeps Invoke Model's quirk of pin=0.0003 on the gemini->gpt upgrade (cost is header/floor-driven for gpt, so the input-price backup is moot).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nlet requests = [];\ntry { requests = JSON.parse(wc.requests_json || '[]'); } catch (e) { requests = []; }\nif (!Array.isArray(requests)) requests = [];\nconst impact = (wc.impact || '').toString().trim();\n\nlet row = null;\ntry { const r = $('Lookup Routing').first().json; if (r && r.litellm_model) row = r; } catch (e) {}\nlet primary_model, primary_pin, primary_pout, primary_floor, resolution;\nif (row && String(row.litellm_model).indexOf('image') >= 0) {\n  primary_model = row.litellm_model;\n  primary_pin = Number(row.price_in_usd_per_1k || 0);\n  primary_pout = Number(row.price_out_usd_per_1k || 0);\n  primary_floor = (row.fallback_price_per_unit != null) ? Number(row.fallback_price_per_unit) : null;\n  resolution = row.resolution || 'high';\n} else {\n  primary_model = 'vertex_ai/gemini-2.5-flash-image';\n  primary_pin = 0.0003; primary_pout = 0.030; primary_floor = 0.038703; resolution = 'high';\n}\n\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\nlet tiers = [];\ntry { tiers = $('Lookup Image Tiers').all().map(function(i){return i.json;}).filter(function(r){return r && r.impact;}); } catch (e) {}\nconst tierByImpact = {};\nfor (const t of tiers) tierByImpact[t.impact] = t;\nconst tIdx = REAL_TIERS.indexOf(impact);\nlet fb = { model: '', pin: null, pout: null, floor: null };\nif (tIdx > 0) {\n  const below = tierByImpact[REAL_TIERS[tIdx - 1]];\n  if (below && below.litellm_model) {\n    fb = { model: below.litellm_model, pin: Number(below.price_in_usd_per_1k || 0), pout: Number(below.price_out_usd_per_1k || 0), floor: (below.fallback_price_per_unit != null) ? Number(below.fallback_price_per_unit) : null };\n  }\n}\n\nfunction aspectToSize(aspect, base) { if (!aspect) return base + 'x' + base; const p = String(aspect).split(':'); if (p.length !== 2) return base + 'x' + base; const w = Number(p[0]), h = Number(p[1]); if (!w || !h) return base + 'x' + base; if (w >= h) return base + 'x' + Math.round(base * h / w); return Math.round(base * w / h) + 'x' + base; }\nfunction parseWH(s){ const p=String(s||'').toLowerCase().split('x'); const w=Number(p[0]),h=Number(p[1]); return (w&&h)?{w:w,h:h}:null; }\nfunction gptValid(wh){ if(!wh) return false; const w=wh.w, h=wh.h; if (w%16!==0||h%16!==0) return false; const r=w/h; if (r>3||r<1/3) return false; if (Math.max(w,h)>3840) return false; const px=w*h; if (px<655360||px>8294400) return false; return true; }\nfunction snapGptValid(wh, fallback){ if(!wh) return fallback; let w=wh.w, h=wh.h; const r=w/h; if (r>3) h=w/3; else if (r<1/3) w=h/3; const mx=Math.max(w,h); if (mx>3840){ const s=3840/mx; w*=s; h*=s; } let px=w*h; if (px<655360){ const k=Math.sqrt(655360/px)*1.02; w*=k; h*=k; } px=w*h; if (px>8294400){ const k=Math.sqrt(8294400/px); w*=k; h*=k; } const r16=function(x){return Math.max(16, Math.round(x/16)*16);}; return r16(w)+'x'+r16(h); }\n\nconst base = 1024;\nconst out = [];\nfor (const rq of requests) {\n  const reqSize = (rq.size != null && String(rq.size).trim() !== '') ? String(rq.size).trim() : null;\n  const aspect = (rq.aspect != null && String(rq.aspect).trim() !== '') ? String(rq.aspect).trim() : null;\n  const size_requested = reqSize || (aspect ? aspectToSize(aspect, base) : (base + 'x' + base));\n  let size = size_requested;\n  let resolution_note = '';\n  let image_model = primary_model;\n  let pin = primary_pin, pout = primary_pout, floor = primary_floor;\n  let isGpt = String(image_model).indexOf('openai/') === 0;\n  const reqWH = parseWH(size_requested);\n  const wantsShape = !!reqSize || (reqWH && reqWH.w !== reqWH.h);\n  if (wantsShape && !isGpt) {\n    image_model = 'openai/gpt-image-2';\n    pin = 0.0003; pout = 0.030; floor = 0.210805;\n    isGpt = true;\n    resolution_note = reqSize\n      ? ('Aby zachować żądaną rozdzielczość ' + size_requested + ', użyto modelu OpenAI gpt-image-2 zamiast domyślnego modelu Gemini dla tego priorytetu (modele Gemini nie honorują wymuszonej rozdzielczości ani proporcji przez bramę LiteLLM).')\n      : ('Aby zachować żądane proporcje obrazu (' + aspect + '), użyto modelu OpenAI gpt-image-2 zamiast domyślnego modelu Gemini dla tego priorytetu (modele Gemini nie honorują wymuszonych proporcji przez bramę LiteLLM).');\n  }\n  if (isGpt) {\n    if (reqSize && gptValid(reqWH)) { size = size_requested; }\n    else {\n      size = snapGptValid(reqWH, '1024x1024');\n      if (reqSize && size !== size_requested) {\n        const snapMsg = 'Żądana rozdzielczość ' + size_requested + ' nie jest w pełni obsługiwana; wygenerowano w najbliższej zgodnej: ' + size + '.';\n        resolution_note = resolution_note ? (resolution_note + ' ' + snapMsg) : snapMsg;\n      }\n    }\n  }\n  const image_quality = (String(image_model).indexOf('openai/') === 0) ? (resolution === 'max' ? 'high' : (resolution === 'high' ? 'medium' : 'low')) : null;\n  out.push({ json: {\n    placeholder_id: rq.placeholder_id || '', block_order: (rq.block_order != null) ? rq.block_order : 99,\n    caption: rq.caption || '', alt: rq.alt || '', prompt: rq.prompt || '',\n    primary_model: image_model, size: size, quality: image_quality, resolution_note: resolution_note,\n    primary_pin: pin, primary_pout: pout, primary_floor: floor,\n    fallback_model: fb.model, fallback_pin: fb.pin, fallback_pout: fb.pout, fallback_floor: fb.floor,\n    impact: impact,\n    clickup_task_id: wc.clickup_task_id || '', triggered_by: wc.triggered_by || 'image_gen',\n    invocation_type: wc.invocation_type || 'explicit', caller_user_id: wc.caller_user_id || '', process_type: wc.process_type || ''\n  } });\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "fire-concurrent",
+      "name": "Fire Images Concurrently",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 300],
+      "notes": "ADR-051 core: fires all N LiteLLM /v1/images/generations calls via Promise.all over a BOUNDED promise pool (max `concurrency_cap` in flight; default 4). Per image: try the resolved primary model; on non-2xx OR 2xx-with-empty b64_json retry once with the one-tier-below model (or re-send primary at the floor tier) — minimal inline reimplementation of the Call Model with Fallback seam (ADR-047) for the image leg only. Failures are caught per-image (never throw -> never CRITICAL; image stays non-blocking). max_in_flight is emitted for cap verification. Auth = Vault image key from Get Image Key (throws if missing).",
+      "parameters": {
+        "jsCode": "let key = '';\ntry { key = ($('Get Image Key').first().json.key || $('Get Image Key').first().json.get_litellm_image_key || ''); } catch (e) { key = ''; }\nif (!key) { throw new Error('litellm_image_key missing from Vault (get_litellm_image_key returned empty) — parallel image batch cannot authenticate to LiteLLM'); }\n\nconst wc = $('When Called').first().json;\nlet cap = Number(wc.concurrency_cap);\nif (!cap || isNaN(cap) || cap < 1) cap = 4;\n\nconst requests = $input.all().map(function(i){ return i.json; });\nif (!requests.length) return [];\n\nconst { httpRequest } = this.helpers;\nlet inFlight = 0, maxInFlight = 0;\n\nconst callImage = async function(model, req) {\n  try {\n    const res = await httpRequest({\n      method: 'POST',\n      url: 'http://litellm:4000/v1/images/generations',\n      headers: { Authorization: 'Bearer ' + key },\n      body: Object.assign({ model: model, prompt: req.prompt, size: req.size, n: 1 }, req.quality ? { quality: req.quality } : {}),\n      json: true,\n      returnFullResponse: true,\n      timeout: 240000\n    });\n    const sc = res.statusCode || 200;\n    const data = (res.body && res.body.data) ? res.body.data : null;\n    const b64 = (data && data[0] && data[0].b64_json) ? data[0].b64_json : null;\n    return { ok: sc >= 200 && sc < 300 && !!b64, statusCode: sc, b64: b64, headers: res.headers || {}, body: res.body || {} };\n  } catch (e) {\n    const sc = (e && (e.statusCode || e.httpCode || (e.response && e.response.statusCode))) || 0;\n    const msg = (e && (e.message || (e.error && e.error.message))) || String(e);\n    return { ok: false, statusCode: sc, b64: null, headers: {}, body: {}, error: msg };\n  }\n};\n\nconst worker = async function(req) {\n  let att = await callImage(req.primary_model, req);\n  let model_used = req.primary_model;\n  let fell_back = false;\n  let pin = req.primary_pin, pout = req.primary_pout, floor = req.primary_floor;\n  if (!att.ok) {\n    const fbModel = (req.fallback_model && req.fallback_model !== '') ? req.fallback_model : req.primary_model;\n    const fb2 = await callImage(fbModel, req);\n    if (fb2.ok) {\n      att = fb2; model_used = fbModel;\n      if (fbModel !== req.primary_model) { fell_back = true; pin = req.fallback_pin; pout = req.fallback_pout; floor = req.fallback_floor; }\n    }\n  }\n  let header_cost = null, itok = 0, otok = null;\n  if (att.ok) {\n    const usage = (att.body && att.body.usage) || {};\n    const o = (usage.output_tokens != null) ? usage.output_tokens : ((usage.completion_tokens != null) ? usage.completion_tokens : ((usage.total_tokens != null) ? usage.total_tokens : null));\n    otok = (o != null) ? Number(o) : null;\n    const ii = (usage.input_tokens != null) ? usage.input_tokens : ((usage.prompt_tokens != null) ? usage.prompt_tokens : 0);\n    itok = (ii != null) ? Number(ii) : 0;\n    const ch = att.headers['x-litellm-response-cost'];\n    header_cost = (ch != null && ch !== '') ? Number(ch) : null;\n  }\n  return {\n    placeholder_id: req.placeholder_id, block_order: req.block_order, caption: req.caption, alt: req.alt,\n    succeeded: att.ok, b64_json: att.b64 || null, mime: 'image/png',\n    model_used: model_used, fell_back: fell_back,\n    header_cost: header_cost, input_tokens: itok, output_tokens: otok,\n    price_in_usd_per_1k: pin, price_out_usd_per_1k: pout, floor: floor,\n    size: req.size, resolution_note: req.resolution_note || '',\n    error: att.ok ? '' : (att.error || ('HTTP ' + att.statusCode)), statusCode: att.statusCode,\n    impact: req.impact, clickup_task_id: req.clickup_task_id, triggered_by: req.triggered_by,\n    invocation_type: req.invocation_type, caller_user_id: req.caller_user_id, process_type: req.process_type\n  };\n};\n\nconst results = new Array(requests.length);\nlet idx = 0;\nconst next = async function() {\n  const i = idx++;\n  if (i >= requests.length) return;\n  inFlight++; if (inFlight > maxInFlight) maxInFlight = inFlight;\n  try { results[i] = await worker(requests[i]); } finally { inFlight--; }\n  return next();\n};\nconst n = Math.min(cap, requests.length);\nconst starters = [];\nfor (let k = 0; k < n; k++) starters.push(next());\nawait Promise.all(starters);\n\nreturn results.map(function(r){ r.max_in_flight = maxInFlight; r.cap = cap; return { json: r }; });\n"
+      }
+    },
+    {
+      "id": "explode-results",
+      "name": "Explode Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 300],
+      "notes": "ADR-051: per-image cost layering mirroring Invoke Model's Normalize Model Result image branch (header>0 -> usd_cost=header; else token-math via filled price_out; else per-image floor). Emits the Log Model Run input shape per image, carrying the image payload fields forward for Assemble. cost_header_missing recorded for the warnings surface.",
+      "parameters": {
+        "jsCode": "const items = $input.all().map(function(i){ return i.json; });\nreturn items.map(function(it){\n  const header = (it.header_cost != null && Number(it.header_cost) > 0) ? Number(it.header_cost) : null;\n  let usd_cost = null, cost_header_missing = false;\n  let input_tokens = it.input_tokens, output_tokens = it.output_tokens;\n  if (header != null) { usd_cost = header; }\n  else {\n    cost_header_missing = true;\n    if (it.output_tokens != null) { usd_cost = null; }\n    else { usd_cost = (it.floor != null) ? it.floor : null; input_tokens = null; output_tokens = null; }\n  }\n  return { json: {\n    placeholder_id: it.placeholder_id, block_order: it.block_order, caption: it.caption, alt: it.alt,\n    succeeded: it.succeeded, b64_json: it.b64_json, mime: it.mime, model_used: it.model_used,\n    fell_back: it.fell_back, resolution_note: it.resolution_note, size: it.size, error: it.error,\n    cost_header_missing: cost_header_missing, max_in_flight: it.max_in_flight, cap: it.cap,\n    clickup_task_id: it.clickup_task_id, caller_user_id: it.caller_user_id, process_type: it.process_type,\n    triggered_by: it.triggered_by, invocation_type: it.invocation_type, impact: it.impact,\n    input_tokens: input_tokens, output_tokens: output_tokens, usd_cost: usd_cost,\n    price_in_usd_per_1k: it.price_in_usd_per_1k, price_out_usd_per_1k: it.price_out_usd_per_1k\n  } };\n});\n"
+      }
+    },
+    {
+      "id": "call-log-model-run",
+      "name": "Call Log Model Run",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1540, 300],
+      "notes": "ADR-051: reuse the shared agent_runs writer UNCHANGED (cost stays unified), mode=each -> one agent_runs row per image, priced by the served model. onError=continueRegularOutput so a log failure (Log Model Run has its own WARN) never breaks the batch return. Returns {cost_pln_total} per image; Assemble zips it back by index.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "ztSIUkp9ytbG1xpE",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "model_used": "={{ $json.model_used }}",
+            "impact": "={{ $json.impact }}",
+            "input_tokens": "={{ $json.input_tokens }}",
+            "output_tokens": "={{ $json.output_tokens }}",
+            "usd_cost": "={{ $json.usd_cost }}",
+            "price_in_usd_per_1k": "={{ $json.price_in_usd_per_1k }}",
+            "price_out_usd_per_1k": "={{ $json.price_out_usd_per_1k }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {},
+        "mode": "each"
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "assemble-output",
+      "name": "Assemble Batch Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 300],
+      "notes": "SOLE TERMINAL (sub-workflow return determinism): exactly one incoming connection. Zips Explode Results (image data, ordered) with Call Log Model Run output (cost_pln_total, ordered, mode=each preserves order) by index. Emits one per-image object mirroring Invoke Model's Shape Output {placeholder_id, success, b64_json, model, cost_pln, size, degraded, resolution_note, caption, alt} + a per-image warnings[] (gen-failed / degrade / cost-header-missing). The caller (Image Resolver, Block 4) aggregates warnings; execute-llm-call's Has Warnings? then fires the WARN. Never CRITICAL here.",
+      "parameters": {
+        "jsCode": "const explode = $('Explode Results').all().map(function(i){ return i.json; });\nconst logs = $input.all().map(function(i){ return i.json; });\nconst out = [];\nfor (let i = 0; i < explode.length; i++) {\n  const e = explode[i];\n  const lg = logs[i] || {};\n  const cost_pln = (lg.cost_pln_total != null && !isNaN(Number(lg.cost_pln_total))) ? Number(lg.cost_pln_total) : 0;\n  const success = !!(e.succeeded && e.b64_json);\n  const warnings = [];\n  if (!success) warnings.push('multimodal/image-gen-failed: ' + (e.error || 'no output'));\n  if (success && e.fell_back) warnings.push('image-batch/degrade: użyto modelu zapasowego o jeden poziom niżej (' + (e.model_used || '') + ')');\n  if (success && e.cost_header_missing) warnings.push('image-batch/cost-header-missing: brak nagłówka kosztu LiteLLM — koszt wyceniony zapasowo');\n  out.push({ json: {\n    placeholder_id: e.placeholder_id || '', block_order: (e.block_order != null) ? e.block_order : 99,\n    success: success, b64_json: success ? (e.b64_json || null) : null, mime: e.mime || 'image/png',\n    model: e.model_used || '', cost_pln: cost_pln, size: e.size || null,\n    degraded: !!e.fell_back, cost_header_missing: !!e.cost_header_missing,\n    resolution_note: e.resolution_note || '', caption: e.caption || '', alt: e.alt || '',\n    warnings: warnings\n  } });\n}\nreturn out;\n"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Lookup Routing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Routing": {
+      "main": [
+        [
+          {
+            "node": "Get Image Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Image Key": {
+      "main": [
+        [
+          {
+            "node": "Lookup Image Tiers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Image Tiers": {
+      "main": [
+        [
+          {
+            "node": "Resolve Batch Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Batch Requests": {
+      "main": [
+        [
+          {
+            "node": "Fire Images Concurrently",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fire Images Concurrently": {
+      "main": [
+        [
+          {
+            "node": "Explode Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Explode Results": {
+      "main": [
+        [
+          {
+            "node": "Call Log Model Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Log Model Run": {
+      "main": [
+        [
+          {
+            "node": "Assemble Batch Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}
