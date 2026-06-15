@@ -115,8 +115,11 @@ Measure first (is OCR firing on documents that do not need it; per-document time
   panel — "service keys" no longer exists by that name; legacy `service_role` sits under the *Legacy API Keys*
   tab). The function accepts either (it sends the key in both `apikey` and `Authorization: Bearer`, which Supabase
   permits for secret keys when the two header values are identical, and both key classes bypass RLS). Update the
-  secret with `vault.update_secret(...)` (not a second `create_secret`), then the backdate→purge→confirm-`200`
-  check closes this out.
+  secret with `vault.update_secret(...)` (not a second `create_secret`). **RESOLVED 2026-06-15:** the operator
+  stored a valid `sb_secret_…` key; a forced purge of a 20h-backdated 280 KB test image returned Storage-API
+  `200 {"message":"Successfully deleted"}` (`net._http_response`) and the `storage.objects` row is gone — bytes
+  freed, not orphaned. **Block 4 is fully verified end-to-end and operational** (daily 05:00 Warsaw cron + valid
+  key + watchdog).
 
 ## References
 
