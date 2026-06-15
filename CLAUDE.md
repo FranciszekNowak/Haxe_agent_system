@@ -112,10 +112,10 @@ Large changes run as a sequence of self-contained **Blocks** against one durable
 
 - **Every block starts by reading the master plan in full.** Do not rely on prior-session memory.
 - **A block does one verifiable unit of work**, scoped to leave the system working and verified
-  (its own Definition of Done) — never a half-cut-over path.
+  (its own Definition of Done) — never a half-cut-over path. Each block must have a Defintion of Done - if it doesn't, write it, and notify the user.
 - **Then it writes back** (mandatory before commit): update `architecture/current.md` and any ADRs
   the block introduced/closed, update the master plan's block-status table, and commit the block.
-- **It ends by emitting a handoff prompt;** the operator `/clears` and starts the next block, which
+- **It ends by emitting a handoff prompt;** the operator `/clears` and starts the next block, using the handoff prompt given at the end of the previous one by the LLM, which
   again begins by reading the master plan.
 - Order blocks so each leaves a working, verified state. The per-block write-backs to
   `current.md`/ADRs are the durable record of what changed; the master plan file is the artifact
@@ -131,11 +131,52 @@ Large changes run as a sequence of self-contained **Blocks** against one durable
   needs) should *not* be merged. Forcing a shared abstraction onto callers that then pull it in
   incompatible directions is worse than two honest copies. When in doubt, wait for the second
   caller to actually need the *same* change before unifying.
-- **Whenever a unified approach is possible — one contract shape, one workflow, one table — that
+- **Whenever a unified approach is possible — one contract shape, one workflow, one table, etc. — that
   is the default choice.** Adding a separate, parallel path (a second contract, a forked workflow,
   a second table for the same concept) is an **exception that must be documented and explained**
   (typically as an ADR stating why unification was not viable). Do not introduce a divergent path
   silently — the burden of proof is on the divergence, not on unification.
+
+## Build vs. buy: gate every major component on Wardley evolution
+
+Before building any major component, place it on Wardley's evolution axis and
+answer two questions **before writing code or an ADR for the build**:
+
+1. **Differential value** — does building this *ourselves* create advantage for
+   Haxe's specific process, or is it undifferentiated plumbing every business
+   needs? Scarce build capacity should go only where custom work is genuinely
+   differentiating; commodity work consumed elsewhere frees that capacity for it.
+2. **Existing commodity/off-the-shelf solution** — has this component already
+   evolved into a product or utility we can rent? If a commodity solution exists,
+   the default is to **use it**, not rebuild it.
+
+Wardley's axis runs **Genesis → Custom-Built → Product (rental) → Commodity
+(utility)**. Components drift left-to-right over time as markets industrialize
+them. The expensive, recurring mistake is using the wrong method for the stage:
+custom-building (a Genesis-stage method) something that is already a commodity.
+Match the method to the stage — **differentiate on the genuinely novel, consume
+the commoditized.**
+
+**Decision rule:**
+- **Commodity + no differential value → buy/rent/use the utility.** Do not
+  custom-build. (e.g. **OCR is a commodity market** — use an off-the-shelf OCR
+  service, never a hand-rolled one.)
+- **Commodity but staying off-the-shelf forces us to custom-build something
+  *else* → switch to the platform that gives the commodity for free.** (e.g.
+  **NAS → Google Drive**, ADR-049: keeping the live file store on the NAS would
+  force us to custom-build a per-user permission architecture that Google Drive
+  already provides off-the-shelf via native ACLs and domain-wide delegation — so
+  the agent runs against Drive, not the NAS. The build we avoid is the real cost,
+  not the storage itself.)
+- **Genesis/Custom-Built *and* differential value → build it ourselves.** This is
+  where our effort earns its keep (our agent orchestration, our ClickUp-mastered
+  process knowledge).
+
+**When a build survives this gate, state why in the ADR or block plan:** which
+stage the component is at, and why no commodity/off-the-shelf option covers it
+(or why adopting one would force a larger custom build elsewhere). Building a
+commoditized component in-house is the exception that must be justified — the
+burden of proof is on the build, mirroring the unification rule above.
 
 ## File conventions
 
