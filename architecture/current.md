@@ -1318,18 +1318,25 @@ post never sets status or `[AI] Finalny…`.
   sub-workflow upstream of Stage C that *produces* the `image_manifest` + `rendered_delta` above from the drafting
   model's output-block list. Inputs: `output_blocks_json` (text / `embed_input` / `generate` blocks), `impact`,
   `input_image_refs_json` (from Read Input, for embed resolution), `clickup_task_id` + passthrough; it also forwards
-  `model`/`cost_pln` (the text-run attribution) to the caller. Graph: `When Called → Lookup Count Ceiling → Resolve
-  & Explode Blocks → Classify Block (Switch: text/embed/generate/drop) → {text↦Merge | Resolve Embed | Call Invoke
-  Model (mode=each, one call per generate) → Handle Gen Result | Build Dropped Block} → Merge Branches → Assemble
-  Output` (the sole branch-free terminal). It returns `{image_manifest, rendered_delta, total_image_cost_pln,
-  image_models, warnings}`. `embed_input` resolves to an existing attachment → `{type:'attachment'}` op directly (no
-  re-upload); `generate` → `Invoke Model` image call → manifest entry + `{type:'image_ref'}`; text → same
-  markdown→ops logic as `Build Comment`. **Image count is governed by a single global safety ceiling**
-  (`config.image_count_ceiling=20`, migration 026) — a runaway guard only, **not** a per-impact cap; the old
-  per-impact `image_gen_params.max_images` is dead for counting (impact still drives model + resolution). Block
-  metadata rides `Invoke Model`'s `task_type` as `block_meta::{…}`. Degradations (embed miss / gen failure /
-  ceiling) become placeholder ops + a `warnings[]` entry (Block 12 routes these to Post Alert). Verified live:
-  text + 1 embed + 2 generate → 3 images inline + per-modality footer, 0 alerts. **DONE (Block 12, 2026-06-13):**
+  `model`/`cost_pln` (the text-run attribution) to the caller. Graph: `When Called → Lookup Image Config → Resolve
+  & Explode Blocks → Classify Block (Switch: text/embed/generate/drop) → {text↦Merge | Resolve Embed | Build Batch
+  Request → Call Generate Batch | Build Dropped Block} → Merge Branches → Assemble Output` (the sole branch-free
+  terminal). It returns `{image_manifest, rendered_delta, total_image_cost_pln, image_models, warnings}`.
+  `embed_input` resolves to an existing attachment → `{type:'attachment'}` op directly (no re-upload); text → same
+  markdown→ops logic as `Build Comment`. **Generate is now a parallel batch (ADR-051, Block 4, 2026-06-15):** the
+  generate branch collects ALL active generate blocks into one array (`Build Batch Request`) and calls `Generate
+  Images Parallel (v1)` **once** (`Call Generate Batch`), which fires the N image calls concurrently (bounded by
+  `config.image_concurrency_cap`); `Handle Gen Result` maps the batch results back to blocks **by `placeholder_id`**
+  (the old per-image `Call Invoke Model` `mode=each` + `task_type` `block_meta::{…}` smuggling are gone) and folds
+  each image's `warnings[]` into the resolver `warnings[]`. **Image count is governed by a single global safety
+  ceiling** (`config.image_count_ceiling=20`, migration 026) — a runaway guard only, **not** a per-impact cap; the
+  old per-impact `image_gen_params.max_images` is dead for counting (impact still drives model + resolution).
+  `Lookup Image Config` reads both the ceiling and the concurrency cap in one row. Degradations (embed miss / gen
+  failure / ceiling) become placeholder ops + a `warnings[]` entry (Block 12 routes these to Post Alert). Verified
+  live (Block 4): a Krytycznie-ważne @-mention producing text + 2 generate rendered both `gpt-image-2` images inline
+  in order with the correct per-modality footer cost (2.0332 PLN), the batch firing them concurrently (`max_in_flight=2`,
+  158.7 s ≈ one image vs ~317 s sequential); the text + 2 generate + 1 embed interleave order was verified in
+  isolation. **DONE (Block 12, 2026-06-13):**
   Stage B now auto-calls the resolver (the drafting model emits the block list — see §15.2/§15.4) and forwards
   its outputs into Post Reply; resolver `warnings[]` route to Post Alert. Stage C's prose `Build Comment` renderer
   was **retired** — every reply now renders through the resolver's `rendered_delta`; the `Has Images?` FALSE branch

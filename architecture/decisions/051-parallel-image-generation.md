@@ -30,6 +30,20 @@ Niski gemini row with its DB prices; Niski + shaped → upgrades to gpt-image-2 
 `0.005` (the old inline `0.0003` quirk is gone) and decodes 1536×1024; 3-image concurrency and a clean
 alert channel both intact.
 
+**Block 4 done + verified (2026-06-15):** `Image Resolver (v1)` (`znDqcfgXK6CNte20`) rewired so its generate
+branch calls the batch once instead of `Call Invoke Model` `mode=each`: `Build Batch Request` (collects all active
+generate blocks into one `requests_json` array + `concurrency_cap` from `config.image_concurrency_cap`) → `Call
+Generate Batch` → rewritten `Handle Gen Result` (maps results back by `placeholder_id`, no `task_type` smuggling;
+folds per-image `warnings[]` into the resolver `warnings[]`, which `Assemble Output` aggregates so
+`execute-llm-call`'s `Has Warnings?` seam fires the WARN). `Lookup Count Ceiling` became `Lookup Image Config`
+(ceiling + cap in one row). `Merge Branches → Assemble Output` remains the sole branch-free terminal; the
+`image_manifest`/`rendered_delta` contract to Stage C is unchanged. Pushed live + re-exported drift-clean. Verified
+(A) in isolation — text + 2 generate + 1 embed → correct interleave order (text, gen_0, embed, gen_1), 2 `agent_runs`
+rows, `max_in_flight=2`, no warnings — and (B) end-to-end via a real Krytycznie-ważne @-mention on `869dhad2q` → 2
+`gpt-image-2` images rendered inline in order, footer cost 2.0332 PLN, batch concurrent (`max_in_flight=2`, **158.7 s
+≈ one image vs ~317 s sequential**), 0 alerts from the image path. Remaining: Block 5 (delete `Invoke Model`'s now-dead
+image branch, simplify `Resolve Routing` to text-only, finalize this ADR to "accepted").
+
 ## Context
 
 A single agent run can emit several `generate` image blocks (the drafting model's output-block
