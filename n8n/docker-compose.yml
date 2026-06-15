@@ -145,6 +145,13 @@ services:
     image: quay.io/docling-project/docling-serve@sha256:c7ba482fdb3275deac4a8a2d6e4490a8e1ffdcdf20020aaad5d250e8cc114e4e  # pinned 2026-06-09 (ADR-011)
     container_name: docling
     restart: unless-stopped
+    environment:
+      # ADR-048 Block 5: deliberate, pinned Docling concurrency bound (was image-default workers=2 / OMP=4 = 8-thread
+      # demand on 4 cores). 2 workers x 2 threads = 4 cores exactly -> max 2 concurrent conversions, rest queue
+      # server-side (max_sync_wait=120s); a multi-doc zip burst cannot saturate the box. Pinned so an image bump
+      # can't silently revert the worker count.
+      DOCLING_SERVE_ENG_LOC_NUM_WORKERS: "2"
+      OMP_NUM_THREADS: "2"
     ports:
       - "127.0.0.1:5001:5001"   # loopback only — never public
     networks:

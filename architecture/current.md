@@ -569,6 +569,15 @@ Target: 7–9 weeks to v1.
     specyfikacja.xlsx fixtures (markdown at `document.md_content`; xlsx → 260 pipe-table rows). ⚠ Default
     `image_export_mode=embedded` inlines page images as base64 (one PDF → 242 KB vs 1.3 KB in `placeholder`
     mode); the readers (Blocks 2–3) must pass `image_export_mode=placeholder`.
+    > **Docling tuning (ADR-048 Block 5, 2026-06-15):** the reader now calls Docling with `do_ocr=false` +
+    > `table_mode=fast` + `document_timeout=120` (measured: OCR off is 50–67 % faster and byte-identical on
+    > digital PDFs; `fast` is byte-identical to `accurate` on real Haxe PDF/XLSX tables). Because OCR only
+    > affects scanned/image-only PDFs, a **two-pass fallback** preserves them: an empty first pass re-runs that
+    > one doc with `do_ocr=true` (`OCR Empty?` → `Restore Doc Binary` → `Docling OCR Retry`, converged through
+    > `Merge OCR Result`). The service is pinned to a deliberate concurrency bound —
+    > `DOCLING_SERVE_ENG_LOC_NUM_WORKERS=2` + `OMP_NUM_THREADS=2` (2 workers × 2 threads = the box's 4 cores, no
+    > oversubscription; excess conversions queue server-side) in **both** the repo and VPS `docker-compose.yml`
+    > so a multi-document zip burst can't saturate the box and an image bump can't silently revert it.
     > **Config drift incident (2026-06-08):** The VPS `docker-compose.yml` predated ADR-030 and lacked the
     > `ANTHROPIC_API_KEY` passthrough. LiteLLM's router surfaced the resulting 401 as a 429 cooldown, causing
     > ~8 h of misdiagnosis. Fixed by redeploying `docker-compose.yml` via scp. See ADR-033 for the deploy
@@ -1020,8 +1029,8 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   C owns every ClickUp side-effect (comment, cost, status, and — once multimodal lands, ADR-036 —
   image upload + temp cleanup).
 
-- **Input file handling v2 — `.zip` unpacking + zip-inner-image object storage (ADR-048; Blocks 1–4
-  landed 2026-06-15, Block 5 Docling tuning pending).** `Read Input (v1)` now unpacks a `.zip` attachment
+- **Input file handling v2 — `.zip` unpacking + zip-inner-image object storage (ADR-048; all blocks
+  landed 2026-06-15).** `Read Input (v1)` now unpacks a `.zip` attachment
   instead of degrading it to `[BRAK]` (supersedes the ADR-036 `.zip`-unsupported note). After
   `Explode Attachments` a `Zip?` switch routes archives down a decompress branch
   (`Fetch Zip Binary → Stamp Zip Filename → Decompress → Explode Zip Entries`) that fans inner files out,
@@ -1048,7 +1057,11 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   ≤24h would need more than one run/day). A **dead-man's-switch independent of pg_cron** — the n8n
   **`Zip Image Purge Watchdog (v1)`** (`2L4W4OQ7Qmmnl1Z1`), every 6h — WARNs through `Post Alert (v1)` if any
   object exceeds **40h** (healthy ceiling ~36h; catches cron-stopped, function-errored, or Vault-key-missing/invalid
-  alike). See ADR-048.
+  alike). **Docling tuning (Block 5):** the shared Docling path runs `do_ocr=false` + `table_mode=fast` (measured
+  byte-identical to the heavy defaults on real digital PDFs/XLSX, ~50–67 % faster), with a **two-pass OCR fallback**
+  (`OCR Empty? → Restore Doc Binary → Docling OCR Retry`, converged via `Merge OCR Result`) so scanned/image-only
+  PDFs still extract; `docling:5001` is pinned to a 2-worker × 2-thread concurrency bound (repo + VPS compose) so a
+  multi-document zip burst can't saturate the box. See ADR-048.
 
 - **`Build Prompt`** (Code, stub assembler) composes one prompt string from, in order: the
   **GLOBAL agent-rules doc + the caller's personal agent-preferences doc** (CU Docs v3,

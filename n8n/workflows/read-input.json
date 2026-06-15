@@ -7,7 +7,7 @@
       "name": "Form Trigger",
       "type": "n8n-nodes-base.formTrigger",
       "typeVersion": 2.5,
-      "position": [0, 128],
+      "position": [-240, -16],
       "webhookId": "0dce1bbd-9f16-4929-ab9e-98651cf06c60",
       "notes": "Standalone test harness (ADR-020) ONLY: paste a task id; Get Task self-fetches ALL attachments. Unified reader (ADR-036 'Input readers unified') classifies each: image -> image block (URL passthrough, no Docling), else -> Docling text block. Attach mixed files freely.",
       "parameters": {
@@ -30,7 +30,7 @@
       "name": "When Called",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
-      "position": [0, 352],
+      "position": [-240, 176],
       "notes": "Production entry (called by Stage A, Block 5). In: { clickup_task_id } ONLY - the reader SELF-FETCHES the task (router retired, ADR-036 'Input readers unified'). Out: { blocks, clickup_task_id, warnings }. PURE function: no side-effects - Stage A fires `warnings` via Post Alert (v1) (single alerting choke-point).",
       "parameters": {
         "workflowInputs": {
@@ -47,7 +47,7 @@
       "name": "Get Task",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [240, 240],
+      "position": [32, 96],
       "notes": "Self-fetch the authoritative attachment list via HTTP (ADR-019; the n8n ClickUp 'get' node omits attachments[]). Now on BOTH paths (Form + When Called) - the router was retired (ADR-036), so the reader fetches its own task from { clickup_task_id }.",
       "parameters": {
         "url": "=https://api.clickup.com/api/v2/task/{{ $json.taskId || $json.clickup_task_id }}",
@@ -67,7 +67,7 @@
       "name": "Explode Attachments",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [464, 240],
+      "position": [256, -80],
       "notes": "Pure NORMALIZER: explode the self-fetched ClickUp task's attachments[] into one item each, normalizing raw ClickUp {id,url_w_query,extension,mimetype}. Assigns GLOBAL order by index (the reader owns ordering now - router retired). 'url' serves BOTH as the image-block ref AND the fetch URL (verified downloadable, auth:none, Block 2). ZERO attachments -> emits one `_passthrough` sentinel (order -1) so the chain still reaches Aggregate Blocks; a 0-item Explode would skip every downstream node and silently null the whole pipeline (no reply/status/cost) - the bug fixed 2026-06-11.",
       "parameters": {
         "jsCode": "const src = $input.first().json;\nconst taskId = src.id || src.clickup_task_id || src.taskId || null;\nconst atts = Array.isArray(src.attachments) ? src.attachments : [];\nconst out = [];\nlet i = 0;\nfor (const a of atts) {\n  const title = a.title || '';\n  const ext = String(a.ext || a.extension || title.split('.').pop() || '').toLowerCase();\n  out.push({ json: {\n    clickup_task_id: taskId,\n    att_id: a.att_id || a.id || null,\n    title: title || ('attachment.' + ext),\n    ext,\n    mime: String(a.mime || a.mimetype || '').toLowerCase(),\n    url: a.url || a.url_w_query || '',\n    order: (a.order !== undefined && a.order !== null ? a.order : i)\n  }});\n  i++;\n}\nif (out.length === 0) {\n  // No attachments: emit a single passthrough sentinel so the chain still\n  // reaches Aggregate Blocks. A zero-item Explode would skip every downstream\n  // node, return nothing, and silently null the whole pipeline (no reply/status/cost).\n  out.push({ json: { clickup_task_id: taskId, _passthrough: true, order: -1 } });\n}\nreturn out;"
@@ -78,7 +78,7 @@
       "name": "Classify Attachment",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.4,
-      "position": [688, 240],
+      "position": [672, 320],
       "notes": "Route by type (ADR-036 unified reader). Output 0 (image): mime image/* OR ext png/jpg/jpeg/gif/webp/bmp/svg/tiff/heic OR the `_passthrough` sentinel (no-attachment case) -> Build Image Block (no I/O, skips Fetch+Docling). Output 1 (fallback 'extractable'): everything else -> Fetch->Docling. The sentinel rides the image (no-I/O) branch on purpose so it reaches Aggregate without a bogus fetch.",
       "parameters": {
         "rules": {
@@ -121,7 +121,7 @@
       "name": "Build Image Block",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [912, 96],
+      "position": [912, 304],
       "notes": "Image branch: NO I/O. `_passthrough` sentinel (no attachments) -> emit a block-less item { clickup_task_id } so Aggregate (which filters items without `block`) still runs and returns blocks:[]. Otherwise an already-attached image is ClickUp-hosted -> emit { type:image, ref:url, mime, source:input, source_ref:att_id, alt:title }. Missing url -> [BRAK: image_ref_missing] + warn. Same envelope as Build Text Block so Aggregate is uniform.",
       "parameters": {
         "mode": "runOnceForEachItem",
@@ -133,7 +133,7 @@
       "name": "Fetch Attachment Binary",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [912, 368],
+      "position": [912, 656],
       "notes": "Extractable branch only. Download bytes to a binary property (kept separate from JSON - no base64 in the flow). ClickUp url is pre-signed, so no auth header. continueRegularOutput: a fetch failure stays inline (no binary) so Docling/Build Text Block degrade it to [BRAK] + warning.",
       "parameters": {
         "url": "={{ $json.url }}",
@@ -155,8 +155,8 @@
       "name": "Docling Convert",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1120, 368],
-      "notes": "POST /v1/convert/file (multipart field 'files'). image_export_mode=placeholder is CRITICAL (default 'embedded' inlines base64 and explodes token cost - ADR-036 Block 1). A corrupt file returns HTTP 200 with status=failure + md_content=null, so Build Text Block checks md_content, not the HTTP code. continueRegularOutput keeps real HTTP errors inline -> [BRAK].",
+      "position": [1408, 672],
+      "notes": "POST /v1/convert/file (multipart 'files'). ADR-048 Block 5 PRIMARY pass: do_ocr=false (OCR is pure overhead on digital docs: measured 4-6s->2.0s, byte-identical md) and table_mode=fast (validated byte-identical to accurate on real Haxe PDF + 3 XLSX). document_timeout=120 caps a runaway doc server-side. image_export_mode=placeholder is CRITICAL (default 'embedded' inlines base64). do_ocr only affects scanned/image PDFs -> if this pass is empty, OCR Empty? routes to the OCR retry. A corrupt file returns 200 + md_content=null, so Build Text Block checks md_content, not the HTTP code. continueRegularOutput keeps real HTTP errors inline -> retry/[BRAK].",
       "parameters": {
         "method": "POST",
         "url": "http://docling:5001/v1/convert/file",
@@ -176,6 +176,18 @@
             {
               "name": "image_export_mode",
               "value": "placeholder"
+            },
+            {
+              "name": "do_ocr",
+              "value": "false"
+            },
+            {
+              "name": "table_mode",
+              "value": "fast"
+            },
+            {
+              "name": "document_timeout",
+              "value": "120"
             }
           ]
         },
@@ -191,7 +203,7 @@
       "name": "Build Text Block",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1344, 368],
+      "position": [2016, 672],
       "notes": "Extractable branch per-item: success -> { type:text, order, md }; any failure (fetch error, Docling error, or 200/status=failure/empty md) -> [BRAK: extraction_failed <file>] + needs_alert + warn_source. Flags has_embedded on placeholder markers (embedded in-doc images dropped+warned - hosting is Block 10). warn_source/needs_alert/has_embedded drive the `warnings` Aggregate hands to Stage A.",
       "parameters": {
         "mode": "runOnceForEachItem",
@@ -203,7 +215,7 @@
       "name": "Merge Branches",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
-      "position": [1568, 240],
+      "position": [2048, 352],
       "notes": "Converge the image-passthrough branch (input 0) and the Docling-extract branch (input 1) into ONE stream so Aggregate keeps a SINGLE input (a run-once-for-all-items node with N input connections runs once per connection and drops items - Block 2 trap, CLAUDE.md). Append = concat all items. VERIFY at build: must not stall when one branch is empty (all-text OR all-image task); if it stalls, apply ADR-036 fallback (alwaysOutputData on tails / single run-once-for-each builder).",
       "parameters": {
         "numberInputs": 5
@@ -214,7 +226,7 @@
       "name": "Aggregate Blocks",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1792, 240],
+      "position": [2288, 400],
       "notes": "SOLE TERMINAL (single input via Merge -> runs once over all items). Returns { blocks (sorted by order), clickup_task_id, warnings:[{source,title,err}] }. Stage A (Block 5) fires `warnings` via Post Alert (v1): each builder names its own warn_source (multimodal/extraction-failed, /image-ref-missing) + /embedded-image-skipped for dropped in-doc images. Branch-free convergence => n8n returns THIS node deterministically.",
       "parameters": {
         "jsCode": "const rows = $input.all().map(i => i.json).filter(j => j && j.block);\nconst blocks = rows.map(j => j.block).sort((a, b) => (a.order || 0) - (b.order || 0));\nconst warnings = [];\nfor (const j of rows) {\n  if (j.needs_alert) warnings.push({ source: j.warn_source || 'multimodal/extraction-failed', title: j.title, err: j.err || 'unknown' });\n  else if (j.has_embedded) warnings.push({ source: 'multimodal/embedded-image-skipped', title: j.title });\n}\nlet taskId = null;\ntry { taskId = $('When Called').first().json.clickup_task_id; } catch (e) {}\nif (!taskId) { try { taskId = $('Form Trigger').first().json.taskId; } catch (e) {} }\nif (!taskId) { const f = rows.find(j => j.clickup_task_id); taskId = f ? f.clickup_task_id : null; }\nreturn [{ json: { blocks, clickup_task_id: taskId, warnings } }];"
@@ -225,7 +237,7 @@
       "name": "Lookup File Processing Config",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
-      "position": [240, 500],
+      "position": [224, 432],
       "notes": "Global file-processing limits (config.zip_max_entries / zip_max_file_mb / zip_max_total_uncompressed_mb; migration 027, ADR-048 Block 1). Pivots the 3 keys into ONE typed row so Block 3's zip guards read $('Lookup File Processing Config').first().json.zip_max_*. Hung off Get Task (runs once per execution) and fed into Merge Branches so it is NOT a dangling leaf: Aggregate Blocks filters to items carrying `block`, so this row is dropped from output and Aggregate stays the sole branch-free terminal (return-value safety, CLAUDE.md). alwaysOutputData so a 0-row result still emits and never nulls the chain. Enforcement of these limits lands in Block 3 (not here).",
       "parameters": {
         "operation": "executeQuery",
@@ -248,7 +260,7 @@
       "name": "Zip Image Key",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [688, 620],
+      "position": [720, 144],
       "notes": "ADR-048 Block 2: ENTRY of the 'Store Zip Image' step (zip-inner image branch ONLY - loose images never touch this; they keep their ClickUp URL ref). Computes the Supabase object key <clickup_task_id>/<sanitized att_id> and carries entry meta (title, order, mime) + the image binary forward. att_id arrives as `<parentAttId>:<i>` (Block 3) - sanitized to a safe key ([^A-Za-z0-9._-] -> '_'); the original att_id is preserved in json for source_ref. Binary must arrive in property `data` (Block 3's Explode Zip Entries normalizes it). The internal chain Key->Upload->Sign->Compose is wired now (Block 2); Block 3 connects Classify-inner-image -> here and Compose -> zip image block -> Merge Branches. Until then this chain has no trigger path, so it never executes - the live reader is unchanged.",
       "parameters": {
         "mode": "runOnceForEachItem",
@@ -260,7 +272,7 @@
       "name": "Upload Zip Image",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [912, 620],
+      "position": [944, 144],
       "notes": "ADR-048 Block 2: upload the ORIGINAL zip-inner image bytes to the private EU bucket `zip-inner-images` at <storage_path> via Supabase Storage REST (POST /storage/v1/object/{bucket}/{path}, x-upsert:true). Auth = predefined supabaseApi cred (service_role; bypasses RLS on the private bucket). Original size, NEVER base64 (ADR-048 Decision 3 - the heavy bytes stay out of execution data, which is the whole OOM fix). cache-control max-age=3600 (objects are purged at 24h by Block 4's pg_cron, so caching is short). continueRegularOutput: a failed upload returns no Key, so Sign/Compose yield an empty ref and Block 3 degrades that entry to a dropped block + warn rather than throwing. Gate D verified the full upload->sign->provider-fetch path end-to-end 2026-06-15.",
       "parameters": {
         "method": "POST",
@@ -305,7 +317,7 @@
       "name": "Sign Zip Image URL",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1136, 620],
+      "position": [1184, 144],
       "notes": "ADR-048 Block 2: mint a signed URL (expiresIn 21600s = 6h) for the just-uploaded object (POST /storage/v1/object/sign/{Key}; Key comes from the upload response, e.g. `zip-inner-images/<task>/<att>`). The private bucket means only a signed URL is fetchable. 6h TTL outlives the reader->invoke-model gap, which in queue mode includes inter-stage queue latency, yet stays well under the 24h cleanup (ADR-048 Consequences). The provider fetches this URL through LiteLLM - gate D confirmed Gemini read the image (1089 image_tokens, correct description) 2026-06-15. continueRegularOutput + retry so a transient sign failure degrades to an empty ref rather than throwing.",
       "parameters": {
         "method": "POST",
@@ -313,7 +325,6 @@
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "supabaseApi",
         "sendBody": true,
-        "contentType": "json",
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ expiresIn: 21600 }) }}",
         "options": {}
@@ -334,7 +345,7 @@
       "name": "Compose Signed URL",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1360, 620],
+      "position": [1376, 144],
       "notes": "ADR-048 Block 2: assemble the absolute signed URL (HOST + /storage/v1 + signedURL) into `ref`, and re-attach the entry meta (clickup_task_id, att_id, title, order, mime) via pairedItem from Zip Image Key (verified to survive the two HTTP hops in gate D). `ref` is the zip-inner image's downstream reference and a DROP-IN for the loose-image URL ref - Resolve Routing passes it verbatim into image_url.url, so a Supabase signed URL needs no contract change. stored=false (empty ref) signals an upload/sign failure for Block 3 to drop+warn. NEVER base64. Block 3 wraps this into the zip image block (same envelope as Build Image Block) and feeds Merge Branches.",
       "parameters": {
         "mode": "runOnceForEachItem",
@@ -346,7 +357,7 @@
       "name": "Zip? Switch",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.4,
-      "position": [600, 760],
+      "position": [448, -80],
       "notes": "ADR-048 Block 3: zip gate after Explode Attachments. Output 0 (zip): a real .zip (ext 'zip' OR mime application/zip|application/x-zip-compressed) AND NOT the no-attachment _passthrough sentinel -> Fetch Zip Binary. Output 1 (fallback 'not-zip'): everything else incl. the sentinel, .gz, loose images/docs -> Classify Attachment UNCHANGED. Strict mime equality avoids the 'gzip'-contains-'zip' false positive that includes() would hit.",
       "parameters": {
         "rules": {
@@ -389,7 +400,7 @@
       "name": "Fetch Zip Binary",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [820, 760],
+      "position": [672, -80],
       "notes": "ADR-048 Block 3: zip branch only. Download the .zip bytes to binary property `data` (responseFormat file -> no base64 in JSON; off-heap under binaryMode:separate). ClickUp url is pre-signed (auth:none). Mirrors Fetch Attachment Binary. continueRegularOutput: a fetch failure leaves no binary, so Decompress yields an empty/error item that Explode Zip Entries turns into one zip-extraction-failed drop+WARN rather than throwing.",
       "parameters": {
         "url": "={{ $json.url }}",
@@ -411,13 +422,9 @@
       "name": "Decompress",
       "type": "n8n-nodes-base.compression",
       "typeVersion": 1.1,
-      "position": [1020, 760],
+      "position": [1120, -80],
       "notes": "ADR-048 Block 3, gate B: compression decompress. Input binary `data` (the fetched .zip) -> ONE output item carrying every inner file as a separate binary property file_0,file_1,... (outputPrefix 'file_'); original name/ext/mime live in each binary's metadata. adm-zip extracts the WHOLE archive in memory (gate B), so the total-uncompressed cap is 250MB (migration 028), not 500. continueRegularOutput so a corrupt archive degrades to a zip-extraction-failed drop in Explode Zip Entries instead of throwing the run.",
-      "parameters": {
-        "operation": "decompress",
-        "binaryPropertyName": "data",
-        "outputPrefix": "file_"
-      },
+      "parameters": {},
       "onError": "continueRegularOutput"
     },
     {
@@ -425,10 +432,9 @@
       "name": "Explode Zip Entries",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1240, 760],
+      "position": [1328, -80],
       "notes": "ADR-048 Block 3: fan the single Decompress item (binary props file_0..file_N) into one item per inner entry. Recovers parent zip meta via $('Explode Attachments').itemMatching(z) (paired across Fetch Zip Binary+Decompress) -> interleaved order = parentOrder+(i+1)/1000, att_id <parentAttId>:<i>, source 'zip'. GLOBAL guards (migration 027/028 via Lookup File Processing Config): junk (dirs, __MACOSX, dotfiles) silently skipped; nested zip -> drop (zip-nested-skipped); per-file>zip_max_file_mb -> drop (zip-too-large); >zip_max_entries -> drop (zip-too-large); cumulative>zip_max_total_uncompressed_mb -> drop (zip-too-large); corrupt/empty archive -> one zip-extraction-failed drop. Image vs document by mime/ext; route in {image,document,drop}. Sizes via this.helpers.getBinaryDataBuffer (uncompressed bytes); entry binary forwarded BY REFERENCE in `data` (no buffers held in JSON -> no OOM). pairedItem=z set so Build Text Block can resolve $('Explode Zip Entries').item for zip docs.",
       "parameters": {
-        "mode": "runOnceForAllItems",
         "jsCode": "const IMG_EXT = ['png','jpg','jpeg','gif','webp','bmp','svg','tiff','tif','heic','heif'];\nlet cfg = {};\ntry { cfg = $('Lookup File Processing Config').first().json || {}; } catch (e) { cfg = {}; }\nconst maxEntries = Number(cfg.zip_max_entries) || 50;\nconst maxFileMb = Number(cfg.zip_max_file_mb) || 25;\nconst maxTotalMb = Number(cfg.zip_max_total_uncompressed_mb) || 250;\nconst MB = 1024 * 1024;\nconst items = $input.all();\nconst out = [];\nfor (let z = 0; z < items.length; z++) {\n  const bin = items[z].binary || {};\n  const failed = !!(items[z].json && items[z].json.error);\n  let parent = {};\n  try { parent = $('Explode Attachments').itemMatching(z).json || {}; } catch (e) { try { parent = $('Explode Attachments').first().json || {}; } catch (e2) { parent = {}; } }\n  const taskId = parent.clickup_task_id || (items[z].json && items[z].json.clickup_task_id) || null;\n  const parentAttId = parent.att_id || 'zip';\n  const parentOrder = (parent.order !== undefined && parent.order !== null) ? Number(parent.order) : 0;\n  const parentTitle = parent.title || 'archive.zip';\n  const keys = Object.keys(bin).sort((a, b) => {\n    const na = parseInt(String(a).replace(/\\D+/g, ''), 10);\n    const nb = parseInt(String(b).replace(/\\D+/g, ''), 10);\n    return (isNaN(na) ? 0 : na) - (isNaN(nb) ? 0 : nb);\n  });\n  if (failed || keys.length === 0) {\n    out.push({ json: { clickup_task_id: taskId, att_id: parentAttId + ':x', title: parentTitle, order: parentOrder + 0.001, route: 'drop', drop_reason: 'zip_extraction_failed', warn_source: 'multimodal/zip-extraction-failed' }, pairedItem: z });\n    continue;\n  }\n  let accepted = 0;\n  let totalBytes = 0;\n  for (let i = 0; i < keys.length; i++) {\n    const prop = keys[i];\n    const meta = bin[prop] || {};\n    const name = meta.fileName || prop;\n    const lname = String(name).toLowerCase();\n    const base = lname.split('/').pop();\n    const ext = String(meta.fileExtension || (base.indexOf('.') >= 0 ? base.split('.').pop() : '')).toLowerCase();\n    const mime = String(meta.mimeType || '').toLowerCase();\n    const order = parentOrder + (i + 1) / 1000;\n    const attId = parentAttId + ':' + i;\n    if (lname.endsWith('/') || lname.indexOf('__macosx') >= 0 || base.charAt(0) === '.' || base === '') continue;\n    if (ext === 'zip' || ((mime === 'application/zip' || mime === 'application/x-zip-compressed') && (ext === '' || ext === 'zip'))) {\n      out.push({ json: { clickup_task_id: taskId, att_id: attId, title: name, order: order, route: 'drop', drop_reason: 'nested_zip', warn_source: 'multimodal/zip-nested-skipped' }, pairedItem: z });\n      continue;\n    }\n    if (accepted >= maxEntries) {\n      out.push({ json: { clickup_task_id: taskId, att_id: attId, title: name, order: order, route: 'drop', drop_reason: 'too_many_entries', warn_source: 'multimodal/zip-too-large' }, pairedItem: z });\n      continue;\n    }\n    let bytes = 0;\n    try {\n      const h = (typeof $helpers !== 'undefined' && $helpers) ? $helpers : ((typeof this !== 'undefined' && this && this.helpers) ? this.helpers : null);\n      if (h && h.getBinaryDataBuffer) { const buf = await h.getBinaryDataBuffer(z, prop); bytes = buf.length; }\n    } catch (e) { bytes = 0; }\n    if (!bytes) {\n      const fsz = meta.fileSize;\n      if (typeof fsz === 'number') bytes = fsz;\n      else if (typeof fsz === 'string') { const mm = fsz.trim().match(/^([\\d.]+)\\s*([kKmMgG]?)/); if (mm) { const n = parseFloat(mm[1]); const u = (mm[2] || '').toLowerCase(); bytes = n * (u === 'g' ? 1073741824 : u === 'm' ? 1048576 : u === 'k' ? 1024 : 1); } }\n    }\n    if (bytes > maxFileMb * MB) {\n      out.push({ json: { clickup_task_id: taskId, att_id: attId, title: name, order: order, route: 'drop', drop_reason: 'oversize_' + Math.round(bytes / MB) + 'mb', warn_source: 'multimodal/zip-too-large' }, pairedItem: z });\n      continue;\n    }\n    if (totalBytes + bytes > maxTotalMb * MB) {\n      out.push({ json: { clickup_task_id: taskId, att_id: attId, title: name, order: order, route: 'drop', drop_reason: 'over_total_uncompressed', warn_source: 'multimodal/zip-too-large' }, pairedItem: z });\n      continue;\n    }\n    accepted++;\n    totalBytes += bytes;\n    const isImage = mime.indexOf('image/') === 0 || IMG_EXT.indexOf(ext) >= 0;\n    out.push({ json: { clickup_task_id: taskId, att_id: attId, title: name, ext: ext, mime: mime, order: order, source: 'zip', route: isImage ? 'image' : 'document' }, binary: { data: bin[prop] }, pairedItem: z });\n  }\n}\nreturn out;"
       }
     },
@@ -437,7 +443,7 @@
       "name": "Classify Zip Entry",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.4,
-      "position": [1460, 760],
+      "position": [1504, -96],
       "notes": "ADR-048 Block 3: fan each exploded zip entry by its pre-computed `route`. Output 0 image -> Zip Image Key (Store Zip Image step). Output 1 document -> Merge Extractable (append) -> shared Docling Convert. Output 2 (fallback) drop -> Build Dropped Zip Block. Guards already applied upstream in Explode Zip Entries; this is a pure 3-way fan.",
       "parameters": {
         "rules": {
@@ -503,18 +509,16 @@
       "name": "Merge Extractable",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
-      "position": [1000, 540],
+      "position": [1168, 672],
       "notes": "ADR-048 Block 3: append-merge so ONE Docling Convert serves both loose docs (input 0, from Fetch Attachment Binary) and zip-inner docs (input 1, from Classify Zip Entry[document], binary already in `data`). Append concats and tolerates an empty input (loose-only OR zip-only run), same as Merge Branches. Build Text Block recovers per-item order/title source-agnostically (Explode Zip Entries first, else Explode Attachments).",
-      "parameters": {
-        "numberInputs": 2
-      }
+      "parameters": {}
     },
     {
       "id": "r-build-zip-image",
       "name": "Build Zip Image Block",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1680, 620],
+      "position": [1568, 144],
       "notes": "ADR-048 Block 3: wrap a stored zip-inner image (from Compose Signed URL) into the SAME envelope as Build Image Block: { type:image, ref: Supabase signed URL, mime, source:input, source_ref:att_id, alt:title }. stored=false (empty ref = upload/sign failed) -> [BRAK: zip_image_store_failed] text block + needs_alert + warn_source multimodal/zip-image-store-failed. NEVER base64; ref is a drop-in for the loose-image URL ref (Resolve Routing passes it verbatim into image_url.url).",
       "parameters": {
         "mode": "runOnceForEachItem",
@@ -526,7 +530,7 @@
       "name": "Build Dropped Zip Block",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1680, 900],
+      "position": [1744, -48],
       "notes": "ADR-048 Block 3: a guard-dropped zip entry (nested zip, oversize, too-many, over-total, or extraction-failed) becomes a [BRAK: <reason> <title>] text block so the model sees the gap at the zip's interleaved position. needs_alert=true with the entry's pre-tagged warn_source (multimodal/zip-*) so Aggregate collects it and Stage A fires it via Post Alert (v1). Same envelope as Build Text/Image Block.",
       "parameters": {
         "mode": "runOnceForEachItem",
@@ -538,11 +542,114 @@
       "name": "Stamp Zip Filename",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [920, 760],
+      "position": [912, -80],
       "notes": "ADR-048 Block 3 hardening: the n8n compression node refuses a binary whose fileName/fileExtension does not identify it as a zip ('File extension not found for binary data data') - and Fetch Zip Binary's fileName depends on whatever content-disposition ClickUp returns. Since Zip? Switch already PROVED this is a zip (ext/mime gate), stamp fileExtension='zip' + mimeType='application/zip' (and a .zip fileName from the parent title, else 'archive.zip') so Decompress never fails on a VALID archive for lack of metadata. Without this, a valid zip would silently degrade to a zip_extraction_failed drop+WARN (the exact silent-degradation trap). No binary present (fetch failed, continueRegularOutput) -> passes through untouched -> Decompress/Explode degrade as designed. Proven necessary in host exec 2142 (no filename -> decompress failed) vs 2143 (filename stamped -> 6 entries extracted).",
       "parameters": {
         "mode": "runOnceForEachItem",
         "jsCode": "const item = $input.item;\nif (item.binary && item.binary.data) {\n  const b = item.binary.data;\n  let title = '';\n  try { title = String($('Explode Attachments').item.json.title || ''); } catch (e) { title = ''; }\n  if (!b.fileName || !/\\.zip$/i.test(b.fileName)) {\n    b.fileName = /\\.zip$/i.test(title) ? title : 'archive.zip';\n  }\n  b.fileExtension = 'zip';\n  b.mimeType = 'application/zip';\n}\nreturn item;"
+      }
+    },
+    {
+      "id": "r-ocr-empty",
+      "name": "OCR Empty?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1600, 672],
+      "notes": "ADR-048 Block 5: did the no-OCR primary pass (Docling Convert, do_ocr=false) come back empty? TRUE when md_content is falsy/missing (a scanned/image-only PDF defeats text-only extraction; same empty signal Build Text Block uses for [BRAK]). TRUE -> Restore Doc Binary -> Docling OCR Retry (do_ocr=true). FALSE (digital doc, has text) -> Build Text Block directly. Only scanned PDFs pay the 2nd pass; DOCX/XLSX/HTML/digital-PDF never do.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "ocr-empty-cond",
+              "leftValue": "={{ !(($json.document || {}).md_content) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "r-restore-binary",
+      "name": "Restore Doc Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 880],
+      "notes": "ADR-048 Block 5: the Docling HTTP response drops the input binary, but the OCR-retry pass must re-send the same file bytes. Copy the binary reference from Merge Extractable (the single shared point holding the on-disk `data` binary for BOTH loose and zip-inner docs). Paired-item resolves because retry items descend from Merge Extractable; mirrors Build Text Block's $('...').item recovery pattern. Code node justified: no normal node can reference a prior node's binary.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nitem.binary = $('Merge Extractable').item.binary;\nreturn item;"
+      }
+    },
+    {
+      "id": "r-docling-ocr",
+      "name": "Docling OCR Retry",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1808, 880],
+      "notes": "ADR-048 Block 5: second pass for scanned/image-only PDFs only (reached when the no-OCR pass returned empty). Identical to Docling Convert EXCEPT do_ocr=true (table_mode=fast, document_timeout=120, image_export_mode=placeholder). continueRegularOutput: if OCR also yields nothing (truly unextractable/corrupt), the empty result flows to Build Text Block -> [BRAK: extraction_failed] + WARN (no silent loss).",
+      "parameters": {
+        "method": "POST",
+        "url": "http://docling:5001/v1/convert/file",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "to_formats",
+              "value": "md"
+            },
+            {
+              "name": "image_export_mode",
+              "value": "placeholder"
+            },
+            {
+              "name": "do_ocr",
+              "value": "true"
+            },
+            {
+              "name": "table_mode",
+              "value": "fast"
+            },
+            {
+              "name": "document_timeout",
+              "value": "120"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "r-merge-ocr",
+      "name": "Merge OCR Result",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [1872, 700],
+      "notes": "ADR-048 Block 5: converge the no-OCR-OK branch (OCR Empty? false) and the OCR-retry branch (Docling OCR Retry) into ONE stream so Build Text Block keeps a SINGLE input. Two input connections on Build Text Block made it (and Aggregate Blocks downstream) run once PER connection, splitting the reply into two partial Aggregate outputs (CLAUDE.md trap). Append concats and tolerates an empty input (all-digital -> retry side empty; all-scanned -> false side empty), same as Merge Extractable / Merge Branches.",
+      "parameters": {
+        "numberInputs": 2
       }
     }
   ],
@@ -603,24 +710,13 @@
         ]
       ]
     },
-    "Docling Convert": {
-      "main": [
-        [
-          {
-            "node": "Build Text Block",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Build Image Block": {
       "main": [
         [
           {
             "node": "Merge Branches",
             "type": "main",
-            "index": 0
+            "index": 2
           }
         ]
       ]
@@ -631,7 +727,7 @@
           {
             "node": "Merge Branches",
             "type": "main",
-            "index": 1
+            "index": 4
           }
         ]
       ]
@@ -653,7 +749,7 @@
           {
             "node": "Merge Branches",
             "type": "main",
-            "index": 2
+            "index": 3
           }
         ]
       ]
@@ -806,7 +902,7 @@
           {
             "node": "Merge Branches",
             "type": "main",
-            "index": 3
+            "index": 1
           }
         ]
       ]
@@ -817,7 +913,7 @@
           {
             "node": "Merge Branches",
             "type": "main",
-            "index": 4
+            "index": 0
           }
         ]
       ]
@@ -838,6 +934,68 @@
         [
           {
             "node": "Decompress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Docling Convert": {
+      "main": [
+        [
+          {
+            "node": "OCR Empty?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OCR Empty?": {
+      "main": [
+        [
+          {
+            "node": "Restore Doc Binary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge OCR Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Doc Binary": {
+      "main": [
+        [
+          {
+            "node": "Docling OCR Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Docling OCR Retry": {
+      "main": [
+        [
+          {
+            "node": "Merge OCR Result",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge OCR Result": {
+      "main": [
+        [
+          {
+            "node": "Build Text Block",
             "type": "main",
             "index": 0
           }

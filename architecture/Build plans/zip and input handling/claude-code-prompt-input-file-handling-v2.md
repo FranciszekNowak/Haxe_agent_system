@@ -54,6 +54,8 @@ A daily pg_cron job deleting input-bucket objects older than 24h via the proper 
 
 ## Block 5. Docling tuning (apply Step 0.C findings)
 
+**STATUS: LANDED 2026-06-15** (reader nodes `OCR Empty?` / `Restore Doc Binary` / `Docling OCR Retry` / `Merge OCR Result`; compose env in repo + VPS). `Docling Convert` now sends `do_ocr=false` + `table_mode=fast` + `document_timeout=120`; OCR is scoped off as the primary pass (measured **2.0 s vs 4–6 s, byte-identical** on a real digital PDF) and a **two-pass fallback** re-runs scanned/image-only PDFs with `do_ocr=true` (so they still extract). `table_mode=fast` validated byte-identical to `accurate` on a real Haxe PDF table + 3 production XLSX. Concurrency bound pinned **`DOCLING_SERVE_ENG_LOC_NUM_WORKERS=2` + `OMP_NUM_THREADS=2`** (2 workers × 2 threads = the box's 4 cores; excess queues server-side) — verified live: 3 concurrent → 2-parallel + 1-queued, all succeed. End-to-end verified via the `When Called` path (mixed digital+scanned+corrupt → 3 correct blocks + 1 WARN; digital-only → no stall on the empty retry branch). A 2-input `Build Text Block` initially split the Aggregate output; fixed with the `Merge OCR Result` append node. See ADR-048 Block 5 outcomes. **ADR-048 complete.**
+
 Scope OCR to scanned/image inputs only; TableFormer fast mode if currently accurate; a concurrency bound in front of `docling:5001` so a multi-document zip cannot launch all conversions at once. Do not replace Docling. Record per-doc time before and after.
 
 ## Verification (Definition of Done)

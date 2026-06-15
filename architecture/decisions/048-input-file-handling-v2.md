@@ -1,7 +1,7 @@
 # ADR-048: Input file handling v2 — zip unpacking, Supabase object storage for zip-inner images, a global file-processing config, and Docling tuning
 
-Status: Accepted. Blocks 1–4 landed (global config + lookup; EU bucket + Store step; zip unpacking wired; 24h pg_cron purge + dead-man's-switch). Block 5 (Docling tuning) remains. Two build-time gates inside (large-image provider acceptance; compression-node memory behavior) confirm one correctness point and tune one guard value — gate B resolved in Block 3 (see Consequences); gate A is covered by the existing full-size loose-image contract plus gate D, with a >15 MB zip-path confirmation left to the operator (see Consequences).
-Date: 2026-06-13 (Blocks 1–3 landed 2026-06-15; Block 4 landed 2026-06-15)
+Status: Accepted. **All blocks landed** — Blocks 1–4 (global config + lookup; EU bucket + Store step; zip unpacking wired; daily 05:00 pg_cron purge + dead-man's-switch) and Block 5 (Docling tuning: OCR scoped off with a two-pass fallback, TableFormer fast, a pinned concurrency bound). Two build-time gates inside (large-image provider acceptance; compression-node memory behavior) confirm one correctness point and tune one guard value — gate B resolved in Block 3 (see Consequences); gate A is covered by the existing full-size loose-image contract plus gate D, with a >15 MB zip-path confirmation left to the operator (see Consequences).
+Date: 2026-06-13 (Blocks 1–3 landed 2026-06-15; Block 4 landed 2026-06-15; Block 5 landed 2026-06-15)
 Deciders: Franciszek (operator), with design review
 
 Numbering note: confirm 048 is the next free ADR and that each migration here gets the next free number, against the live repo before committing. ADR-047 (fallback seam) precedes this.
@@ -120,6 +120,48 @@ Measure first (is OCR firing on documents that do not need it; per-document time
   `200 {"message":"Successfully deleted"}` (`net._http_response`) and the `storage.objects` row is gone — bytes
   freed, not orphaned. **Block 4 is fully verified end-to-end and operational** (daily 05:00 Warsaw cron + valid
   key + watchdog).
+
+### Block 5 outcomes (Docling tuning, 2026-06-15)
+
+Measured first on the live `docling:5001` (4 vCPU / 7.6 GB CPU-only VPS), then applied the cheap wins. Docling
+in our reader only ever receives **documents** (images route to the vision branch, never to Docling), so `do_ocr`
+only affects scanned/image-only PDFs.
+
+- **OCR scoping — `do_ocr=false` (primary pass), measured 50–67 % faster, byte-identical.** A real digital business
+  PDF (`Karta Techniczna HX705.pdf`) converted in **2.0 s with OCR off vs 4–6 s with OCR on, producing byte-identical
+  markdown** (1362 chars either way) — OCR was pure overhead. DOCX/XLSX/HTML/TXT/digital-PDF are unaffected (they have
+  a text layer); only scanned/image-only PDFs lose text when OCR is off.
+- **Two-pass OCR fallback preserves scanned docs (ADR Decision 6, "scope OCR to scanned inputs only").** Rather than
+  drop scanned-PDF support, the reader runs `do_ocr=false` first and, when extraction comes back empty (`OCR Empty?`
+  IF), re-runs that one document with `do_ocr=true` (`Restore Doc Binary` re-attaches the file bytes the first HTTP
+  response dropped → `Docling OCR Retry`). The two branches converge through a **`Merge OCR Result`** append node so
+  `Build Text Block` keeps a single input — a 2-input Code node made it (and `Aggregate Blocks`) run once per
+  connection, splitting the reply into two partial outputs; the Merge fixes that (found and fixed during live
+  verification). Common case (all-digital) pays nothing; only scanned docs incur the second pass (~+2–4 s).
+- **TableFormer `table_mode=fast` — validated byte-identical, adopted.** On a real Haxe price table (model codes,
+  EANs, `1 299,00` with a thousands space, right-aligned numerics) `fast` produced **byte-identical** markdown to
+  `accurate` at **2.0 s vs 4.0 s**, and on three real production XLSX exports (R003 towary-w-drodze, L002 APC logistics,
+  R001 PLB region — 73 k / 89 k / 703 k chars) `fast` and `accurate` were byte-identical (TableFormer does not affect
+  native XLSX parsing). A single config flip back to `accurate` if a complex borderless/merged-cell PDF table ever
+  regresses.
+- **Concurrency bound — pinned `DOCLING_SERVE_ENG_LOC_NUM_WORKERS=2` + `OMP_NUM_THREADS=2` in compose.** docling-serve
+  already capped concurrency at its image-default 2 workers (3 concurrent sync conversions ran 2-parallel + 1-queued,
+  all succeeded, `max_sync_wait=120 s` governs shedding), but with `OMP=4` that was 8-thread demand on 4 cores. Pinned
+  to **2 workers × 2 threads = 4 cores exactly** (no oversubscription, max 2 concurrent conversions, the rest queue
+  server-side), so a multi-document zip burst cannot saturate the box. Pinned in **both** `n8n/docker-compose.yml`
+  (repo master) and the VPS `/opt/haxe-agents/docker-compose.yml` so an image bump can't silently revert it.
+  Single-doc latency unchanged at 2.0 s after the restart; `document_timeout=120` added as a per-doc server-side cap.
+- **Silent-degradation coverage.** (1) Saturation/timeout under a zip burst → server-side queue + `document_timeout`
+  + `continueRegularOutput` → empty/error → `[BRAK: extraction_failed]` + `needs_alert` + `warn_source` → `Post Alert
+  (v1)` WARN; the run still completes. (2) A scanned PDF that defeats the no-OCR pass → the two-pass re-extracts; if
+  **both** passes are empty (truly unextractable/corrupt) → `[BRAK]` + WARN (no silent loss). (3) Bound drift on an
+  image bump → pinned in committed compose. Docling tuning is config-only and reversible.
+- **Live verification (When Called path, throwaway caller).** A 3-attachment task returned all three blocks in one
+  Aggregate output, correctly ordered: a digital table (fast path, full markdown table), a scanned PDF (recovered via
+  the OCR retry), and a deliberately-corrupt PDF (`[BRAK]` + one `multimodal/extraction-failed` WARN). A digital-only
+  task returned its single block with the OCR-retry branch empty and **no stall** (the common case). The reader stays
+  pure (warnings returned to the caller, not posted). The one CRITICAL during testing was a malformed test-harness
+  form POST (wrong content-type to the Form Trigger), unrelated to the Docling path — same artifact noted in Block 3.
 
 ## References
 
