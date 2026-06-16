@@ -65,6 +65,12 @@ services:
       EXECUTIONS_DATA_PRUNE: "true"                 # default true; explicit
       EXECUTIONS_DATA_MAX_AGE: "168"                # hours = 7 days (was n8n default 336 = 14 days)
       EXECUTIONS_DATA_PRUNE_MAX_COUNT: "5000"       # keep at most 5000 executions (was default 10000)
+      # Task-runner task timeout (ADR-051 Block 7): the default 300s killed the parallel image batch
+      # (Generate Images Parallel) mid-flight and surfaced it as a CRITICAL. Raised to 900s (15 min) to
+      # fit 2 full gpt-image-2 waves (~176s/image, cap 5 = 10 images). The batch Code node carries an
+      # internal soft-deadline (840s) that returns partial results gracefully BELOW this hard ceiling.
+      # GLOBAL: applies to every Code-node task; the image batch is the only long-running one.
+      N8N_RUNNERS_TASK_TIMEOUT: "900"
     volumes:
       - n8n-main-data:/home/node/.n8n
     networks:
@@ -104,6 +110,10 @@ services:
       EXECUTIONS_DATA_PRUNE: "true"                 # pruning runs on main; set here too for parity (ADR-036 Block 10)
       EXECUTIONS_DATA_MAX_AGE: "168"                # hours = 7 days
       EXECUTIONS_DATA_PRUNE_MAX_COUNT: "5000"
+      # Task-runner task timeout (ADR-051 Block 7): image generation runs HERE, so this is the binding
+      # ceiling for the parallel batch. 900s (was default 300s) fits 2 full gpt-image-2 waves; the batch
+      # Code node's 840s internal soft-deadline degrades gracefully below it. See n8n-main for detail.
+      N8N_RUNNERS_TASK_TIMEOUT: "900"
     networks:
       - n8n-internal
     depends_on:

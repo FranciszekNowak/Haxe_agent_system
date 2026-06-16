@@ -1,6 +1,7 @@
 # ADR-051: Parallel image generation
 
 **Status:** Accepted (all blocks done + verified, 2026-06-15 — master plan `parallel image generation`).
+**Block 7 added 2026-06-16:** graceful task-runner-timeout handling (the batch timeout is now a non-blocking WARN, not a CRITICAL) — see below.
 Block 1 done + verified: LiteLLM key management enabled (65 key-store tables, liveliness 200), image-scoped
 key in Vault, `get_litellm_image_key()` getter live. **Auth spike PASS (2026-06-15):** the pipeline's
 Postgres node (role `postgres`) reads the getter, and a Code-node `Promise.all` fired 2 concurrent
@@ -86,6 +87,49 @@ the image HTTP/fallback live in exactly one place (by deletion, not a shared hel
   429-burst-induced retry was **not** force-tested (can't cheaply/reliably trigger OpenAI's rate limit, and
   the cap-5 batch can't exceed the limit in one wave); the mechanism is LiteLLM's documented router behaviour.
   The cap stays conservative at **5** until a real volume need justifies raising the OpenAI quota.
+
+**Block 7 done + verified (2026-06-16) — graceful task-runner-timeout handling:**
+- **Incident.** A 10-image `Wysoki` batch (`gpt-image-2`, exec 2415, task `869dp81xd`) ran the
+  `Fire Images Concurrently` Code node for exactly **300.003 s** and was killed by n8n's task-runner
+  timeout (`N8N_RUNNERS_TASK_TIMEOUT`, default **300 s**, internal-runner mode — confirmed by the
+  `TaskBroker.handleTaskTimeout` stack and n8n's own error text). The thrown timeout hit the workflow's
+  `errorWorkflow` and fired a **CRITICAL**, contradicting the non-blocking image contract (a failed image
+  must be `success:false` + WARN, never CRITICAL; ADR-047 Block B / ADR-036). The text reply still posted
+  (Image Resolver's `onError:continueRegularOutput`), but zero images generated and the operator was paged.
+- **Why the Code node stays (no native rewrite).** n8n has **no native node that runs HTTP calls in
+  parallel**: the HTTP Request node's "Batching" is a throttle (`Items per Batch` + `Batch Interval`),
+  Split-in-Batches is a serial loop, and a node processes its items sequentially. True in-execution
+  parallelism comes only from the Code-node `Promise.all` (re-confirmed against the node defs, 2026-06-16).
+  A native fan-out would run images **serially** (sum-of-latencies, not max-of-wave) — slower for
+  latency-heavy batches — so the fix hardens the existing Code node rather than replacing it.
+- **C — raise the ceiling.** `N8N_RUNNERS_TASK_TIMEOUT: "900"` (15 min) on **both** `n8n-main` and
+  `n8n-worker` (`n8n/docker-compose.yml`), sized to fit **2 full `gpt-image-2` waves** (~176 s/image,
+  cap 5 = 10 images) incl. a fallback hop. GLOBAL (every Code-node task); the image batch is the only
+  long-running Code node. Deployed `scp` + `docker compose up -d n8n-main n8n-worker` (recreate, not
+  `restart`); verified `=900` in both running containers.
+- **B — degrade gracefully below the ceiling.** `Fire Images Concurrently` now carries an internal
+  **soft-deadline of 840 000 ms (840 s < 900 s)**: the bounded pool is `Promise.race`d against a deadline
+  timer, workers stop pulling once past it, and any slot not completed is returned as `succeeded:false`
+  with `error:'batch_soft_deadline'`. Returning *before* the runner's hard kill turns the timeout into a
+  clean per-image failure (no throw → no CRITICAL) that feeds the existing `warnings[]` → `Has Warnings?`
+  → WARN path; `Assemble Batch Output` emits a clear `image-batch/timeout-partial` reason code. The per-call
+  HTTP timeout was raised **240 s → 300 s** (comfortable for a large high-effort image; ~1.7× the 176 s
+  mean) and **clamped to the remaining budget** so no call starts that can't finish before the deadline;
+  the fallback hop is skipped when <15 s remain.
+- **Cost correctness (realizes Block 3's deferred one-liner).** Block 3 flagged that a hard-failed image
+  still logged an `agent_runs` row at the per-image floor price. Graceful degrade makes whole-batch
+  failure common, so this is now fixed: `Explode Results` applies the floor only when the image
+  **succeeded** (`it.succeeded && it.floor != null`), so a failed/not-generated image bills **0**.
+- **Verified (2026-06-16, isolation via `test-subworkflow.mjs`).** (A) Happy path — 1 image, normal
+  deadline → `success:true`, real PNG, cost logged; proves the restructure (`Promise.race`/`setTimeout`,
+  per-call clamp) doesn't break normal flow. (B) Forced timeout — temp soft-deadline 4 s, 2 images → both
+  `success:false`, `image-batch/timeout-partial` warning, the node **returned (status success, no throw)**,
+  **0 CRITICAL** in the alert channel; cost fix confirmed (`cost_pln 0`, was 0.77). Deadline reverted to
+  840 000 and re-exported drift-clean. **Not force-tested:** the full orchestrator → resolver → Post Reply
+  spine end-to-end (the downstream `warnings[]`→WARN and `[obraz niedostępny]` render is the pre-existing,
+  unchanged path; the batch was verified to feed it the timeout warning). The 5 `log-model-run` WARNs seen
+  during testing were a **test-data artifact** (a synthetic task id failed the `agent_runs` insert; 0 rows
+  leaked, cleaned).
 
 ## Context
 
