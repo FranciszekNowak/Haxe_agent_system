@@ -419,6 +419,20 @@ for operational knowledge. Don't mix these.
 - Database migrations: `supabase/migrations/`
 - n8n workflows: `n8n/workflows/`
 
+## VPS access — SSH is standing-authorized
+
+Claude has **standing permission to SSH into the production VPS** (`franciszek@185.25.149.174`,
+docker group + passwordless sudo) to diagnose and operate the stack — `docker ps` / `logs` /
+`restart`, container health, memory checks, etc. Use it directly; no need to ask first for
+read-only diagnostics or standard incident recovery. Guardrails still apply: **don't edit `.env`
+or make irreversible config changes without per-task confirmation**, and confirm the evidence
+actually supports a state-changing command before running it (restart a container only once
+logs/status show it is genuinely wedged). Deploy dir is `/opt/haxe-agents`; prefer
+`docker compose up -d` for config changes (ADR-033), `docker restart <container>` to bounce a
+hung process. **Caution:** heavy execution floods + rapid workflow create/delete can drive n8n's
+Insights subsystem into a write-error loop that starves `n8n-main` and returns 502 — recover with
+`docker restart n8n-main`; avoid generating large bursts of throwaway executions when testing.
+
 ## When in doubt
 
 - Check `architecture/decisions/` for past reasoning
