@@ -62,8 +62,8 @@ the managed agent calls. Build this plan as-is; the migration swaps the front ch
 | 0 | Capability gate (prove reference transport per provider) | **DONE (2026-06-17)** — Gemini chat-route + gpt-image-2 `/v1/images/edits` (HTTP Request node) both proven with visual fidelity |
 | 1 | Contract: add `reference_refs` to the `generate` block (Stage A) | **DONE (2026-06-17)** — conditional `reference_refs` contract + anchoring paragraph + real-ref example; live Stage A run on `869dp81xd` rendered it (incl. zip-unpacked `NovenPackshot.jpg` ref); non-image task gets plain contract |
 | 2 | Resolver: resolve `reference_refs` → `reference_urls` (via reusable `resolveReferenceToUrl`) | **DONE (2026-06-17)** — standalone `resolveReferenceToUrl(ref, lookup)` in `Build Batch Request`; generate items carry `reference_refs[]`+`lookup_map`; each ref → `reference_urls[]`, miss → `prebatch_warnings` folded into `warnings[]` by `placeholder_id` in `Handle Gen Result`; deployed live + drift-clean; logic proven offline (7/7 assertions: source_ref/url resolve, bogus→WARN, no spurious warns) |
-| 3 | Batch routing: per-provider reference transport flag (no model-forcing) | not started — **NEXT** |
-| 4 | Batch: per-provider reference call + parse both response shapes + fail-soft | not started |
+| 3 | Batch routing: per-provider reference transport flag (no model-forcing) | **DONE (2026-06-17)** — `Resolve Batch Requests` emits `use_reference`/`ref_transport`/`reference_urls` per request; transport classified by the already-routed model (`openai/gpt-image-2`→`edits`, gemini→`gemini`), NO reference-driven model-forcing; no-ref request untouched. Deployed live to `2keb6XVWq5PG0leK`, drift-clean, validates 0-error; logic proven offline (21/21 assertions). No live image run (path inert until Block 4) |
+| 4 | Batch: per-provider reference call + parse both response shapes + fail-soft | not started — **NEXT** |
 | 5 | Warnings + reliability sweep | not started |
 | 6 | End-to-end @-mention verification + ADR finalisation | not started |
 
@@ -239,8 +239,34 @@ section marks the reference path LIVE + the routing rule; drift-clean re-export 
 
 ## Handoff / open items (as of 2026-06-17)
 
-1. **Resume at Block 3** (batch routing: per-provider reference transport flag in `generate-images-parallel.json`
-   → `Resolve Batch Requests`). Blocks 0, 1, and 2 are DONE. Block 2 landed the resolver in
+0. **Resume at Block 4** (batch: per-provider reference call + parse both response shapes + fail-soft, in
+   `generate-images-parallel.json` → `Fire Images Concurrently`). Blocks 0–3 are DONE. Block 3 landed the
+   routing flag in `generate-images-parallel.json` → `Resolve Batch Requests` (deployed live to
+   `2keb6XVWq5PG0leK`, drift-clean, validates 0-error):
+   - Per request, after the (unchanged) model routing + shape-upgrade logic, it now emits three fields:
+     `use_reference` (true when the request carries ≥1 non-blank `reference_urls`), `ref_transport`
+     (`'edits'` when the chosen model is `openai/gpt-image-2`, else `'gemini'`), and the cleaned
+     `reference_urls[]`. Classification follows the **already-chosen** model — there is **no
+     reference-driven model-forcing** (a Niski reference stays on `gemini-2.5-flash-image`; the pre-existing
+     gemini→gpt-image-2 *shape* upgrade still applies and correctly carries `ref_transport:'edits'`).
+   - A no-reference request gets `use_reference:false`, `ref_transport:''`, `reference_urls:[]` and is
+     otherwise byte-for-byte unchanged (model, size, prices, quality all preserved).
+   - **Block 4 consumes these three fields.** `worker(req)`: if `use_reference` → `callImageReference(req)`
+     (gemini chat-route for `ref_transport:'gemini'`, gpt-image-2 `/v1/images/edits` for `'edits'`,
+     parsing the two response shapes from Block 0); on failure + time remaining → fall back to the existing
+     plain `callImage` text-to-image with `degrade_reason='reference-unanchored'`. Keep `callImageReference`
+     self-contained (inputs: prompt, model, `reference_urls`, `ref_transport`) so the future tool handler
+     reuses it verbatim (ADR-053/054).
+   - **Verification:** logic proven offline (21/21 assertions on the real extracted node code — gemini tiers
+     classify `gemini`, gpt-image-2 classifies `edits`, no-ref untouched, blank/empty urls filtered, mixed
+     batch handled per-request, shape-upgrade interaction yields `edits`). **No live image run fired** — the
+     reference path is inert until Block 4, so a live batch would only exercise plain text-to-image and add
+     prod execution volume (incident lesson) without testing references; the meaningful end-to-end (real
+     attached product photo, visible anchoring) is Block 6's DoD. Live workflow validates 0-error.
+   - **`current.md` still intentionally NOT updated** — `reference_urls`/`ref_transport` are produced but not
+     yet consumed; the "reference path LIVE" write-back stays Block 6's DoD.
+
+1. **(historical — Block 2 handoff, kept for context)** Block 2 landed the resolver in
    `image-resolver.json` (deployed live to `znDqcfgXK6CNte20`, drift-clean):
    - `Build Batch Request` now holds the standalone, caller-agnostic `resolveReferenceToUrl(ref, lookup)` (no
      `$json`/item context — the future `generate_image` tool handler reuses it verbatim with a `file_id`-derived
