@@ -65,8 +65,8 @@ the managed agent calls. Build this plan as-is; the migration swaps the front ch
 | 3 | Batch routing: per-provider reference transport flag (no model-forcing) | **DONE (2026-06-17)** — `Resolve Batch Requests` emits `use_reference`/`ref_transport`/`reference_urls` per request; transport classified by the already-routed model (`openai/gpt-image-2`→`edits`, gemini→`gemini`), NO reference-driven model-forcing; no-ref request untouched. Deployed live to `2keb6XVWq5PG0leK`, drift-clean, validates 0-error; logic proven offline (21/21 assertions). No live image run (path inert until Block 4) |
 | 4a | Batch: Gemini reference call in the Code node + fail-soft (edits → WARN) | **DONE (2026-06-17)** — self-contained `callImageReference` (Gemini chat-route) in `Fire Images Concurrently`; `ref_transport:'edits'` returns unsupported (no network call) → fail-soft to plain text-to-image + `image-batch/reference-edit-unsupported` WARN; `image-batch/reference-unanchored` WARN on a failed Gemini ref. Deployed live to `2keb6XVWq5PG0leK`, drift-clean, validates 0-error; 30/30 offline assertions; all 4 Code nodes syntax-checked. No live image run (Block 6's DoD) |
 | 4b | Batch: gpt-image-2 edits leg via dedicated HTTP Request node sub-workflow | **DONE (2026-06-17)** — `Generate Image Edit gpt-image-2 (v1)` sub-workflow (`ScjmV2qQpvww3sWm`, active) does the Block-0 multipart edit (When Called → Get Image Key → Download Reference → Edit Call (HTTP Request node, formBinaryData) → Shape b64); batch `Resolve Batch Requests` emits `ref_leg`, `Route Edits` (Switch) detours `edits` to `Run gpt-image-2 Edit` (executeWorkflow, onError fail-soft) → `Attach Edit b64` → `Merge Edit Leg` → `Fire`; worker uses the pre-computed `edit_b64` (`used_reference:true`) or fails soft to plain gen (`reference-unanchored`). Live transport re-proven in the real sub-workflow (decoded edit reflected the reference, HTTP 200, ~35 s, cost header present); 43/43 offline assertions; deployed live to `2keb6XVWq5PG0leK`, validates 0-error, drift-clean. `reference-edit-unsupported` no longer reachable from worker (handler kept as backstop). No live full-batch run (Block 6's DoD) |
-| 5 | Warnings + reliability sweep | not started — **NEXT** |
-| 6 | End-to-end @-mention verification + ADR finalisation | not started |
+| 5 | Warnings + reliability sweep | **DONE (2026-06-17)** — full per-image WARN surface through the existing seam, never CRITICAL: resolver `reference-ref-not-found` (Block 2) + batch `reference-unanchored`/`reference-edit-unsupported` (backstop) + NEW `multimodal/reference-fetch-failed` and `multimodal/reference-oversize`, classified by the edit sub-workflow's `fail_kind` (`fetch`=URL undownloadable / `oversize`=rejected too large / `edit`=generic), carried `Shape b64`→`Attach Edit b64`→`Fire`→`Assemble`. Reliability fix: gpt-image-2 **edits priced at the tier floor** (the edit cost header under-reports ~13× — live $0.016 vs floor $0.21; generations' header is reliable, untouched). 54/54 offline assertions (each degrade→exactly one WARN, success→none, never CRITICAL, floor pricing); live fetch-failed re-proven (dead URL → `fail_kind:'fetch'`, 2 s, no image); both files validate 0-error, drift-clean; 0 CRITICAL |
+| 6 | End-to-end @-mention verification + ADR finalisation | not started — **NEXT** |
 
 Migration legend: Blocks 0, 3, 4a, 4b, 5 = reused as tool internals. Blocks 1, 2 = superseded-but-cheap at
 migration (Block 1 prompt text; Block 2 relocates via the reusable resolver).
@@ -265,8 +265,37 @@ section marks the reference path LIVE + the routing rule; drift-clean re-export 
 
 ## Handoff / open items (as of 2026-06-17)
 
-0. **Resume at Block 5** (warnings + reliability sweep — see the Block 5 section above). Blocks 0–3, **4a**,
-   and **4b** are DONE. Block 4b landed the gpt-image-2 edits leg:
+0. **Resume at Block 6** (end-to-end @-mention verification + ADR finalisation — see the Block 6 section
+   above). Blocks 0–5 are DONE. **Block 5 (warnings + reliability sweep) landed:**
+   - **Complete WARN surface, never CRITICAL.** The five reference warning types now all exist and ride the
+     existing seam (resolver `warnings[]` → `execute-llm-call Has Warnings?` → WARN): `multimodal/reference-ref-not-found`
+     (resolver, Block 2); `multimodal/reference-fetch-failed` and `multimodal/reference-oversize` (NEW, Block 5);
+     `image-batch/reference-edit-unsupported` (backstop, unreachable post-4b); `image-batch/reference-unanchored`
+     (generic / Gemini-path failures).
+   - **`fail_kind` classification.** The edit sub-workflow `Shape b64` now classifies a failed edit into
+     `fail_kind`: `'fetch'` (no binary reached Edit Call — the reference URL couldn't be downloaded; detected via
+     `$('Download Reference').first().binary.data`, with `alwaysOutputData` on Download so the chain always reaches
+     Shape), `'oversize'` (the edit error body matches a size-related keyword), or `'edit'` (generic). It flows
+     `Shape b64` → `Attach Edit b64` (`edit_fail_kind`) → `Fire` (maps to `degrade_reason`) → `Assemble` (maps to
+     the WARN). Gemini-path failures can't be distinguished (LiteLLM fetches server-side) and stay `reference-unanchored`.
+   - **Cost reliability fix.** gpt-image-2 **edits are now priced at the tier floor** (`fallback_price_per_unit`),
+     not the edit cost header — the Block 4b live run proved the edit header under-reports ~13× (edit ~0.016 USD vs
+     generation ~0.21 USD ≈ floor). The fix is localized to the edit-hit branch in `Fire`; generations (reliable
+     header) and Gemini are untouched. This also clears the speculative "generations are mis-priced too" worry from
+     the Block 4b handoff — the live data showed the *generation* header is reliable.
+   - **Verification:** 54/54 offline assertions (Shape `fail_kind` for fetch/oversize/edit/success; Fire floor
+     pricing + `fail_kind`→`degrade_reason`; Explode prices the edit at the floor with no spurious cost-header-missing;
+     Attach carries `edit_fail_kind`; Assemble emits exactly one WARN per degrade path, none for clean success, never
+     CRITICAL). Live fetch-failed re-proven in the real sub-workflow (dead URL → `ok:false`, `fail_kind:'fetch'`, ~2 s,
+     no image generated). Both files validate 0-error, both drift-clean, 0 CRITICAL. (A validator false positive —
+     "Invalid $ usage" from a `$0.xx` in a comment — was cleared by removing the literal `$`.)
+   - **What 6 must do:** the real end-to-end @-mention (Block 6 section) — Stage A emits `reference_refs`, resolver
+     resolves `reference_urls`, the batch anchors a real attached product photo, the image renders inline and
+     visibly reflects the product; plus the fail-soft case. Then finalise ADR-052 → Accepted and update
+     `architecture/current.md` (the "reference path LIVE" write-back, still deferred to here).
+   - **`current.md` still intentionally NOT updated** — that write-back is Block 6's DoD.
+
+1. **(historical — Block 4b handoff, kept for context)** Block 4b landed the gpt-image-2 edits leg:
    - New sub-workflow **`Generate Image Edit gpt-image-2 (v1)`** (`ScjmV2qQpvww3sWm`, active, repo file
      `n8n/workflows/generate-image-edit-gpt-image-2.json`): `When Called(placeholder_id,prompt,size,reference_url)`
      → `Get Image Key` (Vault) → `Download Reference` (HTTP GET → binary `data`) → `Edit Call` (HTTP Request
@@ -299,7 +328,7 @@ section marks the reference path LIVE + the routing rule; drift-clean re-export 
      gpt-image-2 *generations* too (pre-existing), so consider whether to floor-price all gpt-image-2 output.
    - **`current.md` still intentionally NOT updated** — the "reference path LIVE" write-back stays Block 6's DoD.
 
-1. **(historical — Block 4a handoff, kept for context)** Block 4a landed in `generate-images-parallel.json`
+2. **(historical — Block 4a handoff, kept for context)** Block 4a landed in `generate-images-parallel.json`
    (deployed live to `2keb6XVWq5PG0leK`, drift-clean, validates 0-error):
    - `Fire Images Concurrently` gained a self-contained `callImageReference(req)` implementing the **Gemini
      chat-route** transport (`POST /v1/chat/completions`, one `image_url` part per reference URL; parse
@@ -322,7 +351,7 @@ section marks the reference path LIVE + the routing rule; drift-clean re-export 
      end-to-end (real attached product photo, visible anchoring) is Block 6's DoD.
    - **`current.md` still intentionally NOT updated** — the "reference path LIVE" write-back stays Block 6's DoD.
 
-2. **(historical — Block 2 handoff, kept for context)** Block 2 landed the resolver in
+3. **(historical — Block 2 handoff, kept for context)** Block 2 landed the resolver in
    `image-resolver.json` (deployed live to `znDqcfgXK6CNte20`, drift-clean):
    - `Build Batch Request` now holds the standalone, caller-agnostic `resolveReferenceToUrl(ref, lookup)` (no
      `$json`/item context — the future `generate_image` tool handler reuses it verbatim with a `file_id`-derived
@@ -345,26 +374,26 @@ section marks the reference path LIVE + the routing rule; drift-clean re-export 
      end-to-end run (real attached product photo, visible anchoring) is Block 6's DoD.
    - **`current.md` still intentionally NOT updated** — `reference_urls` is produced but not yet consumed; the
      "reference path LIVE" write-back stays Block 6's DoD.
-3. **Orphaned throwaway workflow STILL pending manual deletion:** `1fEEAhXlqgo1B8Sf` ("_TMP test-subworkflow
+4. **Orphaned throwaway workflow STILL pending manual deletion:** `1fEEAhXlqgo1B8Sf` ("_TMP test-subworkflow
    PROBE adr052 reference image (throwaway)"). It is now **archived + inactive** (no longer active, so the
    "Workflow activation failed sub-workflow validation" log line has stopped — it is benign), but it still
    exists. The auto-mode classifier blocked the MCP delete again (workflow not created by the agent in-session).
    **Action: delete it from the n8n UI**, or authorize the delete. This session's own probe (`ctfI4tzrM6le0wDY`)
    was created and deleted in-session — already gone.
-4. **Testing discipline (hard lesson — see ADR-052 incident + CLAUDE.md):** the Block 0 spike took prod down by
+5. **Testing discipline (hard lesson — see ADR-052 incident + CLAUDE.md):** the Block 0 spike took prod down by
    flooding n8n with throwaway executions + rapid workflow create/delete, wedging the Insights subsystem →
    502. Recover with `docker restart n8n-main`. Keep test execution volume LOW; delete throwaway workflows
    promptly.
-5. **What has shipped live so far (Blocks 1–4b):** `assemble-context-and-build-prompt.json` (Block 1 contract),
-   `image-resolver.json` (Block 2 resolver), and `generate-images-parallel.json` (Blocks 3, 4a, 4b) are all
-   deployed live and drift-clean, plus the new `generate-image-edit-gpt-image-2.json` sub-workflow (Block 4b).
+6. **What has shipped live so far (Blocks 1–5):** `assemble-context-and-build-prompt.json` (Block 1 contract),
+   `image-resolver.json` (Block 2 resolver), and `generate-images-parallel.json` (Blocks 3, 4a, 4b, 5) are all
+   deployed live and drift-clean, plus the `generate-image-edit-gpt-image-2.json` sub-workflow (Blocks 4b, 5).
    The reference path is wired end-to-end but **not yet exercised by a real @-mention** — that is Block 6.
    `architecture/current.md` is still intentionally NOT updated (the "reference path LIVE" write-back is Block 6's DoD).
-6. **Pre-existing repo↔live drift unrelated to this ADR (flag for a future sweep):** `check-workflow-drift.mjs`
+7. **Pre-existing repo↔live drift unrelated to this ADR (flag for a future sweep):** `check-workflow-drift.mjs`
    reports DRIFT on `decide-research-and-deliver.json`, `post-reply.json`, `read-input.json`, and
    `workspace-search.json` (IF/Switch/Merge nodes none of the ADR-052 blocks touched — the known partial-update
    sanitization drift). Not caused by Block 4b; left for a dedicated drift-reconciliation pass.
-7. **Migration hardening:** keep `resolveReferenceToUrl` (Block 2), `callImageReference` (Block 4a), and the
+8. **Migration hardening:** keep `resolveReferenceToUrl` (Block 2), `callImageReference` (Block 4a), and the
    `Generate Image Edit gpt-image-2 (v1)` sub-workflow (Block 4b) self-contained and caller-agnostic. They are
    what the future `generate_image` tool handler reuses verbatim (by import / by `executeWorkflow`), which is what
    makes this whole plan absorbed-not-redone by ADR-053.

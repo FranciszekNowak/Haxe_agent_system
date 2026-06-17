@@ -56,7 +56,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [440, 0],
-      "notes": "Download the reference image bytes to binary property `data` (responseFormat file -> no base64 in JSON; off-heap under binaryMode separate). Reference URLs are pre-signed (ClickUp / Supabase signed), so no auth header. Mirrors read-input's Fetch Attachment Binary. continueRegularOutput + retry: a dead/404 ref URL leaves no binary, so Edit Call yields no b64 and Shape b64 returns ok:false -> caller fails soft to plain gen (never throws/CRITICAL).",
+      "notes": "Download the reference image bytes to binary property `data` (responseFormat file -> no base64 in JSON; off-heap under binaryMode separate). Reference URLs are pre-signed (ClickUp / Supabase signed), so no auth header. Mirrors read-input's Fetch Attachment Binary. continueRegularOutput + retry: a dead/404 ref URL leaves no binary, so Edit Call yields no b64 and Shape b64 returns ok:false -> caller fails soft to plain gen (never throws/CRITICAL). Block 5: alwaysOutputData so a failed download still emits an item (no binary) -> the chain reaches Shape b64, which reads this node's binary presence to classify fail_kind='fetch'.",
       "parameters": {
         "url": "={{ $('When Called').first().json.reference_url }}",
         "options": {
@@ -70,7 +70,8 @@
       "onError": "continueRegularOutput",
       "retryOnFail": true,
       "maxTries": 2,
-      "waitBetweenTries": 2000
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
     },
     {
       "id": "edit-call",
@@ -138,9 +139,9 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [880, 0],
-      "notes": "SOLE TERMINAL (sub-workflow return determinism): single linear chain, one leaf. Parses the Edit Call full response -> {placeholder_id (echoed for caller correlation), ok, b64_json (data[0].b64_json), header_cost (x-litellm-response-cost; treat as unreliable per Block 0 -> caller keeps the price floor), statusCode, error}. ok:false (no b64 / non-2xx / network fail) tells the caller to fail soft to plain text-to-image. Never throws.",
+      "notes": "SOLE TERMINAL (sub-workflow return determinism): single linear chain, one leaf. Parses the Edit Call full response -> {placeholder_id (echoed for caller correlation), ok, b64_json (data[0].b64_json), header_cost (x-litellm-response-cost; treat as unreliable per Block 0 -> caller keeps the price floor), statusCode, error}. ok:false (no b64 / non-2xx / network fail) tells the caller to fail soft to plain text-to-image. Never throws. ADR-052 Block 5: also returns fail_kind — 'fetch' (no binary reached Edit Call -> the reference URL couldn't be downloaded), 'oversize' (edit error body indicates the image is too large), or 'edit' (generic edit rejection) — so the batch can emit a distinct, actionable WARN per failure mode.",
       "parameters": {
-        "jsCode": "const wc = $('When Called').first().json;\nlet b64 = null, sc = null, header_cost = null, err = '';\ntry {\n  const r = $input.first() ? ($input.first().json || {}) : {};\n  const body = (r && r.body != null) ? r.body : r;\n  sc = (r && r.statusCode != null) ? r.statusCode : null;\n  const data = body && body.data;\n  b64 = (data && data[0] && data[0].b64_json) ? data[0].b64_json : null;\n  const hdrs = (r && r.headers) ? r.headers : {};\n  const ch = hdrs['x-litellm-response-cost'];\n  header_cost = (ch != null && ch !== '') ? Number(ch) : null;\n  if (!b64) err = 'gpt-image-2-edit-no-b64' + (sc != null ? (' (HTTP ' + sc + ')') : '');\n} catch (e) {\n  err = 'shape-error: ' + ((e && e.message) ? e.message : String(e));\n}\nreturn [{ json: { placeholder_id: wc.placeholder_id || '', ok: !!b64, b64_json: b64, header_cost: header_cost, statusCode: sc, error: err } }];\n"
+        "jsCode": "const wc = $('When Called').first().json;\nlet b64 = null, sc = null, header_cost = null, err = '', fail_kind = '';\n// ADR-052 Block 5: did the reference download succeed (binary reached Edit Call)? Distinguishes a fetch\n// failure (dead/expired/unreachable URL) from an edit rejection, so the caller emits an actionable WARN.\nlet fetchOk = false;\ntry { const dl = $('Download Reference').first(); fetchOk = !!(dl && dl.binary && dl.binary.data); } catch (e0) { fetchOk = false; }\ntry {\n  const r = $input.first() ? ($input.first().json || {}) : {};\n  const body = (r && r.body != null) ? r.body : r;\n  sc = (r && r.statusCode != null) ? r.statusCode : null;\n  const data = body && body.data;\n  b64 = (data && data[0] && data[0].b64_json) ? data[0].b64_json : null;\n  const hdrs = (r && r.headers) ? r.headers : {};\n  const ch = hdrs['x-litellm-response-cost'];\n  header_cost = (ch != null && ch !== '') ? Number(ch) : null;\n  if (!b64) {\n    err = 'gpt-image-2-edit-no-b64' + (sc != null ? (' (HTTP ' + sc + ')') : '');\n    if (!fetchOk) { fail_kind = 'fetch'; }\n    else { let blob = ''; try { blob = JSON.stringify(body || {}).toLowerCase(); } catch (e1) { blob = ''; } fail_kind = /too large|too big|maximum|max size|file size|dimension|pixel|exceeds|payload/.test(blob) ? 'oversize' : 'edit'; }\n  }\n} catch (e) {\n  err = 'shape-error: ' + ((e && e.message) ? e.message : String(e));\n  fail_kind = fetchOk ? 'edit' : 'fetch';\n}\nreturn [{ json: { placeholder_id: wc.placeholder_id || '', ok: !!b64, b64_json: b64, header_cost: header_cost, statusCode: sc, error: err, fail_kind: fail_kind } }];\n"
       }
     }
   ],

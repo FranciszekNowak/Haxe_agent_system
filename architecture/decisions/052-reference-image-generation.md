@@ -4,7 +4,8 @@
 proven: the Gemini chat-route and the gpt-image-2 `/v1/images/edits` multipart path (via a dedicated n8n HTTP
 Request node). Blocks 1–3 DONE. **Block 4 DONE — 4a (Gemini reference transport, 2026-06-17) and 4b
 (gpt-image-2 edits leg via a dedicated HTTP Request node sub-workflow, 2026-06-17)** — see the Block 4 section
-below. Remaining: Block 5 (warnings/reliability sweep) and Block 6 (end-to-end @-mention + finalisation).
+below. **Block 5 (warnings + reliability sweep) DONE — 2026-06-17** (see the Block 5 section below).
+Remaining: Block 6 (end-to-end @-mention + finalisation).
 Tracked block-by-block in `architecture/Build plans/adr-052-reference-image-generation/master-plan.md`.
 
 **Date:** 2026-06-16
@@ -151,6 +152,32 @@ fail-soft / soft-deadline / bounded-concurrency machinery — Block 4 is split:
   ~$0.01 — unreliable per Block 0, price floor kept); 43/43 offline logic assertions; 0-error validation; both repo
   files drift-clean. This sub-workflow is also the cleaner migration unit — the future `generate_image` tool handler
   calls it directly by `executeWorkflow`, since the transport is irreducibly node-based.
+
+## Block 5 — Warnings + reliability sweep (DONE 2026-06-17)
+
+Two parts, both on the existing `warnings[]` seam (resolver → `execute-llm-call` `Has Warnings?` → WARN), never
+CRITICAL, every delivering path still `success:true`:
+
+1. **Complete, actionable warning surface.** A degraded reference now says *why*. The edit sub-workflow's
+   `Shape b64` classifies a failed edit into `fail_kind` — `'fetch'` (no binary reached `Edit Call`, i.e. the
+   reference URL couldn't be downloaded; detected from `$('Download Reference').first().binary.data`, with
+   `alwaysOutputData` on Download so the chain always reaches Shape), `'oversize'` (the edit error body matches a
+   size-related keyword), or `'edit'` (generic). It flows `Shape b64` → `Attach Edit b64` (`edit_fail_kind`) →
+   `Fire` (→ `degrade_reason`) → `Assemble` (→ WARN). The five reference warning types: `multimodal/reference-ref-not-found`
+   (resolver), `multimodal/reference-fetch-failed` + `multimodal/reference-oversize` (new here),
+   `image-batch/reference-edit-unsupported` (backstop, unreachable after 4b), `image-batch/reference-unanchored`
+   (generic / Gemini-path, which can't be sub-classified because LiteLLM fetches the URL server-side).
+
+2. **gpt-image-2 edits are priced at the tier floor, not the cost header.** The Block 4b live run showed the
+   `/v1/images/edits` `x-litellm-response-cost` header **under-reports ~13×** (edit ~0.016 USD vs an equivalent
+   generation ~0.21 USD, which matches `fallback_price_per_unit`). So the edit-hit path in `Fire` prices the image
+   at the floor (the authoritative gpt-image-2 price, consistent with Block 0). This is **localized to the edit
+   leg** — gpt-image-2 *generations* return a reliable header (the live data disproved the earlier worry that
+   generations were mis-priced too), and Gemini is untouched. Cost tracking no longer silently under-counts edits.
+
+Verified by 54 offline assertions (classification, floor pricing, one-WARN-per-degrade, never-CRITICAL) plus a
+live fetch-failed run (dead URL → `fail_kind:'fetch'`, ~2 s, no image generated). Both workflows validate 0-error
+and are drift-clean.
 
 ## Consequences
 
