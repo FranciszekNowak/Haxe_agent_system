@@ -63,11 +63,12 @@ the managed agent calls. Build this plan as-is; the migration swaps the front ch
 | 1 | Contract: add `reference_refs` to the `generate` block (Stage A) | **DONE (2026-06-17)** — conditional `reference_refs` contract + anchoring paragraph + real-ref example; live Stage A run on `869dp81xd` rendered it (incl. zip-unpacked `NovenPackshot.jpg` ref); non-image task gets plain contract |
 | 2 | Resolver: resolve `reference_refs` → `reference_urls` (via reusable `resolveReferenceToUrl`) | **DONE (2026-06-17)** — standalone `resolveReferenceToUrl(ref, lookup)` in `Build Batch Request`; generate items carry `reference_refs[]`+`lookup_map`; each ref → `reference_urls[]`, miss → `prebatch_warnings` folded into `warnings[]` by `placeholder_id` in `Handle Gen Result`; deployed live + drift-clean; logic proven offline (7/7 assertions: source_ref/url resolve, bogus→WARN, no spurious warns) |
 | 3 | Batch routing: per-provider reference transport flag (no model-forcing) | **DONE (2026-06-17)** — `Resolve Batch Requests` emits `use_reference`/`ref_transport`/`reference_urls` per request; transport classified by the already-routed model (`openai/gpt-image-2`→`edits`, gemini→`gemini`), NO reference-driven model-forcing; no-ref request untouched. Deployed live to `2keb6XVWq5PG0leK`, drift-clean, validates 0-error; logic proven offline (21/21 assertions). No live image run (path inert until Block 4) |
-| 4 | Batch: per-provider reference call + parse both response shapes + fail-soft | not started — **NEXT** |
+| 4a | Batch: Gemini reference call in the Code node + fail-soft (edits → WARN) | **DONE (2026-06-17)** — self-contained `callImageReference` (Gemini chat-route) in `Fire Images Concurrently`; `ref_transport:'edits'` returns unsupported (no network call) → fail-soft to plain text-to-image + `image-batch/reference-edit-unsupported` WARN; `image-batch/reference-unanchored` WARN on a failed Gemini ref. Deployed live to `2keb6XVWq5PG0leK`, drift-clean, validates 0-error; 30/30 offline assertions; all 4 Code nodes syntax-checked. No live image run (Block 6's DoD) |
+| 4b | Batch: gpt-image-2 edits leg via dedicated HTTP Request node sub-workflow | not started — **NEXT** |
 | 5 | Warnings + reliability sweep | not started |
 | 6 | End-to-end @-mention verification + ADR finalisation | not started |
 
-Migration legend: Blocks 0, 3, 4, 5 = reused as tool internals. Blocks 1, 2 = superseded-but-cheap at
+Migration legend: Blocks 0, 3, 4a, 4b, 5 = reused as tool internals. Blocks 1, 2 = superseded-but-cheap at
 migration (Block 1 prompt text; Block 2 relocates via the reusable resolver).
 
 ## Critical files
@@ -201,18 +202,43 @@ follows the Block 0 resolution (native gpt-image-2 edits, or downgrade to `gemin
 
 ## Block 4 — Batch: per-provider reference call + fail-soft (`Fire Images Concurrently`)
 
-`generate-images-parallel.json` → `Fire Images Concurrently`, no graph change. Add `callImageReference(req)`:
+**SPLIT into 4a + 4b (2026-06-17).** A confirming probe closed Block 0's last open question: the one
+Code-node multipart method Block 0 never tried — a hand-built `multipart/form-data` `Buffer` passed to
+`this.helpers.httpRequest` — **also fails** (LiteLLM 400 `Too many fields`; the n8n helper does not send a
+raw `Buffer` body intact). So the gpt-image-2 `edits` transport **cannot** live in the Code node; only the
+dedicated HTTP Request node serializes multipart binary. Because that leg is a graph change (a node, not a
+function) and the Gemini leg is plain JSON that fits the existing concurrent Code node, Block 4 is split.
+
+### Block 4a — Gemini reference in the Code node + fail-soft (DONE 2026-06-17)
+
+`generate-images-parallel.json` → `Fire Images Concurrently`, no graph change. Self-contained
+`callImageReference(req)` (inputs: `prompt`, `primary_model`, `reference_urls[]`, `ref_transport`):
 - `ref_transport==='gemini'` → `POST /v1/chat/completions` with the text prompt + an `image_url` part per
   reference URL; parse image from `choices[0].message.images[0].image_url.url` (strip `data:…;base64,` → b64).
-- `ref_transport==='edits'` → the Block-0-proven gpt-image-2 edits transport; parse `data[0].b64_json`.
-`worker(req)`: if `use_reference` → `callImageReference`; on failure (fetch/4xx-5xx/empty) + time remaining →
-fall back to plain `callImage(model,req)` text-to-image, `degrade_reason='reference-unanchored'`. Else existing
-path unchanged. Track `used_reference`. Keep soft-deadline/Promise.race/`notGenerated` intact.
-**DoD:** valid ref → decoded image reflects ref, `used_reference:true`, cost logged, 0 CRITICAL; bad ref →
-plain-gen fallback + WARN, `success:true`; no-ref unchanged.
+- `ref_transport==='edits'` → returns *unsupported* **without** a network call (Code node can't do multipart).
+`worker(req)`: if `use_reference` → `callImageReference`; on failure/unsupported + time remaining → fail soft
+to plain `callImage(model,req)` text-to-image, `degrade_reason='reference-unanchored'` (Gemini call failed) or
+`'reference-edit-unsupported'` (edits not yet wired). Else existing path unchanged. Tracks `used_reference`;
+soft-deadline/Promise.race/`notGenerated` intact. `Explode Results` carries `used_reference`+`degrade_reason`;
+`Assemble Batch Output` emits `image-batch/reference-unanchored` / `image-batch/reference-edit-unsupported`
+WARNs through the existing seam (never CRITICAL). **DoD — MET:** 30/30 offline assertions; deployed live to
+`2keb6XVWq5PG0leK`, drift-clean, validates 0-error, all 4 Code nodes syntax-checked. (Live image run is Block 6.)
 
-> Migration note: reused as tool internals. This is the durable reference engine; keep `callImageReference`
-> self-contained (inputs: prompt, model, `reference_urls`, `ref_transport`) so the tool handler calls it directly.
+### Block 4b — gpt-image-2 edits leg via a dedicated HTTP Request node sub-workflow (NEXT)
+
+Wire the Block-0-proven gpt-image-2 `/v1/images/edits` multipart transport as a small reusable sub-workflow
+(`When Called(prompt,size,reference_url) → Get Image Key → Download Reference (HTTP GET → binary) → Edit Call
+(HTTP Request node, `formBinaryData`) → Shape b64`). The batch routes `ref_transport==='edits'` requests to it
+via an `executeWorkflow` node with `onError` fail-soft to plain gen; on success set `used_reference:true` and
+parse `data[0].b64_json`. Keep the batch's single-terminal return discipline (merge back into `Assemble Batch
+Output` as the sole leaf). **DoD:** a top-tier (`gpt-image-2`) reference → decoded image reflects ref,
+`used_reference:true`, cost logged (price floor), 0 CRITICAL; edit failure → plain-gen fallback + WARN; the
+`reference-edit-unsupported` WARN no longer fires for top tiers.
+
+> Migration note: reused as tool internals. The durable reference engine is `callImageReference` (Gemini,
+> Block 4a) **plus** the `gpt-image-2 edit` sub-workflow (Block 4b). Keep both caller-agnostic so the future
+> `generate_image` tool handler calls them directly: `callImageReference` by import, the edit sub-workflow by
+> `executeWorkflow`.
 
 ## Block 5 — Warnings + reliability sweep (`Assemble Batch Output`)
 
@@ -239,32 +265,31 @@ section marks the reference path LIVE + the routing rule; drift-clean re-export 
 
 ## Handoff / open items (as of 2026-06-17)
 
-0. **Resume at Block 4** (batch: per-provider reference call + parse both response shapes + fail-soft, in
-   `generate-images-parallel.json` → `Fire Images Concurrently`). Blocks 0–3 are DONE. Block 3 landed the
-   routing flag in `generate-images-parallel.json` → `Resolve Batch Requests` (deployed live to
-   `2keb6XVWq5PG0leK`, drift-clean, validates 0-error):
-   - Per request, after the (unchanged) model routing + shape-upgrade logic, it now emits three fields:
-     `use_reference` (true when the request carries ≥1 non-blank `reference_urls`), `ref_transport`
-     (`'edits'` when the chosen model is `openai/gpt-image-2`, else `'gemini'`), and the cleaned
-     `reference_urls[]`. Classification follows the **already-chosen** model — there is **no
-     reference-driven model-forcing** (a Niski reference stays on `gemini-2.5-flash-image`; the pre-existing
-     gemini→gpt-image-2 *shape* upgrade still applies and correctly carries `ref_transport:'edits'`).
-   - A no-reference request gets `use_reference:false`, `ref_transport:''`, `reference_urls:[]` and is
-     otherwise byte-for-byte unchanged (model, size, prices, quality all preserved).
-   - **Block 4 consumes these three fields.** `worker(req)`: if `use_reference` → `callImageReference(req)`
-     (gemini chat-route for `ref_transport:'gemini'`, gpt-image-2 `/v1/images/edits` for `'edits'`,
-     parsing the two response shapes from Block 0); on failure + time remaining → fall back to the existing
-     plain `callImage` text-to-image with `degrade_reason='reference-unanchored'`. Keep `callImageReference`
-     self-contained (inputs: prompt, model, `reference_urls`, `ref_transport`) so the future tool handler
-     reuses it verbatim (ADR-053/054).
-   - **Verification:** logic proven offline (21/21 assertions on the real extracted node code — gemini tiers
-     classify `gemini`, gpt-image-2 classifies `edits`, no-ref untouched, blank/empty urls filtered, mixed
-     batch handled per-request, shape-upgrade interaction yields `edits`). **No live image run fired** — the
-     reference path is inert until Block 4, so a live batch would only exercise plain text-to-image and add
-     prod execution volume (incident lesson) without testing references; the meaningful end-to-end (real
-     attached product photo, visible anchoring) is Block 6's DoD. Live workflow validates 0-error.
-   - **`current.md` still intentionally NOT updated** — `reference_urls`/`ref_transport` are produced but not
-     yet consumed; the "reference path LIVE" write-back stays Block 6's DoD.
+0. **Resume at Block 4b** (gpt-image-2 edits leg via a dedicated HTTP Request node sub-workflow — see the
+   Block 4b section above). Blocks 0–3 and **4a** are DONE. Block 4a landed in `generate-images-parallel.json`
+   (deployed live to `2keb6XVWq5PG0leK`, drift-clean, validates 0-error):
+   - `Fire Images Concurrently` gained a self-contained `callImageReference(req)` implementing the **Gemini
+     chat-route** transport (`POST /v1/chat/completions`, one `image_url` part per reference URL; parse
+     `choices[0].message.images[0].image_url.url`, strip the `data:…;base64,` prefix). `worker(req)`: if
+     `use_reference` → `callImageReference`; on failure/unsupported + time remaining → fail soft to plain
+     `callImage` text-to-image. Tracks `used_reference`; soft-deadline/Promise.race/`notGenerated` intact.
+   - `ref_transport==='edits'` returns *unsupported* **without** a network call — a confirming probe proved
+     the Code node cannot send multipart (hand-built `Buffer` → LiteLLM 400 `Too many fields`). It fails soft
+     to plain gen with `degrade_reason='reference-edit-unsupported'`. A failed Gemini ref → `'reference-unanchored'`.
+   - `Explode Results` carries `used_reference`+`degrade_reason`; `Assemble Batch Output` emits
+     `image-batch/reference-unanchored` and `image-batch/reference-edit-unsupported` WARNs through the existing
+     seam (resolver → `execute-llm-call Has Warnings?` → WARN). No new alert node. Top-tier references degrade
+     **loudly**, never silently.
+   - **What 4b must do:** build the `gpt-image-2 edit` sub-workflow (Block-0-proven HTTP Request node multipart),
+     route `ref_transport==='edits'` batch requests to it via `executeWorkflow` (onError fail-soft to plain gen),
+     parse `data[0].b64_json`, set `used_reference:true`, and keep `Assemble Batch Output` the sole terminal
+     (merge back, no branchy return). When 4b lands, the `reference-edit-unsupported` WARN stops firing for top tiers.
+   - **Verification of 4a:** 30/30 offline assertions on the extracted node code (Gemini parse + prefix strip,
+     edits→no-network→fail-soft, unanchored fallback, tier-fallback interaction, no-ref unchanged); all 4 Code
+     nodes syntax-checked (`new Function`/`AsyncFunction`). **No live image run** — consistent with Blocks 2/3
+     (avoid prod execution volume; the Gemini transport is already Block-0-proven live); the meaningful
+     end-to-end (real attached product photo, visible anchoring) is Block 6's DoD.
+   - **`current.md` still intentionally NOT updated** — the "reference path LIVE" write-back stays Block 6's DoD.
 
 1. **(historical — Block 2 handoff, kept for context)** Block 2 landed the resolver in
    `image-resolver.json` (deployed live to `znDqcfgXK6CNte20`, drift-clean):

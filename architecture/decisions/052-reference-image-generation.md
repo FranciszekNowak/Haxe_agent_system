@@ -1,10 +1,10 @@
 # ADR-052: Reference-image (image-to-image) generation
 
 **Status:** Proposed / In progress. Block 0 (capability gate) **DONE** — **both** reference transports are
-now proven: the Gemini chat-route (prior session) and the gpt-image-2 `/v1/images/edits` multipart path
-(2026-06-17, via a dedicated n8n HTTP Request node). No production workflow has been changed yet; Blocks 1–6
-proceed. Tracked block-by-block in
-`architecture/Build plans/adr-052-reference-image-generation/master-plan.md`.
+proven: the Gemini chat-route and the gpt-image-2 `/v1/images/edits` multipart path (via a dedicated n8n HTTP
+Request node). Blocks 1–3 DONE. **Block 4 split into 4a (Gemini reference transport now live in the batch,
+DONE 2026-06-17) and 4b (gpt-image-2 edits leg, pending)** — see the Block 4 section below. Tracked
+block-by-block in `architecture/Build plans/adr-052-reference-image-generation/master-plan.md`.
 
 **Date:** 2026-06-16
 **Deciders:** Franciszek (operator), with design review
@@ -108,11 +108,43 @@ an OOM — 4.7 G/7.5 G used, no swap, no OOM-kill). Recovered with `docker resta
 back, insights quiet at 0 errors/60 s once the churn stopped). **Lesson, now in CLAUDE.md:** test the image
 pipeline *sparingly* — no large bursts of throwaway executions; the Insights subsystem is fragile under flood.
 
+## Block 4 — split into 4a (Gemini reference, live) and 4b (gpt-image-2 edits leg) — 2026-06-17
+
+Block 4 routes `use_reference` requests in the batch's `Fire Images Concurrently` Code node via a
+self-contained `callImageReference(req)` (kept caller-agnostic so the future `generate_image` tool handler,
+ADR-053/054, reuses it verbatim). A confirming probe closed the last open question from Block 0: the **one
+Code-node multipart method Block 0 never tried** — building the `multipart/form-data` body by hand as a
+`Buffer` and passing it to `this.helpers.httpRequest` — **also fails** (LiteLLM 400
+`{"detail":"Too many fields. Maximum number of fields is 1000."}`: the n8n helper does not transmit a raw
+`Buffer` body intact, so the multipart boundary misaligns and the server's parser explodes). With Block 0's
+three earlier failures this is conclusive: **the gpt-image-2 `edits` transport cannot live in the Code node.**
+Only the dedicated HTTP Request node serializes multipart binary correctly.
+
+Because the edits leg is a graph change (a node, not a function) while the Gemini leg is plain JSON that fits
+the existing concurrent Code node — and because forcing edits into the Code node would lose that node's
+fail-soft / soft-deadline / bounded-concurrency machinery — Block 4 is split:
+
+- **Block 4a (DONE 2026-06-17, live on `2keb6XVWq5PG0leK`).** `callImageReference` implements the **Gemini
+  chat-route** transport fully (`POST /v1/chat/completions`, one `image_url` part per reference URL; parse
+  `choices[0].message.images[0].image_url.url`, strip the `data:…;base64,` prefix). For `ref_transport==='edits'`
+  it returns *unsupported* **without** a network call; `worker()` then fails soft to plain text-to-image on the
+  same tier model. Two degrade reasons surface as WARNs through the existing `warnings[]` seam (never CRITICAL):
+  `image-batch/reference-unanchored` (a Gemini reference call failed) and `image-batch/reference-edit-unsupported`
+  (gpt-image-2 edits not yet wired). This makes the Niski/Średni (Gemini) reference path live while degrading the
+  top tiers **loudly and observably**, never silently. Verified by 30/30 offline logic assertions on the extracted
+  node code; the live end-to-end (real attached photo, visible anchoring) is Block 6's DoD.
+- **Block 4b (pending).** Wire the gpt-image-2 `edits` leg via the Block-0-proven HTTP Request node, encapsulated
+  as a small `gpt-image-2 edit` sub-workflow (`When Called → Download Reference → Edit Call (HTTP Request node,
+  formBinaryData) → Shape b64`) that the batch calls for `edits`-routed requests with `onError` fail-soft to plain
+  gen. This sub-workflow is also the cleaner migration unit — the future `generate_image` tool handler calls the
+  same sub-workflow, since the transport is irreducibly node-based.
+
 ## Consequences
 
-- Reference support adds **no new graph branches**: the resolver already parses `input_image_refs_json` into a
-  `lookup` map (used today for `embed_input`); the batch already routes by impact. Changes are localized to Code
-  nodes and one prompt-text edit.
+- Reference support adds **no new graph branches** through Block 4a: the resolver already parses
+  `input_image_refs_json` into a `lookup` map (used today for `embed_input`); the batch already routes by impact;
+  the Gemini reference call rides the existing concurrent Code node. (Block 4b adds the gpt-image-2 edits leg as a
+  dedicated HTTP Request node sub-workflow — the one structural addition, see the Block 4 section.)
 - Cost/latency stays per-tier: Gemini reference ≈ $0.04–0.14 and ~5 s; gpt-image-2 (if/when its transport lands)
   ≈ $0.21 and ~176 s. The conditional anchoring instruction keeps references off the expensive tier unless the
   task warrants it.
