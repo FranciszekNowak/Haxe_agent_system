@@ -60,8 +60,8 @@ the managed agent calls. Build this plan as-is; the migration swaps the front ch
 | Block | Title | Status |
 |---|---|---|
 | 0 | Capability gate (prove reference transport per provider) | **DONE (2026-06-17)** — Gemini chat-route + gpt-image-2 `/v1/images/edits` (HTTP Request node) both proven with visual fidelity |
-| 1 | Contract: add `reference_refs` to the `generate` block (Stage A) | not started — **NEXT** |
-| 2 | Resolver: resolve `reference_refs` → `reference_urls` (via reusable `resolveReferenceToUrl`) | not started |
+| 1 | Contract: add `reference_refs` to the `generate` block (Stage A) | **DONE (2026-06-17)** — conditional `reference_refs` contract + anchoring paragraph + real-ref example; live Stage A run on `869dp81xd` rendered it (incl. zip-unpacked `NovenPackshot.jpg` ref); non-image task gets plain contract |
+| 2 | Resolver: resolve `reference_refs` → `reference_urls` (via reusable `resolveReferenceToUrl`) | not started — **NEXT** |
 | 3 | Batch routing: per-provider reference transport flag (no model-forcing) | not started |
 | 4 | Batch: per-provider reference call + parse both response shapes + fail-soft | not started |
 | 5 | Warnings + reliability sweep | not started |
@@ -239,9 +239,16 @@ section marks the reference path LIVE + the routing rule; drift-clean re-export 
 
 ## Handoff / open items (as of 2026-06-17)
 
-1. **Resume at Block 1** (contract: add `reference_refs` to the `generate` block, Stage A only). Block 0 is
-   DONE — both reference transports proven (Gemini chat-route + gpt-image-2 `/v1/images/edits` via a dedicated
-   HTTP Request node). The capability gate is closed natively; no downgrade.
+1. **Resume at Block 2** (resolver: resolve `reference_refs` → `reference_urls` via the reusable
+   `resolveReferenceToUrl`). Blocks 0 and 1 are DONE. Block 0 proved both reference transports (Gemini
+   chat-route + gpt-image-2 `/v1/images/edits` via a dedicated HTTP Request node). Block 1 shipped the
+   `reference_refs` contract into `Build Prompt` (`assemble-context-and-build-prompt.json`): the `generate`
+   schema line, anchoring paragraph, and example are emitted **only when input images are attached**
+   (`hasInputImages`), the example interpolates a **real** `imageBlocks[0].source_ref`, and a non-image task
+   still gets the unchanged plain contract. Verified live (Stage A run on `869dp81xd`, exec 2523: 0 WARN/0
+   CRITICAL, refs incl. zip-unpacked `NovenPackshot.jpg`). Deployed live + re-exported drift-clean.
+   **`current.md` intentionally NOT updated yet** — `reference_refs` is inert until the resolver/batch consume
+   it (Blocks 2–4); the `current.md` "reference path LIVE" write-back stays Block 6's DoD.
 2. **Orphaned throwaway workflow STILL pending manual deletion:** `1fEEAhXlqgo1B8Sf` ("_TMP test-subworkflow
    PROBE adr052 reference image (throwaway)"). It is now **archived + inactive** (no longer active, so the
    "Workflow activation failed sub-workflow validation" log line has stopped — it is benign), but it still
