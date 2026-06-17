@@ -61,8 +61,8 @@ the managed agent calls. Build this plan as-is; the migration swaps the front ch
 |---|---|---|
 | 0 | Capability gate (prove reference transport per provider) | **DONE (2026-06-17)** — Gemini chat-route + gpt-image-2 `/v1/images/edits` (HTTP Request node) both proven with visual fidelity |
 | 1 | Contract: add `reference_refs` to the `generate` block (Stage A) | **DONE (2026-06-17)** — conditional `reference_refs` contract + anchoring paragraph + real-ref example; live Stage A run on `869dp81xd` rendered it (incl. zip-unpacked `NovenPackshot.jpg` ref); non-image task gets plain contract |
-| 2 | Resolver: resolve `reference_refs` → `reference_urls` (via reusable `resolveReferenceToUrl`) | not started — **NEXT** |
-| 3 | Batch routing: per-provider reference transport flag (no model-forcing) | not started |
+| 2 | Resolver: resolve `reference_refs` → `reference_urls` (via reusable `resolveReferenceToUrl`) | **DONE (2026-06-17)** — standalone `resolveReferenceToUrl(ref, lookup)` in `Build Batch Request`; generate items carry `reference_refs[]`+`lookup_map`; each ref → `reference_urls[]`, miss → `prebatch_warnings` folded into `warnings[]` by `placeholder_id` in `Handle Gen Result`; deployed live + drift-clean; logic proven offline (7/7 assertions: source_ref/url resolve, bogus→WARN, no spurious warns) |
+| 3 | Batch routing: per-provider reference transport flag (no model-forcing) | not started — **NEXT** |
 | 4 | Batch: per-provider reference call + parse both response shapes + fail-soft | not started |
 | 5 | Warnings + reliability sweep | not started |
 | 6 | End-to-end @-mention verification + ADR finalisation | not started |
@@ -239,16 +239,30 @@ section marks the reference path LIVE + the routing rule; drift-clean re-export 
 
 ## Handoff / open items (as of 2026-06-17)
 
-1. **Resume at Block 2** (resolver: resolve `reference_refs` → `reference_urls` via the reusable
-   `resolveReferenceToUrl`). Blocks 0 and 1 are DONE. Block 0 proved both reference transports (Gemini
-   chat-route + gpt-image-2 `/v1/images/edits` via a dedicated HTTP Request node). Block 1 shipped the
-   `reference_refs` contract into `Build Prompt` (`assemble-context-and-build-prompt.json`): the `generate`
-   schema line, anchoring paragraph, and example are emitted **only when input images are attached**
-   (`hasInputImages`), the example interpolates a **real** `imageBlocks[0].source_ref`, and a non-image task
-   still gets the unchanged plain contract. Verified live (Stage A run on `869dp81xd`, exec 2523: 0 WARN/0
-   CRITICAL, refs incl. zip-unpacked `NovenPackshot.jpg`). Deployed live + re-exported drift-clean.
-   **`current.md` intentionally NOT updated yet** — `reference_refs` is inert until the resolver/batch consume
-   it (Blocks 2–4); the `current.md` "reference path LIVE" write-back stays Block 6's DoD.
+1. **Resume at Block 3** (batch routing: per-provider reference transport flag in `generate-images-parallel.json`
+   → `Resolve Batch Requests`). Blocks 0, 1, and 2 are DONE. Block 2 landed the resolver in
+   `image-resolver.json` (deployed live to `znDqcfgXK6CNte20`, drift-clean):
+   - `Build Batch Request` now holds the standalone, caller-agnostic `resolveReferenceToUrl(ref, lookup)` (no
+     `$json`/item context — the future `generate_image` tool handler reuses it verbatim with a `file_id`-derived
+     lookup, ADR-053/054). It resolves each generate block's `reference_refs[]` against that block's `lookup_map`
+     into `reference_urls[]`, appended to each item in `requests_json`. A miss → `prebatch_warnings[]` (placeholder
+     + `multimodal/reference-ref-not-found`).
+   - `Resolve & Explode Blocks` stamps `reference_refs[]` + `lookup_map` (the same `source_ref`/url-keyed input
+     map embed uses) onto each generate item.
+   - `Handle Gen Result` reads `prebatch_warnings` back by node reference (`$('Build Batch Request').first().json`
+     — executeWorkflow drops the field across the boundary) and folds them into each placeholder's `warnings[]`,
+     which ride the existing seam → `Assemble Output.warnings` → `execute-llm-call Has Warnings?` → WARN. **No new
+     alert node.**
+   - **`reference_urls[]` is the migration seam** — Block 3 consumes it from `requests_json` agnostic to who
+     produced it. The batch's `Resolve Batch Requests` already ignores unknown request fields, so `reference_urls`
+     rides harmlessly today and is wired in Blocks 3–4.
+   - **Verification:** logic proven offline (7/7 assertions — resolve by `source_ref` and by url, bogus→empty+WARN,
+     no-ref→empty, warning folds to the right placeholder, no spurious warns on good refs). **No image-generating
+     live run was fired** — the reference path is inert until Blocks 3–4, so a live run would only generate plain
+     text-to-image and add prod execution volume (incident lesson) without exercising references; the meaningful
+     end-to-end run (real attached product photo, visible anchoring) is Block 6's DoD.
+   - **`current.md` still intentionally NOT updated** — `reference_urls` is produced but not yet consumed; the
+     "reference path LIVE" write-back stays Block 6's DoD.
 2. **Orphaned throwaway workflow STILL pending manual deletion:** `1fEEAhXlqgo1B8Sf` ("_TMP test-subworkflow
    PROBE adr052 reference image (throwaway)"). It is now **archived + inactive** (no longer active, so the
    "Workflow activation failed sub-workflow validation" log line has stopped — it is benign), but it still
