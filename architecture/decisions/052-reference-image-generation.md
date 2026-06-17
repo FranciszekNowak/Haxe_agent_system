@@ -2,9 +2,10 @@
 
 **Status:** Proposed / In progress. Block 0 (capability gate) **DONE** — **both** reference transports are
 proven: the Gemini chat-route and the gpt-image-2 `/v1/images/edits` multipart path (via a dedicated n8n HTTP
-Request node). Blocks 1–3 DONE. **Block 4 split into 4a (Gemini reference transport now live in the batch,
-DONE 2026-06-17) and 4b (gpt-image-2 edits leg, pending)** — see the Block 4 section below. Tracked
-block-by-block in `architecture/Build plans/adr-052-reference-image-generation/master-plan.md`.
+Request node). Blocks 1–3 DONE. **Block 4 DONE — 4a (Gemini reference transport, 2026-06-17) and 4b
+(gpt-image-2 edits leg via a dedicated HTTP Request node sub-workflow, 2026-06-17)** — see the Block 4 section
+below. Remaining: Block 5 (warnings/reliability sweep) and Block 6 (end-to-end @-mention + finalisation).
+Tracked block-by-block in `architecture/Build plans/adr-052-reference-image-generation/master-plan.md`.
 
 **Date:** 2026-06-16
 **Deciders:** Franciszek (operator), with design review
@@ -133,11 +134,23 @@ fail-soft / soft-deadline / bounded-concurrency machinery — Block 4 is split:
   (gpt-image-2 edits not yet wired). This makes the Niski/Średni (Gemini) reference path live while degrading the
   top tiers **loudly and observably**, never silently. Verified by 30/30 offline logic assertions on the extracted
   node code; the live end-to-end (real attached photo, visible anchoring) is Block 6's DoD.
-- **Block 4b (pending).** Wire the gpt-image-2 `edits` leg via the Block-0-proven HTTP Request node, encapsulated
-  as a small `gpt-image-2 edit` sub-workflow (`When Called → Download Reference → Edit Call (HTTP Request node,
-  formBinaryData) → Shape b64`) that the batch calls for `edits`-routed requests with `onError` fail-soft to plain
-  gen. This sub-workflow is also the cleaner migration unit — the future `generate_image` tool handler calls the
-  same sub-workflow, since the transport is irreducibly node-based.
+- **Block 4b (DONE 2026-06-17, sub-workflow `ScjmV2qQpvww3sWm`, batch live on `2keb6XVWq5PG0leK`).** The
+  gpt-image-2 `edits` leg is a small `Generate Image Edit gpt-image-2 (v1)` sub-workflow (`When Called → Get Image
+  Key → Download Reference → Edit Call (HTTP Request node, `formBinaryData`) → Shape b64`) doing the Block-0-proven
+  multipart `/v1/images/edits` call and returning `{placeholder_id, ok, b64_json, header_cost}`. In the batch,
+  `Resolve Batch Requests` emits `ref_leg`; a `Route Edits` Switch detours `edits`-routed requests to
+  `Run gpt-image-2 Edit` (`executeWorkflow`, mode=each, `onError` fail-soft) → `Attach Edit b64` (rejoins the result
+  to its full request by `placeholder_id`) → `Merge Edit Leg` (append, empty-branch-safe) → `Fire Images
+  Concurrently`. The Fire worker uses the pre-computed `edit_b64` directly (`used_reference:true`, no network) or,
+  if the edit leg failed, fails soft to plain text-to-image on the same tier model (`reference-unanchored`). The
+  single-incoming-connection discipline on `Assemble Batch Output` (sub-workflow return determinism) is preserved —
+  the merge is upstream of `Fire`. Design chosen so the bulk gen/cost/fail-soft machinery stays in one place
+  (`Fire`); the edit leg only contributes the multipart bytes, at the cost of the (rare, sequential) edits leg
+  running before the concurrent bulk. **Verified:** transport re-proven live in the real sub-workflow (a reference
+  photo's subject preserved and re-rendered into a new scene; HTTP 200, ~35 s, raw-base64 `b64_json`, cost header
+  ~$0.01 — unreliable per Block 0, price floor kept); 43/43 offline logic assertions; 0-error validation; both repo
+  files drift-clean. This sub-workflow is also the cleaner migration unit — the future `generate_image` tool handler
+  calls it directly by `executeWorkflow`, since the transport is irreducibly node-based.
 
 ## Consequences
 
@@ -145,9 +158,9 @@ fail-soft / soft-deadline / bounded-concurrency machinery — Block 4 is split:
   `input_image_refs_json` into a `lookup` map (used today for `embed_input`); the batch already routes by impact;
   the Gemini reference call rides the existing concurrent Code node. (Block 4b adds the gpt-image-2 edits leg as a
   dedicated HTTP Request node sub-workflow — the one structural addition, see the Block 4 section.)
-- Cost/latency stays per-tier: Gemini reference ≈ $0.04–0.14 and ~5 s; gpt-image-2 (if/when its transport lands)
-  ≈ $0.21 and ~176 s. The conditional anchoring instruction keeps references off the expensive tier unless the
-  task warrants it.
+- Cost/latency stays per-tier: Gemini reference ≈ $0.04–0.14 and ~5 s; gpt-image-2 edits ≈ $0.21 and ~30–176 s
+  (the Block 4b live edit returned in ~35 s). The conditional anchoring instruction keeps references off the
+  expensive tier unless the task warrants it.
 - Design fork **resolved (2026-06-17): gpt-image-2 reference transport works**, so top tiers do references
   natively via `/v1/images/edits`. The `gemini-3-pro-image-preview` downgrade is **not** taken. The only
   structural cost is that the edits leg lives on a dedicated HTTP Request node rather than the concurrent Code

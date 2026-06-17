@@ -1,0 +1,197 @@
+{
+  "name": "Generate Image Edit gpt-image-2 (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 0],
+      "notes": "ADR-052 Block 4b. gpt-image-2 reference (image-to-image) edit leg, called per-request by Generate Images Parallel for ref_transport==='edits'. Inputs: placeholder_id (echoed back for caller correlation), prompt, size (gpt-valid, snapped upstream), reference_url (first resolved reference). Returns {placeholder_id, ok, b64_json, header_cost, statusCode, error}. The multipart /v1/images/edits transport (Block 0 proven) CANNOT run in a Code node (n8n httpRequest corrupts a raw multipart Buffer -> LiteLLM 400 'Too many fields'); only the dedicated HTTP Request node serialises it.",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "placeholder_id"
+            },
+            {
+              "name": "prompt"
+            },
+            {
+              "name": "size"
+            },
+            {
+              "name": "reference_url"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "get-image-key",
+      "name": "Get Image Key",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [220, 0],
+      "notes": "Reads the dedicated, revocable LiteLLM image key from Supabase Vault via public.get_litellm_image_key() (migration 032), same getter the batch uses. HTTP nodes can't use credentials and $env/$vars are blocked, so a credentialed Postgres read is how this leg gets the secret to Bearer-auth the edits call. NO onError: a missing key throws -> the caller's executeWorkflow onError fails soft to plain gen, whose own key check CRITICALs (auth broken = real failure, surfaced via the batch).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_litellm_image_key() as key;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "download-reference",
+      "name": "Download Reference",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0],
+      "notes": "Download the reference image bytes to binary property `data` (responseFormat file -> no base64 in JSON; off-heap under binaryMode separate). Reference URLs are pre-signed (ClickUp / Supabase signed), so no auth header. Mirrors read-input's Fetch Attachment Binary. continueRegularOutput + retry: a dead/404 ref URL leaves no binary, so Edit Call yields no b64 and Shape b64 returns ok:false -> caller fails soft to plain gen (never throws/CRITICAL).",
+      "parameters": {
+        "url": "={{ $('When Called').first().json.reference_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "edit-call",
+      "name": "Edit Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 0],
+      "notes": "ADR-052 Block 0/4b: gpt-image-2 reference transport. POST http://litellm:4000/v1/images/edits as multipart/form-data: image=reference binary (formBinaryData, inputDataFieldName data), model=openai/gpt-image-2, prompt, size, n=1. Bearer = Vault image key. fullResponse=true to read x-litellm-response-cost; neverError=true so a 4xx/5xx returns the body (Shape b64 detects no-b64 -> ok:false, not a throw). The HTTP Request node assembles multipart in n8n's own runtime, sidestepping the Code-node form-data block. Returns image at data[0].b64_json (raw base64, NOT a data URI). onError continueRegularOutput is a network-failure backstop.",
+      "parameters": {
+        "method": "POST",
+        "url": "http://litellm:4000/v1/images/edits",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get Image Key').first().json.key }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "image",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "model",
+              "value": "openai/gpt-image-2"
+            },
+            {
+              "name": "prompt",
+              "value": "={{ $('When Called').first().json.prompt }}"
+            },
+            {
+              "name": "size",
+              "value": "={{ $('When Called').first().json.size }}"
+            },
+            {
+              "name": "n",
+              "value": "1"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 180000
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "shape-b64",
+      "name": "Shape b64",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 0],
+      "notes": "SOLE TERMINAL (sub-workflow return determinism): single linear chain, one leaf. Parses the Edit Call full response -> {placeholder_id (echoed for caller correlation), ok, b64_json (data[0].b64_json), header_cost (x-litellm-response-cost; treat as unreliable per Block 0 -> caller keeps the price floor), statusCode, error}. ok:false (no b64 / non-2xx / network fail) tells the caller to fail soft to plain text-to-image. Never throws.",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nlet b64 = null, sc = null, header_cost = null, err = '';\ntry {\n  const r = $input.first() ? ($input.first().json || {}) : {};\n  const body = (r && r.body != null) ? r.body : r;\n  sc = (r && r.statusCode != null) ? r.statusCode : null;\n  const data = body && body.data;\n  b64 = (data && data[0] && data[0].b64_json) ? data[0].b64_json : null;\n  const hdrs = (r && r.headers) ? r.headers : {};\n  const ch = hdrs['x-litellm-response-cost'];\n  header_cost = (ch != null && ch !== '') ? Number(ch) : null;\n  if (!b64) err = 'gpt-image-2-edit-no-b64' + (sc != null ? (' (HTTP ' + sc + ')') : '');\n} catch (e) {\n  err = 'shape-error: ' + ((e && e.message) ? e.message : String(e));\n}\nreturn [{ json: { placeholder_id: wc.placeholder_id || '', ok: !!b64, b64_json: b64, header_cost: header_cost, statusCode: sc, error: err } }];\n"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Get Image Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Image Key": {
+      "main": [
+        [
+          {
+            "node": "Download Reference",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Reference": {
+      "main": [
+        [
+          {
+            "node": "Edit Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Call": {
+      "main": [
+        [
+          {
+            "node": "Shape b64",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}
