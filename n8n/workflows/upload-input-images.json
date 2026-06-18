@@ -243,6 +243,43 @@
       "parameters": {
         "jsCode": "const rows = $input.all().map(i => i.json).filter(j => j && (j.ok === true || j.ok === false || j.do_upload === false));\nconst oks = rows.filter(j => j.ok === true && j.file_id);\nconst okNoId = rows.filter(j => j.ok === true && !j.file_id);\nconst drops = rows.filter(j => j.ok === false);\nconst sentinel = rows.find(j => j.do_upload === false);\nconst file_map = oks.map(j => ({ file_id: j.file_id, url: j.url, source_ref: j.source_ref, mime: j.mime, alt: j.alt, order: j.order }));\nconst warnings = [];\nfor (const d of drops) warnings.push({ source: d.warn_source || 'files-api/upload-failed', source_ref: d.source_ref, err: d.err || 'unknown', severity: 'WARN' });\nfor (const d of okNoId) warnings.push({ source: 'files-api/upload-no-id', source_ref: d.source_ref, err: 'upload succeeded but no file_id returned', severity: 'WARN' });\nif (sentinel && sentinel.key_missing) warnings.push({ source: 'files-api/key-unreachable', err: 'anthropic key not reachable from Vault; proceeding text-only', severity: 'WARN' });\nlet taskId = null;\ntry { taskId = $('When Called').first().json.clickup_task_id || null; } catch (e) {}\nif (!taskId) { const f = rows.find(j => j.clickup_task_id); taskId = f ? f.clickup_task_id : null; }\nreturn [{ json: { file_map, warnings, clickup_task_id: taskId, uploaded_count: file_map.length, dropped_count: drops.length + okNoId.length } }];"
       }
+    },
+    {
+      "id": "upsert-file-map",
+      "name": "Upsert File Map",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [2420, 300],
+      "notes": "ADR-055 Block 5.2: persist the file_id->{url,mime,source_ref} map to agent_input_file_map so the image MCP tool handler can resolve generate_image reference_file_ids -> signed URLs WITHOUT session context (Block 5.1). Additive + fail-soft: onError=continueRegularOutput + alwaysOutputData so a DB write failure NEVER blocks the upload return (Final Return re-reads Aggregate and appends a WARN). Empty file_map -> jsonb_to_recordset('[]') -> 0 rows -> no-op (the common no-input-images case). on conflict refreshes url/mime/source_ref.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into public.agent_input_file_map (file_id, url, mime, source_ref)\nselect file_id, url, mime, source_ref\nfrom jsonb_to_recordset($1::jsonb) as x(file_id text, url text, mime text, source_ref text)\nwhere file_id is not null\non conflict (file_id) do update set url = excluded.url, mime = excluded.mime, source_ref = excluded.source_ref;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.file_map || []) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "final-return",
+      "name": "Final Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, 300],
+      "notes": "SOLE TERMINAL (return-determinism idiom, CLAUDE.md). Re-reads Aggregate's canonical output {file_map, warnings, clickup_task_id, uploaded_count, dropped_count} so the agent_input_file_map write side-effect can't corrupt the return. Appends an agent-input-file-map/write-failed WARN (returned for Stage B to fire) if the upsert errored — a failed map write silently degrades later reference resolution, so it must surface.",
+      "parameters": {
+        "jsCode": "const out = $('Aggregate').first().json || {};\nconst up = $input.first();\nconst failed = !!(up && up.json && up.json.error);\nconst warnings = Array.isArray(out.warnings) ? out.warnings.slice() : [];\nif (failed) warnings.push({ source: 'agent-input-file-map/write-failed', err: 'failed to persist file_id->url map; image MCP reference resolution may fail for these images', severity: 'WARN' });\nreturn [{ json: Object.assign({}, out, { warnings: warnings }) }];"
+      }
     }
   ],
   "connections": {
@@ -393,6 +430,28 @@
         [
           {
             "node": "Aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate": {
+      "main": [
+        [
+          {
+            "node": "Upsert File Map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert File Map": {
+      "main": [
+        [
+          {
+            "node": "Final Return",
             "type": "main",
             "index": 0
           }

@@ -241,8 +241,10 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
   gate** — a mis-mapped credential fails silently and the departmental boundary (e.g. Marketing cannot
   read Purchasing) is the entire point.
 
-> **Build progress (ADR-053 lane).** Blocks 0–5 have landed; the lane is **not yet serving traffic**
-> (the orchestrator still routes Stage B to the bare `Execute LLM Call (v1)` until the Block-8 lane flag).
+> **Build progress (ADR-053 lane).** Blocks 0–5 plus 5.1–5.2 (ADR-055) have landed; the lane is **not yet
+> serving traffic** (the orchestrator still routes Stage B to the bare `Execute LLM Call (v1)` until the
+> Block-8 lane flag), and the image MCP path is built + tested in isolation but **not yet wired to the
+> agents** (that is Block 5.3).
 > Live now:
 > - **Block 0** — capability spike (`block-0-findings.md`).
 > - **Block 1** — credential plumbing: the `get_anthropic_key()` Vault getter (migration 034) and
@@ -321,6 +323,40 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
 >   Verified live end-to-end: a text task returned the block-array + raw usage/duration (8 s); a web-search
 >   task returned cited findings; a `generate_image` task serviced the callback through one recursive round
 >   and returned the produced `file_id` + b64 (`status` `completed`, no warnings, clean alert channel).
+> - **Block 5.1 (ADR-055)** — MCP capability gate: **passed**. The harness calls a self-hosted MCP tool
+>   **in-harness** (`agent.mcp_tool_use`/`_result`, no client pause) when the toolset is `always_allow`, and
+>   held a **200 s** tool call open (clears the ~170 s gpt-image-2-high worst case). Host = the **n8n MCP
+>   Server Trigger** (no new infra), reachable at `https://agents.haxe.ai/mcp/<path>` over SSE with bearer
+>   auth. `Execute Agent Session (v1)` needs no change (its loop is retained for ADR-054's Google tool).
+>   Findings: `block-5.1-findings.md`.
+> - **Block 5.2 (ADR-055)** — the self-hosted **image MCP server**, built + tested **in isolation** (the
+>   four agents are **not yet switched** to it — Block 5.3). Pieces: (a) **migration 036** —
+>   `agent_input_file_map(file_id pk, url, mime, source_ref, created_at)` (a global file_id→signed-URL map,
+>   **RLS on / no policy** so only the pipeline's direct Postgres role reads it; a 24 h `pg_cron` TTL prune
+>   + `agent_input_file_map_prune_runs` audit log), the `get_image_mcp_bearer()` Vault getter (mirrors
+>   `get_anthropic_key()`), and `triggered_by += 'image_mcp'`. (b) **`Upload Input Images (v1)`** now
+>   **upserts** each `{file_id→url,mime,source_ref}` row after a successful upload — additive + fail-soft
+>   (`Aggregate → Upsert File Map → Final Return` re-reads Aggregate; a write failure appends a returned
+>   WARN, never blocks the upload). (c) **`Haxe Image MCP (v1)`** (`c4vnNLb9usfHJWg3`) — an n8n MCP Server
+>   Trigger at `https://agents.haxe.ai/mcp/haxe-image-gen` (SSE, bearer via the `Image MCP bearer (ADR-055)`
+>   credential) exposing one **`generate_image`** tool (`prompt` required; `reference_file_ids` as an
+>   optional JSON-array string, `count`/`aspect_ratio`/`size` optional) → **`Image MCP Tool Handler (v1)`**
+>   (`zxY41zZWRbXon2Eq`), which resolves `reference_file_ids` → signed URLs from `agent_input_file_map`
+>   (**no session context** — Block 5.1) and then calls **`Image Tool Handler (v1)` unchanged** (one shared
+>   image-gen+upload+cost core; per-image `agent_runs` rows via the batch's own `Log Model Run`, no second
+>   writer). Because the harness calls it directly, the handler **fires its own consolidated `Post Alert
+>   (v1)`**. Verified live with a direct MCP call (bearer): `initialize` + `tools/list` (advertises
+>   `generate_image`, only `prompt` required) + `tools/call` → image generated in **24 s**, one priced
+>   `agent_runs` row (`triggered_by=image_mcp`, `impact=Średni`, ~0.49 PLN); the reference path resolved a
+>   `file_id` via the table (`used_reference:true`); an empty prompt returned a `failed` tool_result + WARN
+>   with no throw; alert channel clean. **Consequences:** the MCP path is **identity-/context-free** — cost
+>   rows are **tier-fixed to `Średni`** (`__default__` is invalid for `agent_runs.impact`; the harness
+>   passes no task impact) and **not task-attributable** (`clickup_task_id` null). The Block-4/5 client-side
+>   image path stays the **dormant rollback**. **⚠ Block-6 delivery gap (flagged):** Files-API uploads are
+>   `purpose=agent` → **not downloadable**, and via MCP the produced base64 no longer returns to n8n, so
+>   Block 6 has **no carrier** for MCP-produced image bytes — it will need one (e.g. persist produced bytes
+>   to Supabase Storage / an output `file_id→bytes` map), or an ADR-055 amendment. Findings:
+>   `block-5.2-findings.md`.
 > Plan + per-block detail: `architecture/Build plans/adr-053-managed-agents/`.
 
 ---
