@@ -1,8 +1,8 @@
 # Haxe Agents — Architecture (current)
 
-Version: v22
-Last updated: 2026-06-10
-Supersedes: v21
+Version: v23
+Last updated: 2026-06-18
+Supersedes: v22
 
 This is the canonical description of the system being built. When it diverges
 from what is actually implemented, that is a bug to fix immediately. Reasoning
@@ -41,6 +41,10 @@ senior-management intervention.
    `modality='multimodal_input'` → Vertex AI Gemini (global endpoint, DPA+SCCs; flash for low tiers, pro
    for high — ADR-042); `modality='image'` → image-gen tiers (Vertex gemini-image + OpenAI gpt-image-2, ADR-036 Block 8). Bedrock EU and
    the `personal_data`/`eu_only` axis were retired (migration 021). See ADR-030, ADR-043, ADR-042.
+   **Accepted redirection (not yet built):** ADR-053 replaces this bare-call layer with Anthropic
+   Managed Agents as the single orchestration lane (LiteLLM retained only as a dormant failover);
+   ADR-054 defines per-user permission-scoped context retrieval within it. See the dedicated section
+   after §3 (Extension seams). Until built, the routing described here is the live system.
 
 4. **Supabase (eu-west-1, Ireland)** — application database. Operational logs, threaded
    human feedback, process-change proposals, conversation session cache, email
@@ -183,6 +187,59 @@ they slot in additively. See the corresponding ADRs.
   `Image Resolver (v1)` walks the drafting model's output-block list (text / `embed_input` / `generate`), and
   Stage C delivers in-memory base64 images inline in the ClickUp comment. Every task now emits the block
   contract (full unification, Block 12); `embed_input` lets the agent place existing attachments inline.
+
+---
+
+## Accepted redirection — Managed Agents spine + permission-scoped retrieval (ADR-053/054)
+
+> **Status: accepted 2026-06-16, not yet built.** Everything in §15 (the LiteLLM bare-call spine),
+> §2 Layer 3 (PD-blind `(impact, modality)` routing), and the caller-scoping in §3 remains the **live
+> system** until these are implemented. This section records the committed direction; when the build
+> lands, the affected sections are rewritten to match and this note collapses into them.
+
+**ADR-053 — bare model calls → Anthropic Managed Agents.** The system stops calling bare model
+endpoints and routes all agent tasks through Anthropic Managed Agents (a hosted runtime: sandbox,
+tool loop, code execution, web search, office-document Skills) as a single orchestration lane.
+Consequences when built:
+
+- **One lane, selected by impact only** — a small set of agent definitions sharing system prompt,
+  skills, and tools, differing only in model tier (Haiku / Sonnet / Opus / Fable). No classifier, no
+  new custom field; tools are always present, so a mis-set impact degrades to a wrong tier, not a
+  missing capability.
+- **Residency dropped** — global Anthropic endpoint for all tasks including PII; the recorded basis is
+  lawful processing (DPA / SCCs / DPF), not residency. This retires the Bedrock carve-out and
+  *supersedes* the residency reasoning behind part of the current Layer-3 routing; the
+  `(impact, modality)` Gemini route survives only as bare-text/multimodal failover plumbing, not the
+  hot path.
+- **Read-input stays deterministic in n8n** (fetch / unzip / Docling / classify — ADR-048) and feeds
+  work-ready content to the managed agent instead of a bare call; in-sandbox extraction is a fallback
+  for unexpected formats only.
+- **Image generation becomes a custom client-side tool** wrapping the existing n8n image workflow
+  (ADR-036/051/052 stay intact); cost logging (ADR-035) is preserved because n8n still executes it.
+- **Web-research subworkflow retired** — replaced by the harness's built-in web search; the current
+  `research-the-web` seam (Extension seams above, §15) is superseded.
+- **Layered provider independence:** image layer fully provider-independent; bare-text LiteLLM retained
+  as a dormant outage failover; the agentic-harness layer is a single-provider commitment to Anthropic,
+  bounded by one normalized output contract `{text, files[], cost, status}` (one Anthropic adapter built
+  now, per the ADR-047 seam discipline) so a future agentic-provider swap is one adapter.
+- **Beta posture:** Managed Agents is public beta; the bare LiteLLM text path plus the image tool stay
+  as a degraded failover so text and images keep flowing during an Anthropic incident.
+
+**ADR-054 — permission-scoped context retrieval within Managed Agents.** Builds on ADR-053. The
+managed agent gathers ClickUp / Gmail / Drive context **under the triggering user's identity, enforced
+by n8n at the executor**, never by the agent — scope lives in the credential, so a prompt-injected
+agent cannot exceed the user's permissions. This is the per-user-fidelity carry-over of the current
+caller-scoped Layer A/B model (§3) into the Managed Agents world.
+
+- **Google** via domain-wide delegation (a custom client-side tool: n8n impersonates user U — ADR-049).
+- **ClickUp** via per-user OAuth tokens held in the Managed Agents Vault, attached per session by
+  `vault_id`; the stock ClickUp MCP then runs authenticated as U.
+- **Hybrid retrieval:** task-bound context (the task's own attachments/comments/links) is pre-gathered
+  deterministically in n8n (reuses read-input); open-ended discovery runs as live scoped tools the
+  agent calls. Only the discovery surface needs live per-user MCP, keeping the hard surface small.
+- **Credentials never enter the sandbox.** **Scope-correctness testing is the mandatory acceptance
+  gate** — a mis-mapped credential fails silently and the departmental boundary (e.g. Marketing cannot
+  read Purchasing) is the entire point.
 
 ---
 
