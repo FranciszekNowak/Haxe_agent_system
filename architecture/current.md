@@ -241,7 +241,7 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
   gate** — a mis-mapped credential fails silently and the departmental boundary (e.g. Marketing cannot
   read Purchasing) is the entire point.
 
-> **Build progress (ADR-053 lane).** Blocks 0–3 have landed; the lane is **not yet serving traffic**.
+> **Build progress (ADR-053 lane).** Blocks 0–4 have landed; the lane is **not yet serving traffic**.
 > Live now:
 > - **Block 0** — capability spike (`block-0-findings.md`).
 > - **Block 1** — credential plumbing: the `get_anthropic_key()` Vault getter (migration 034) and
@@ -274,6 +274,26 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
 >   live end-to-end** (the agent correctly described a supplied image); the events call carries both betas
 >   (`managed-agents-2026-04-01,files-api-2025-04-14`) when a message references a `file_id`.
 >   `Read Input (v1)` itself is unchanged (still URL-based).
+> - **Block 4** — the `generate_image` custom-tool handler: **`Image Tool Handler (v1)`**
+>   (`vpGswBj2kR2D85hl`). Accepts the tool contract `{prompt, reference_file_ids?, count?, aspect_ratio?,
+>   size?}`; resolves `reference_file_ids` → `reference_urls` through the session's `{file_id→url}` map
+>   (Block 3's output); calls **`Generate Images Parallel (v1)`** (`2keb6XVWq5PG0leK`) **unchanged** — the
+>   ADR-052 `reference_urls[]` seam; converts each returned base64 image to a binary and uploads it to the
+>   Files API (`POST /v1/files`, `purpose=agent`, reusing the Block-3 upload node); and returns a
+>   `tool_result { status, file_ids[], images[]{file_id,b64_json,…}, warnings[], message }`. The `file_id`s
+>   are what the agent embeds; the carried `b64_json` is for Block 6 delivery (uploaded files are not
+>   downloadable, so the bytes are kept in hand rather than re-fetched). **No second cost writer** — the
+>   batch's own `Call Log Model Run` (mode=each) writes one priced `agent_runs` row per image (verified
+>   live: one `vertex_ai/gemini-2.5-flash-image` row, `cost_pln` 0.1414). **Fail-soft, never throws into the
+>   session**: a generation/upload failure or a batch throw degrades to a `failed`/`partial` tool_result + a
+>   returned `warnings[]` entry (fired by Block 5 via `Post Alert (v1)`, mirroring Block 3 → Stage B); a
+>   batch throw's CRITICAL is already escalated by the batch's own `errorWorkflow`. Verified live: plain
+>   text-to-image returns a `file_id`; the reference path (`reference_file_id` → its URL) returns
+>   `used_reference:true` (anchored on the supplied photo, ADR-052 transport fidelity); no-prompt /
+>   missing-key cases return a clean `failed` tool_result. **Note:** the per-image `triggered_by` must be a
+>   value allowed by the `agent_runs_triggered_by_check` constraint — the handler defaults the fallback to
+>   `image_gen` and otherwise forwards the session's `triggered_by` (Block 5 should forward a valid one,
+>   e.g. `explicit_mention`).
 > Plan + per-block detail: `architecture/Build plans/adr-053-managed-agents/`.
 
 ---

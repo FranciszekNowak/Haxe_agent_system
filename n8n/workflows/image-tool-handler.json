@@ -1,0 +1,539 @@
+{
+  "name": "Image Tool Handler (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "notes": "ADR-053 Block 4 — generate_image custom-tool handler. Called by the session loop (Stage B, Block 5) when the agent emits a generate_image custom_tool_use. Inputs: tool_input_json (the agent's tool input {prompt, reference_file_ids?, count?, aspect_ratio?, size?} as a JSON string); file_map_json (the session's {file_id->url} map from Upload Input Images (v1), Block 3: [{file_id,url,source_ref,mime,alt,order}]); impact (tier routing for the image batch); concurrency_cap; passthrough clickup_task_id/triggered_by/invocation_type/caller_user_id/process_type (for the batch's per-image cost rows). Test entry via scripts/test-subworkflow.mjs.",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "tool_input_json"
+            },
+            {
+              "name": "file_map_json"
+            },
+            {
+              "name": "impact"
+            },
+            {
+              "name": "concurrency_cap"
+            },
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "triggered_by"
+            },
+            {
+              "name": "invocation_type"
+            },
+            {
+              "name": "caller_user_id"
+            },
+            {
+              "name": "process_type"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "get-key",
+      "name": "Get Anthropic Key",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [220, 300],
+      "notes": "Reads the anthropic_api_key Vault secret via SECURITY DEFINER getter public.get_anthropic_key() (migration 034) — needed ONLY for the Files-API upload of the generated images (image GENERATION uses LiteLLM's own image key inside the batch). Code nodes can't use n8n credentials and $env/$vars are unavailable on this CE (CLAUDE.md), so a credentialed Postgres read is how a workflow obtains the secret. Returns {key} (null if unseeded). A hard DB failure throws -> errorWorkflow CRITICAL (reactive layer).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_anthropic_key() as key;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "build-requests",
+      "name": "Build Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300],
+      "notes": "Parse the tool contract + session file map into the Generate Images Parallel (v1) requests_json seam (ADR-052 reference_urls[]). reference_file_ids -> reference_urls via the {file_id->url} map; an unresolved id is dropped with an image-tool/reference-not-found WARN (fail-soft: generate without that reference). count clamped 1..4 (count-clamped WARN). size/aspect_ratio map to the batch's size/aspect. Emits ONE item carrying key + requests_json + impact + passthrough + a do_generate gate (false when no key OR no prompt -> rides Should Generate? false to the sentinel). warnings are RETURNED (collected by Aggregate, fired by the caller/Block 5 via Post Alert), mirroring Upload Input Images -> Stage B; this keeps the sub-workflow's terminal branch-free (return-determinism trap, CLAUDE.md).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nconst key = (((($input.first() || {}).json) || {}).key || '').toString().trim();\nfunction parseMaybe(v, fb){ try { return typeof v === 'string' ? JSON.parse(v || fb) : (v != null ? v : JSON.parse(fb)); } catch (e) { return JSON.parse(fb); } }\nconst tin = parseMaybe(wc.tool_input_json, '{}') || {};\nconst fmapRaw = parseMaybe(wc.file_map_json, '[]');\nconst fmap = Array.isArray(fmapRaw) ? fmapRaw : [];\nconst byId = {};\nfor (const f of fmap) { if (f && f.file_id) byId[f.file_id] = f; }\nconst prompt = (tin.prompt != null ? String(tin.prompt) : '').trim();\nconst refIds = Array.isArray(tin.reference_file_ids) ? tin.reference_file_ids : [];\nconst warnings = [];\nconst reference_urls = [];\nconst resolved_refs = [];\nfor (const id of refIds) {\n  const f = byId[id];\n  if (f && f.url) { reference_urls.push(f.url); resolved_refs.push(id); }\n  else warnings.push({ source: 'image-tool/reference-not-found', err: 'reference_file_id ' + id + ' not in session file map; generating without that reference', severity: 'WARN' });\n}\nlet count = Number(tin.count != null ? tin.count : 1);\nif (!count || isNaN(count) || count < 1) count = 1;\nif (count > 4) { warnings.push({ source: 'image-tool/count-clamped', err: 'requested count ' + tin.count + ' clamped to 4', severity: 'WARN' }); count = 4; }\nconst size = (tin.size != null && String(tin.size).trim() !== '') ? String(tin.size).trim() : null;\nconst aspect = (tin.aspect_ratio != null && String(tin.aspect_ratio).trim() !== '') ? String(tin.aspect_ratio).trim() : null;\nconst requests = [];\nfor (let i = 0; i < count; i++) {\n  requests.push({ placeholder_id: 'gen_' + i, prompt: prompt, block_order: i, size: size, aspect: aspect, reference_urls: reference_urls });\n}\nif (!prompt) warnings.push({ source: 'image-tool/no-prompt', err: 'generate_image called with empty prompt', severity: 'WARN' });\nif (!key) warnings.push({ source: 'image-tool/key-unreachable', err: 'anthropic key not reachable from Vault; cannot upload generated images', severity: 'WARN' });\nconst do_generate = !!key && !!prompt && requests.length > 0;\nreturn [{ json: {\n  key: key,\n  requests_json: JSON.stringify(requests),\n  impact: wc.impact || '__default__',\n  concurrency_cap: (wc.concurrency_cap != null && Number(wc.concurrency_cap) > 0) ? Number(wc.concurrency_cap) : 4,\n  clickup_task_id: wc.clickup_task_id || '',\n  triggered_by: wc.triggered_by || 'image_gen',\n  invocation_type: wc.invocation_type || 'explicit',\n  caller_user_id: wc.caller_user_id || '',\n  process_type: wc.process_type || '',\n  do_generate: do_generate,\n  no_prompt: !prompt,\n  key_missing: !key,\n  count_requested: count,\n  ref_resolved_count: reference_urls.length,\n  warnings: warnings\n} }];"
+      }
+    },
+    {
+      "id": "should-generate",
+      "name": "Should Generate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [660, 300],
+      "notes": "true -> call Generate Images Parallel. false (no key OR no prompt) -> Build Sentinel -> Merge (input 4) so the single terminal Aggregate always runs and returns a well-formed failed tool_result (with the no-prompt / key-unreachable WARN). main[1] is the IF false branch, not an error output.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-do-generate",
+              "leftValue": "={{ $json.do_generate }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "call-batch",
+      "name": "Call Generate Images Parallel",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [880, 200],
+      "notes": "Calls Generate Images Parallel (v1) (2keb6XVWq5PG0leK) UNCHANGED — the ADR-052 reference_urls[] seam. One call passing requests_json (N requests); returns N items {placeholder_id, success, b64_json, used_reference, model, cost_pln, warnings[]...}. Per-image agent_runs cost rows are written by the batch's own Call Log Model Run (mode=each) — this handler adds NO second cost writer (master plan / ADR-053). onError:continueErrorOutput -> a batch THROW (e.g. LiteLLM image key missing, which the batch escalates CRITICAL via ITS OWN errorWorkflow) routes here to Build Batch Failed -> WARN + fail-soft, never re-thrown into the agent session.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "2keb6XVWq5PG0leK",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "requests_json": "={{ $json.requests_json }}",
+            "impact": "={{ $json.impact }}",
+            "concurrency_cap": "={{ $json.concurrency_cap }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "normalize-batch",
+      "name": "Normalize Batch Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 160],
+      "notes": "Re-emit each batch item as a clean self-paired item (so $('Normalize Batch Output').item resolves downstream after Convert to File + Upload replace $json — same paired-item idiom Upload Input Images uses with Split Out Images). Carries b64_json + per-image metadata + the batch's per-image warnings[] strings forward.",
+      "parameters": {
+        "jsCode": "return $input.all().map(function(i){\n  const e = i.json || {};\n  return { json: {\n    placeholder_id: e.placeholder_id || '',\n    success: !!(e.success && e.b64_json),\n    b64_json: e.b64_json || null,\n    mime: e.mime || 'image/png',\n    used_reference: !!e.used_reference,\n    model: e.model || '',\n    size: e.size || null,\n    caption: e.caption || '',\n    alt: e.alt || '',\n    error: e.error || '',\n    batch_warnings: Array.isArray(e.warnings) ? e.warnings : []\n  } };\n});"
+      }
+    },
+    {
+      "id": "is-success",
+      "name": "Is Success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1320, 160],
+      "notes": "true (image generated, b64 present) -> Convert to File -> Upload to Files API. false (generation failed/empty) -> Build Gen Dropped -> Merge (input 2) -> WARN + drop; the agent keeps reasoning (fail-soft). main[1] is the IF false branch.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-success",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "convert-file",
+      "name": "Convert to File",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [1540, 100],
+      "notes": "Move the batch's b64_json (base64 image) into a binary part `data` for the Files-API multipart upload. n8n's Code sandbox can't build multipart (form-data blocked) and the HTTP node's formBinaryData needs a binary property, so base64->binary goes through this node (CLAUDE.md). Runs once per generated image.",
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "b64_json",
+        "binaryPropertyName": "data",
+        "options": {
+          "fileName": "={{ 'generated_' + ($json.placeholder_id || 'img') + '.png' }}",
+          "mimeType": "={{ $json.mime || 'image/png' }}"
+        }
+      }
+    },
+    {
+      "id": "upload-file",
+      "name": "Upload to Files API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1760, 100],
+      "notes": "POST /v1/files multipart (file part + purpose=agent) with anthropic-beta: files-api-2025-04-14 (Block 0 spec; copied from Upload Input Images (v1)). Key sourced via $('Build Requests').first().json.key (single-item upstream; Code nodes can't read the cred). Returns {id:file_..., filename, mime_type, size_bytes, downloadable:false} — the file_id the agent references to embed the generated image; the b64 is carried separately for delivery (uploaded files are not downloadable, Block 0). onError:continueErrorOutput -> upload failure (oversize 413, auth, network) -> Build Upload Dropped -> WARN + drop; never thrown into the session.",
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/files",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $('Build Requests').first().json.key }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "files-api-2025-04-14"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "purpose",
+              "value": "agent"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "build-ok",
+      "name": "Build OK Entry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 40],
+      "notes": "Upload success -> map entry { ok:true, file_id, b64_json, mime, used_reference, placeholder_id, caption, alt, batch_warnings }. file_id is what the agent embeds; b64_json is carried for Block 6 delivery (uploaded files aren't downloadable). Metadata recovered via $('Normalize Batch Output').item; file_id from the upload response $json.id. alwaysOutputData so an empty branch still emits (Merge append never stalls — Read Input idiom).",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const meta = $('Normalize Batch Output').item.json;\nconst up = $json || {};\nreturn { json: {\n  ok: true,\n  file_id: up.id || null,\n  b64_json: meta.b64_json,\n  mime: up.mime_type || meta.mime || 'image/png',\n  used_reference: !!meta.used_reference,\n  placeholder_id: meta.placeholder_id,\n  caption: meta.caption || '',\n  alt: meta.alt || '',\n  batch_warnings: Array.isArray(meta.batch_warnings) ? meta.batch_warnings : []\n} };"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "build-upload-dropped",
+      "name": "Build Upload Dropped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 200],
+      "notes": "Upload failure -> dropped entry { ok:false, kind:'upload', placeholder_id, err, batch_warnings }. Aggregate turns it into a returned WARN; the image is omitted but the agent keeps reasoning. alwaysOutputData so the empty (no-failure) case still emits and Merge append never stalls.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const meta = $('Normalize Batch Output').item.json;\nconst e = $json || {};\nconst err = (e.error && (e.error.message || e.error)) || e.message || 'upload_failed';\nreturn { json: { ok: false, kind: 'upload', placeholder_id: meta.placeholder_id, err: String(err).slice(0, 300), batch_warnings: Array.isArray(meta.batch_warnings) ? meta.batch_warnings : [] } };"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "build-gen-dropped",
+      "name": "Build Gen Dropped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 280],
+      "notes": "Generation failure (batch returned success:false / empty b64) -> dropped entry { ok:false, kind:'gen', placeholder_id, err, batch_warnings }. Aggregate turns it into a returned WARN; the agent keeps reasoning (fail-soft, ADR-051/052). $json here is the normalized batch item (Is Success? false branch passes it through). alwaysOutputData so the empty case still emits and Merge append never stalls.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const e = $json || {};\nreturn { json: { ok: false, kind: 'gen', placeholder_id: e.placeholder_id || '', err: (e.error || 'generation_failed'), batch_warnings: Array.isArray(e.batch_warnings) ? e.batch_warnings : [] } };"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "build-batch-failed",
+      "name": "Build Batch Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 380],
+      "notes": "Generate Images Parallel THREW (executeWorkflow error output). Emits a single { batch_failed:true, err } sentinel. Aggregate returns a WARN + a failed tool_result; the agent proceeds without an image. The underlying CRITICAL (e.g. LiteLLM image key missing) is already escalated by the BATCH's own errorWorkflow — this handler does NOT re-fire CRITICAL, just degrades fail-soft. alwaysOutputData so an empty (no-throw) error branch never stalls the Merge.",
+      "parameters": {
+        "jsCode": "const e = ($input.first() && $input.first().json) || {};\nconst err = (e.error && (e.error.message || e.error)) || e.message || 'image batch threw';\nreturn [{ json: { batch_failed: true, err: String(err).slice(0, 300) } }];"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "build-sentinel",
+      "name": "Build Sentinel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 460],
+      "notes": "No-work sentinel for the Should Generate? false branch (no key OR no prompt). Emits { no_work:true, no_prompt, key_missing } so the single terminal Aggregate still runs and returns a well-formed failed tool_result. alwaysOutputData so the branch never stalls the Merge append.",
+      "parameters": {
+        "jsCode": "const b = ($input.first() && $input.first().json) || {};\nreturn [{ json: { no_work: true, no_prompt: !!b.no_prompt, key_missing: !!b.key_missing } }];"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "merge",
+      "name": "Merge",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [2200, 300],
+      "notes": "Converge OK (0), Upload Dropped (1), Gen Dropped (2), Batch Failed (3), and the no-work Sentinel (4) into ONE stream so Aggregate keeps a SINGLE input (a run-once-for-all-items node with N inputs runs once per connection and drops items — CLAUDE.md trap). Append = concat; tolerant of empty branches (alwaysOutputData upstream).",
+      "parameters": {
+        "numberInputs": 5
+      }
+    },
+    {
+      "id": "aggregate",
+      "name": "Aggregate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2420, 300],
+      "notes": "SOLE TERMINAL (single input via Merge -> branch-free deterministic return, CLAUDE.md). Returns the tool_result the session loop (Block 5) hands the agent: { status, file_ids[], images[{file_id,b64_json,mime,used_reference,...}], warnings[], message, count_* , clickup_task_id }. file_ids are what the agent embeds; images carry b64 for Block 6 delivery (uploaded files aren't downloadable). warnings are RETURNED, fired by Block 5 via Post Alert (v1) (mirrors Upload Input Images -> Stage B); the batch's own per-image cost rows + any throw-CRITICAL are already handled inside the batch.",
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(function(i){ return i.json; }).filter(Boolean);\nconst oks = rows.filter(function(r){ return r.ok === true && r.file_id; });\nconst uploadDrops = rows.filter(function(r){ return r.ok === false && r.kind === 'upload'; });\nconst genDrops = rows.filter(function(r){ return r.ok === false && r.kind === 'gen'; });\nconst batchFailedRow = rows.find(function(r){ return r.batch_failed === true; });\nconst sentinel = rows.find(function(r){ return r.no_work === true; });\nlet reqMeta = {};\nlet reqWarnings = [];\ntry { reqMeta = $('Build Requests').first().json || {}; reqWarnings = Array.isArray(reqMeta.warnings) ? reqMeta.warnings : []; } catch (e) {}\nconst warnings = [];\nfor (const w of reqWarnings) warnings.push(w);\nfor (const d of uploadDrops) warnings.push({ source: 'image-tool/upload-failed', err: 'generated image ' + (d.placeholder_id || '') + ' upload failed: ' + (d.err || 'unknown'), severity: 'WARN' });\nfor (const d of genDrops) warnings.push({ source: 'image-tool/generation-failed', err: 'image ' + (d.placeholder_id || '') + ' not generated: ' + (d.err || 'unknown'), severity: 'WARN' });\nif (batchFailedRow) warnings.push({ source: 'image-tool/batch-threw', err: 'image batch failed: ' + (batchFailedRow.err || 'unknown') + '; no images generated (the batch escalates its own CRITICAL)', severity: 'WARN' });\nconst seenStrings = {};\nfor (const r of rows) { if (Array.isArray(r.batch_warnings)) { for (const s of r.batch_warnings) { if (s && !seenStrings[s]) { seenStrings[s] = true; warnings.push({ source: 'image-tool/batch-degrade', err: s, severity: 'WARN' }); } } } }\nconst file_ids = oks.map(function(r){ return r.file_id; });\nconst images = oks.map(function(r){ return { file_id: r.file_id, b64_json: r.b64_json, mime: r.mime, used_reference: !!r.used_reference, placeholder_id: r.placeholder_id, caption: r.caption || '', alt: r.alt || '' }; });\nconst count_requested = (reqMeta.count_requested != null) ? reqMeta.count_requested : (oks.length + genDrops.length + uploadDrops.length);\nconst count_uploaded = file_ids.length;\nconst count_failed = Math.max(0, count_requested - count_uploaded);\nlet status, message;\nif (sentinel) {\n  status = 'failed';\n  message = sentinel.no_prompt\n    ? 'Image generation was not attempted: no prompt was provided to generate_image. Tell the user no image could be produced.'\n    : 'Image generation was not attempted: the image service credential is unavailable. Proceed without an image and note it could not be generated.';\n} else if (count_uploaded === 0) {\n  status = 'failed';\n  message = 'Image generation failed: no images were produced (' + count_requested + ' attempted). Proceed without the image and tell the user it could not be generated.';\n} else if (count_failed > 0) {\n  status = 'partial';\n  message = 'Generated and uploaded ' + count_uploaded + ' of ' + count_requested + ' image(s). Use these file_ids to embed the images in your output: ' + file_ids.join(', ') + '. ' + count_failed + ' image(s) failed.';\n} else {\n  status = 'ok';\n  message = 'Generated and uploaded ' + count_uploaded + ' image(s). Use these file_ids to embed the images in your output: ' + file_ids.join(', ') + '.';\n}\nlet taskId = '';\ntry { taskId = $('When Called').first().json.clickup_task_id || ''; } catch (e) {}\nreturn [{ json: { status: status, file_ids: file_ids, images: images, warnings: warnings, message: message, count_requested: count_requested, count_uploaded: count_uploaded, count_failed: count_failed, clickup_task_id: taskId } }];"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Get Anthropic Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Anthropic Key": {
+      "main": [
+        [
+          {
+            "node": "Build Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Requests": {
+      "main": [
+        [
+          {
+            "node": "Should Generate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Generate?": {
+      "main": [
+        [
+          {
+            "node": "Call Generate Images Parallel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Sentinel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Generate Images Parallel": {
+      "main": [
+        [
+          {
+            "node": "Normalize Batch Output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Batch Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Batch Output": {
+      "main": [
+        [
+          {
+            "node": "Is Success?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Success?": {
+      "main": [
+        [
+          {
+            "node": "Convert to File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Gen Dropped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File": {
+      "main": [
+        [
+          {
+            "node": "Upload to Files API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to Files API": {
+      "main": [
+        [
+          {
+            "node": "Build OK Entry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Upload Dropped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build OK Entry": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Upload Dropped": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Build Gen Dropped": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Build Batch Failed": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Build Sentinel": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}
