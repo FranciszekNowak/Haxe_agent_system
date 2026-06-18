@@ -241,11 +241,27 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
   gate** — a mis-mapped credential fails silently and the departmental boundary (e.g. Marketing cannot
   read Purchasing) is the entire point.
 
-> **Build progress (ADR-053 lane).** Block 0 (capability spike — `block-0-findings.md`) and Block 1
-> (credential plumbing) have landed; the lane is **not yet serving traffic**. Live now: the
-> `get_anthropic_key()` Vault getter (migration 034) and `Managed Agents Auth Monitor (v1)`
-> (`X3GEjMgmByZgDJnt`, an auth dead-man's-switch probing `GET /v1/agents` every 6h, alerting via
-> `Post Alert (v1)`). Plan + per-block detail: `architecture/Build plans/adr-053-managed-agents/`.
+> **Build progress (ADR-053 lane).** Blocks 0–2 have landed; the lane is **not yet serving traffic**.
+> Live now:
+> - **Block 0** — capability spike (`block-0-findings.md`).
+> - **Block 1** — credential plumbing: the `get_anthropic_key()` Vault getter (migration 034) and
+>   `Managed Agents Auth Monitor (v1)` (`X3GEjMgmByZgDJnt`, an auth dead-man's-switch probing
+>   `GET /v1/agents` every 6h, alerting via `Post Alert (v1)`). The `anthropic_api_key` Vault secret is
+>   seeded and the monitor is green.
+> - **Block 2** — the four tier agents exist in the Anthropic org (Haiku→Niski, Sonnet→Średni,
+>   Opus→Wysoki, Fable→Krytycznie ważne), sharing one `system` (stable output contract + the synced
+>   ClickUp global-rules doc `q7wz-44812`), the `generate_image` custom tool + built-in
+>   `agent_toolset_20260401` (web search), and the docx/xlsx/pptx/pdf Anthropic skills; they differ only
+>   in `model.id`. Routing + provenance live in the new **`agent_routing`** table (migration 035; impact
+>   → agent_id, untouched `model_routing` still serves the bare lane). `Sync Agent Definitions (v1)`
+>   (`4K1w78hJ7JhsUwdN`) reads the CU doc, bakes the rules into each agent's static `system`, and
+>   creates/version-updates the agents idempotently (skips when the baked rules hash + conventions
+>   version already match — no version inflation; an update requires the agent's current `version` in the
+>   body). The **`Agent Rules Freshness Check (v1)`** dead-man's-switch (`7lakbgmrH93ygiyZ`) independently
+>   re-hashes the CU doc and compares it to a provenance marker embedded in each **live** agent's
+>   `system`, so stale/out-of-band-drifted rules cannot serve silently (drift → WARN, never-synced /
+>   missing-marker / unreadable agent → CRITICAL, all via `Post Alert (v1)`). Both run every 6h.
+> Plan + per-block detail: `architecture/Build plans/adr-053-managed-agents/`.
 
 ---
 

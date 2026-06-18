@@ -115,6 +115,16 @@ The `xlsx` skill + code execution wrote `budget.xlsx` (4956 bytes, mime
 → **Block 2:** change agent behavior by `POST /v1/agents/{id}` (new version), never recreate; archive only
 truly-dead agents, and confirm with the operator first.
 
+> **Correction found in Block 2 (live):** the **update** body (`POST /v1/agents/{id}`) **requires a
+> `version` field** = the agent's *current* version (optimistic concurrency — it creates `version+1`).
+> Omitting it returns `400 invalid_request_error "version: Field required"`. The **create** body
+> (`POST /v1/agents`) must **not** carry `version`. So `Sync Agent Definitions (v1)` sends `version`
+> only when updating, sourced from `agent_routing.agent_version`. Consequence: if the DB's recorded
+> `agent_version` ever lags the live version (a writeback that failed after the API succeeded, or an
+> out-of-band console edit), the next update `400`s on version mismatch — surfaced loudly via the sync's
+> error-branch CRITICAL, healed by re-running sync after correcting the recorded version (a future
+> hardening could `GET` the live version just before each update).
+
 ## Net effect on the master plan
 
 - Pause/resume **holds** → no sidecar; the one custom-build risk is retired.

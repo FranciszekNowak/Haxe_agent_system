@@ -1,0 +1,599 @@
+{
+  "name": "Agent Rules Freshness Check (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Every 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [0, 280],
+      "notes": "ADR-053 Block 2: freshness dead-man's-switch for the Managed Agents lane. Re-derives the ClickUp global-rules hash and compares it to what each LIVE agent carries (a provenance marker in its system). Runs INDEPENDENTLY of Sync Agent Definitions (v1) so it still fires if the sync job is dead. The headline reliability hazard of ADR-053 decision #3 (static system silently drifting from the CU SSOT) is what this retires.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 440],
+      "notes": "Test/on-demand entry via scripts/test-subworkflow.mjs. No inputs needed.",
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "get-key",
+      "name": "Get Anthropic Key",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [220, 360],
+      "notes": "Reads anthropic_api_key via public.get_anthropic_key() (migration 034) to call GET /v1/agents/{id}.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_anthropic_key() as key;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "get-rules",
+      "name": "Get CU Rules",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 360],
+      "notes": "Same global-rules doc read as Sync Agent Definitions (v1) — must hash the SAME content the SAME way for the comparison to be valid.",
+      "parameters": {
+        "url": "https://api.clickup.com/api/v3/workspaces/761759/docs/q7wz-16892/pages?content_format=text%2Fmd",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "extract-rules",
+      "name": "Extract Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 360],
+      "notes": "Identical extraction to Sync Agent Definitions (v1): page q7wz-44812 .content.",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const body = ($input.first().json.body) || $input.first().json || [];\nconst pages = Array.isArray(body) ? body : (body.pages || []);\nconst all = [];\n(function flat(arr){ for (const p of (arr||[])) { all.push(p); if (p.pages) flat(p.pages); } })(pages);\nconst page = all.find(p => p.id === 'q7wz-44812');\nconst rules_md = (page && page.content) ? String(page.content) : '';\nconst rules_present = !!rules_md && rules_md.trim().length > 50;\nreturn [{ json: { rules_md, rules_present, page_found: !!page } }];"
+      }
+    },
+    {
+      "id": "rules-present",
+      "name": "Rules Present?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [880, 360],
+      "notes": "False -> we cannot verify freshness because the SSOT is unreadable: that is itself a degradation -> CRITICAL.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.rules_present }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "alert-cu-unreadable",
+      "name": "Alert CU Unreadable",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1100, 540],
+      "notes": "CRITICAL via Post Alert (v1): cannot confirm whether agents are stale because the global-rules doc could not be read.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "managed-agents/rules-freshness",
+            "message": "Nie można zweryfikować aktualności zasad agentów — dokument ClickUp (q7wz-44812) niedostępny lub pusty.",
+            "details": "=Dead-man's-switch nie potwierdził, czy agenci niosą aktualne zasady. page_found={{ $json.page_found }}. Sprawdź dostępność ClickUp Docs v3 i poświadczenie."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "hash-rules",
+      "name": "Hash Rules",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [1100, 260],
+      "notes": "SHA256(hex) of the rules markdown = the current expected hash. Compared against each live agent's embedded provenance hash.",
+      "parameters": {
+        "action": "hash",
+        "type": "SHA256",
+        "value": "={{ $json.rules_md }}",
+        "dataPropertyName": "rules_sha256",
+        "encoding": "hex",
+        "binaryData": false
+      }
+    },
+    {
+      "id": "get-summary",
+      "name": "Get Sync Summary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1320, 260],
+      "notes": "One-row gate: are all distinct-model agents created at all, and how long since the last successful sync? Catches the never-synced / partially-synced case loudly (otherwise a zero-agent state would make the per-agent reads run on nothing = silent).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select (count(distinct agent_id) filter (where agent_id is not null)) >= count(distinct model_id) as enough, count(distinct agent_id) filter (where agent_id is not null) as synced_agents, count(distinct model_id) as total_agents, coalesce(round((max(extract(epoch from (now()-synced_at)))/3600.0)::numeric,1),99999) as max_hours, coalesce(string_agg(distinct tier_label, ', ') filter (where agent_id is null),'') as unsynced_tiers from agent_routing where active and model_id <> '';",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "agents-synced",
+      "name": "Agents Synced?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1540, 260],
+      "notes": "False -> not every tier has a live agent (never created / partial). CRITICAL.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.enough }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "alert-not-synced",
+      "name": "Alert Not Synced",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1760, 440],
+      "notes": "CRITICAL via Post Alert (v1): one or more tiers have no live agent.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "managed-agents/rules-freshness",
+            "message": "Agenci Managed Agents nie są w pełni utworzeni — brak żywego agenta dla części tierów.",
+            "details": "=Tiery bez agenta: {{ $json.unsynced_tiers }}. Zsynchronizowane agenty: {{ $json.synced_agents }}/{{ $json.total_agents }}. Uruchom Sync Agent Definitions (v1)."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "get-agent-ids",
+      "name": "Get Agent IDs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1760, 200],
+      "notes": "One row per distinct live agent (4). Drives the per-agent live read.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select distinct on (agent_id) tier_label, model_id, agent_id, rules_sha256 as recorded_sha, conventions_version, synced_at from agent_routing where active and agent_id is not null order by agent_id;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "get-live-agent",
+      "name": "Get Live Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 200],
+      "notes": "GET /v1/agents/{id} per agent. The response carries the deployed system, from which Check Drift extracts the provenance hash. Error output (archived/auth/unreachable) -> CRITICAL. main[1] is the error branch.",
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.anthropic.com/v1/agents/{{ $json.agent_id }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $('Get Anthropic Key').first().json.key }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "managed-agents-2026-04-01"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "alert-agent-unreadable",
+      "name": "Alert Agent Unreadable",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [2200, 360],
+      "notes": "CRITICAL via Post Alert (v1): a recorded agent could not be read from Anthropic (archived, deleted, or auth failure).",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "managed-agents/rules-freshness",
+            "message": "Nie można odczytać definicji agenta Managed Agents z Anthropic.",
+            "details": "=Agent: {{ $('Get Agent IDs').item.json.tier_label }} ({{ $('Get Agent IDs').item.json.agent_id }}). Błąd: {{ (($json.error||{}).message) || $json.error || JSON.stringify($json).slice(0,300) }}. Agent mógł zostać zarchiwizowany/usunięty lub klucz jest nieważny."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "check-drift",
+      "name": "Check Drift",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 140],
+      "notes": "Per live agent: extract rules_sha256 from the provenance marker in its system and compare to the current CU hash. Missing marker -> CRITICAL (malformed); hash mismatch -> WARN (drift, run sync); content matches but last sync >24h -> WARN (sync writer may be dead). Emits a single verdict {problem, severity, message, details}.",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const current = $('Hash Rules').first().json.rules_sha256;\nlet maxHours = 0;\ntry { maxHours = Number($('Get Sync Summary').first().json.max_hours) || 0; } catch(e){}\nconst meta = {};\ntry { for (const r of $('Get Agent IDs').all()) { meta[r.json.agent_id] = r.json; } } catch(e){}\nconst live = $input.all();\nconst stale = [], noProv = [], ok = [];\nfor (const it of live) {\n  const a = it.json;\n  const sys = a.system || '';\n  const m = sys.match(/rules_sha256=([0-9a-f]{64})/);\n  const tier = (meta[a.id] && meta[a.id].tier_label) || a.name || a.id;\n  if (!m) { noProv.push(tier); }\n  else if (m[1] !== current) { stale.push(tier + ' (' + m[1].slice(0,8) + ' vs ' + String(current).slice(0,8) + ')'); }\n  else { ok.push(tier); }\n}\nlet severity = 'INFO', problem = false, message = '', details = '';\nif (live.length === 0) {\n  severity = 'CRITICAL'; problem = true;\n  message = 'Freshness check nie odczytał żadnego żywego agenta.';\n  details = 'Sprawdź Get Live Agent / klucz Anthropic.';\n} else if (noProv.length) {\n  severity = 'CRITICAL'; problem = true;\n  message = 'Agent(y) Managed Agents bez znacznika prowenancji zasad — definicja uszkodzona lub zmieniona poza Sync.';\n  details = 'Tiery: ' + noProv.join(', ') + '. Uruchom Sync Agent Definitions (v1) i sprawdź, czy agent nie był zmieniany ręcznie.';\n} else if (stale.length) {\n  severity = 'WARN'; problem = true;\n  message = 'Zasady globalne w ClickUp zmieniły się, ale agenci niosą starszą wersję — dryf zasad.';\n  details = 'Stale tiery: ' + stale.join('; ') + '. Uruchom Sync Agent Definitions (v1) (przy dryfie poza Sync użyj force=true), aby wgrać aktualne zasady. Bieżący hash: ' + String(current).slice(0,12) + '.';\n} else if (maxHours > 24) {\n  severity = 'WARN'; problem = true;\n  message = 'Sync agentów nie wykonał się skutecznie od ponad 24h (treść na razie zgodna).';\n  details = 'Najstarszy synced_at: ' + maxHours + 'h temu. Sprawdź, czy Sync Agent Definitions (v1) jest aktywny i czy schedule działa.';\n} else {\n  message = 'Agenci aktualni.'; details = 'OK tiery: ' + ok.join(', ') + '.';\n}\nreturn [{ json: { problem, severity, message, details, current_sha: current, ok: ok.length, stale: stale.length, no_provenance: noProv.length, max_hours: maxHours } }];"
+      }
+    },
+    {
+      "id": "problem",
+      "name": "Problem?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2420, 140],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.problem }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "alert-drift",
+      "name": "Alert Drift",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [2640, 60],
+      "notes": "Routes the verdict through Post Alert (v1) with the computed severity (WARN drift / CRITICAL malformed). Source managed-agents/rules-freshness.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "={{ $json.severity }}",
+            "source": "managed-agents/rules-freshness",
+            "message": "={{ $json.message }}",
+            "details": "={{ $json.details }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "fresh",
+      "name": "Fresh",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2640, 220],
+      "notes": "Terminal for the healthy path. Silent on purpose — a fresh check must not post every 6h.",
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Every 6h": {
+      "main": [
+        [
+          {
+            "node": "Get Anthropic Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Get Anthropic Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Anthropic Key": {
+      "main": [
+        [
+          {
+            "node": "Get CU Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get CU Rules": {
+      "main": [
+        [
+          {
+            "node": "Extract Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Rules": {
+      "main": [
+        [
+          {
+            "node": "Rules Present?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rules Present?": {
+      "main": [
+        [
+          {
+            "node": "Hash Rules",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert CU Unreadable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash Rules": {
+      "main": [
+        [
+          {
+            "node": "Get Sync Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Sync Summary": {
+      "main": [
+        [
+          {
+            "node": "Agents Synced?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agents Synced?": {
+      "main": [
+        [
+          {
+            "node": "Get Agent IDs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Not Synced",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Agent IDs": {
+      "main": [
+        [
+          {
+            "node": "Get Live Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Live Agent": {
+      "main": [
+        [
+          {
+            "node": "Check Drift",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Agent Unreadable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Drift": {
+      "main": [
+        [
+          {
+            "node": "Problem?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Problem?": {
+      "main": [
+        [
+          {
+            "node": "Alert Drift",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fresh",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}

@@ -102,8 +102,8 @@ Bytes never cross a workflow boundary except as base64 inside execution data (mi
 |---|---|---|
 | 0 | Capability gate: prove the beta API shapes live (sessions, custom-tool pause/resume, web_search, a skill, Files API up/down, the cost surface) | ✅ **DONE 2026-06-18** — see `block-0-findings.md`. Pause/resume confirmed (no sidecar); poll `GET /events`, not SSE; cost computed from tokens + `stats.duration_seconds`, no aggregate $ field |
 | 1 | Anthropic credential + key plumbing + auth health-check | ✅ **DONE 2026-06-18** — `get_anthropic_key()` (migration 034); `Managed Agents Auth Monitor (v1)` (`X3GEjMgmByZgDJnt`, active, every 6h). Missing-key CRITICAL path verified live (exec 2619). **Pending operator: seed the `anthropic_api_key` Vault secret** to close the success-path DoD + silence the monitor |
-| 2 | Agent definitions (4 tiers) + CU global-rules sync workflow + freshness dead-man's-switch + impact→agent routing | ☐ to do — **NEXT** |
-| 3 | Files-API input path (image refs → bytes → file_id; carry the {file_id→url} map) | ☐ to do |
+| 2 | Agent definitions (4 tiers) + CU global-rules sync workflow + freshness dead-man's-switch + impact→agent routing | ✅ **DONE 2026-06-18** — 4 agents live (Haiku/Sonnet/Opus/Fable, share `system`/tools/skills, differ in `model.id`); `agent_routing` table (migration 035); `Sync Agent Definitions (v1)` (`4K1w78hJ7JhsUwdN`, idempotent create/version-update, every 6h); `Agent Rules Freshness Check (v1)` dead-man's-switch (`7lakbgmrH93ygiyZ`, every 6h, reads live agents' embedded rules hash). Update body requires `version` (Block-0 spec correction, recorded in findings). DoD verified live: create, idempotent-skip, content-change→update + read-back, stale-state→WARN |
+| 3 | Files-API input path (image refs → bytes → file_id; carry the {file_id→url} map) | ☐ to do — **NEXT** |
 | 4 | `generate_image` custom-tool handler (wraps Generate Images Parallel via the reference_urls seam) | ☐ to do |
 | 5 | `Execute Agent Session (v1)` — the session loop servicing the custom tool callback | ☐ to do |
 | 6 | Output adapter + session cost into Log Model Run | ☐ to do |
@@ -146,6 +146,20 @@ live change, never hand-edited.
   constraints in CLAUDE.md), not a Code node.
 
 ### Block 2 — Agent definitions + CU-rules sync + dead-man's-switch
+> ✅ **DONE 2026-06-18.** Agents: Haiku `agent_01VFVwm2tC8rmJvMRZLfSERY`, Sonnet
+> `agent_01FJg94fqXkSdmocmBmT4NKL` (serves Średni + __default__), Opus `agent_01TNKHGAg5CHDe93Gai7CKoP`,
+> Fable `agent_01DWhec9hSwE1Gt7dSyvzMoH`. Workflows `Sync Agent Definitions (v1)` (`4K1w78hJ7JhsUwdN`) +
+> `Agent Rules Freshness Check (v1)` (`7lakbgmrH93ygiyZ`), both active, every 6h. Migration 035
+> (`agent_routing`). Provenance: each agent's `system` ends with
+> `<!-- HAXE-AGENT-PROVENANCE rules_sha256=… conventions_version=1 source=clickup:q7wz-44812 -->`; the
+> dead-man's-switch matches that hash against a fresh hash of the CU doc. Idempotency keyed on rules
+> hash + a `CONV` constant in Build System (bump `CONV` to force a re-sync after editing the static
+> conventions text). **Update needs `version` in the body** (findings correction). Decisions kept:
+> rules baked into static `system` (not per-run); the dead-man's-switch reads LIVE agents, not just the
+> DB record, so out-of-band drift is caught. **Note vs original plan:** "all-or-nothing, reports
+> per-tier success" is realised as per-tier `continueErrorOutput` → CRITICAL with the HTTP detail, plus
+> a fresh-from-DB `Verify Synced` completeness gate; true rollback is impossible (agents have no delete),
+> and the next idempotent run self-heals stale tiers.
 - **Do:** create the four tier agents (identical `system`/`tools`/`skills`, differing only in `model`).
   Build `Sync Agent Definitions (v1)`: read the CU global-rules doc (Docs v3, as `Load Agent Rules` does
   today), compose `system` = stable conventions + rules, and create/version-update the four agents. Run it
