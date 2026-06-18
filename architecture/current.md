@@ -241,6 +241,12 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
   gate** — a mis-mapped credential fails silently and the departmental boundary (e.g. Marketing cannot
   read Purchasing) is the entire point.
 
+> **Build progress (ADR-053 lane).** Block 0 (capability spike — `block-0-findings.md`) and Block 1
+> (credential plumbing) have landed; the lane is **not yet serving traffic**. Live now: the
+> `get_anthropic_key()` Vault getter (migration 034) and `Managed Agents Auth Monitor (v1)`
+> (`X3GEjMgmByZgDJnt`, an auth dead-man's-switch probing `GET /v1/agents` every 6h, alerting via
+> `Post Alert (v1)`). Plan + per-block detail: `architecture/Build plans/adr-053-managed-agents/`.
+
 ---
 
 ## 4. The learning system

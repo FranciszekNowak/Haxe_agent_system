@@ -101,8 +101,8 @@ Bytes never cross a workflow boundary except as base64 inside execution data (mi
 | # | Block | State |
 |---|---|---|
 | 0 | Capability gate: prove the beta API shapes live (sessions, custom-tool pause/resume, web_search, a skill, Files API up/down, the cost surface) | ✅ **DONE 2026-06-18** — see `block-0-findings.md`. Pause/resume confirmed (no sidecar); poll `GET /events`, not SSE; cost computed from tokens + `stats.duration_seconds`, no aggregate $ field |
-| 1 | Anthropic credential + key plumbing + auth health-check | ☐ to do — **NEXT** |
-| 2 | Agent definitions (4 tiers) + CU global-rules sync workflow + freshness dead-man's-switch + impact→agent routing | ☐ to do |
+| 1 | Anthropic credential + key plumbing + auth health-check | ✅ **DONE 2026-06-18** — `get_anthropic_key()` (migration 034); `Managed Agents Auth Monitor (v1)` (`X3GEjMgmByZgDJnt`, active, every 6h). Missing-key CRITICAL path verified live (exec 2619). **Pending operator: seed the `anthropic_api_key` Vault secret** to close the success-path DoD + silence the monitor |
+| 2 | Agent definitions (4 tiers) + CU global-rules sync workflow + freshness dead-man's-switch + impact→agent routing | ☐ to do — **NEXT** |
 | 3 | Files-API input path (image refs → bytes → file_id; carry the {file_id→url} map) | ☐ to do |
 | 4 | `generate_image` custom-tool handler (wraps Generate Images Parallel via the reference_urls seam) | ☐ to do |
 | 5 | `Execute Agent Session (v1)` — the session loop servicing the custom tool callback | ☐ to do |
