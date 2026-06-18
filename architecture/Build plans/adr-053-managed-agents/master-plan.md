@@ -42,6 +42,24 @@ loop, read-input) confirmed by exploration, not against the ADR alone.
    `usd_cost`. Whether the session API reports cost is a **Block-0 unknown**; the design computes it from
    token usage + wall-clock + search count if no aggregate is returned.
 
+### Amendment (2026-06-18) — ADR-055: image generation moves to a self-hosted MCP server
+
+After Block 5 landed, review (and the ADR-054 interplay) reshaped the image-tool mechanism. **ADR-055
+supersedes ADR-053 §5 + R8:** image generation is exposed to the agent as a tool on a **self-hosted MCP
+server** (harness calls our endpoint synchronously) rather than a client-side custom tool serviced by the
+session pause/resume loop. Why: it removes the per-image polling latency, makes image consistent with the
+built-in tools, corrects R8's wrong "MCP bypasses cost logging" premise (a self-hosted MCP reuses
+`Generate Images Parallel` + cost logging), and exercises the Vault/`mcp_servers` plumbing ADR-054 needs.
+**The client-side loop in `Execute Agent Session (v1)` is RETAINED**, not deleted — ADR-054's Google DWD
+retrieval is itself a client-side custom tool that needs it; image is only de-registered as a custom tool.
+Full loop retirement (Google → MCP too) is a larger, gated bet (does the harness pass session context to
+MCP calls? — Block 5.1) deferred to a future ADR. This is interleaved as Blocks **5.1 → 5.2 → 5.3** (after
+Block 5, before Block 6); Block 6 (output adapter + cost) is unchanged because the Agent Session output
+contract is identical regardless of how images are produced. **Gate kill-criterion:** if the harness's MCP
+tool-call timeout cannot hold an image-gen call (~170s for gpt-image-2 high), image-via-MCP is infeasible
+and we stay on the verified client-side path (Block 5) — 5.2/5.3 are abandoned. Full reasoning:
+`architecture/decisions/055-image-generation-via-mcp.md`.
+
 ### Gaps surfaced (carried into the plan)
 
 - The spec ADR-053 references (`multimodal-io-and-spine-decomposition-spec.md`) **does not exist**; the ADR
@@ -106,10 +124,13 @@ Bytes never cross a workflow boundary except as base64 inside execution data (mi
 | 3 | Files-API input path (image refs → bytes → file_id; carry the {file_id→url} map) | ✅ **DONE 2026-06-18** — `Upload Input Images (v1)` (`2VkZN5UeqVk6MDLW`, active). Takes Read Input's image blocks, fetches each to a binary, uploads to `POST /v1/files` (multipart, `purpose=agent`, beta `files-api-2025-04-14`), returns `{file_id,url,source_ref,mime,alt,order}` map + `warnings[]`. DoD verified live (exec 2661): a ClickUp pre-signed image **and** a zip-inner Supabase-signed image (both produced by the real Read Input run on test task `869drte1b`) uploaded → 2 real `file_…` ids, `uploaded_count:2`. Fail-soft verified (exec 2663): bad URL → 1 dropped + `files-api/fetch-failed` WARN, the good one still uploaded; empty-images → clean empty map, no spurious WARN. Open Block-0 sub-check **resolved (vision confirmed live)**: input image attaches to `user.message` as `{type:image, source:{type:file, file_id}}` — the live Haiku agent correctly **described a supplied image** (`scripts/ma-spike3.py`); events call carries both betas (`managed-agents-2026-04-01,files-api-2025-04-14`) when referencing a `file_id`; `purpose=agent` upload is fine. (Caveat for Block 5: a corrupt image is accepted at send=200 and fails later as `session.error` "Could not process image" — read events to idle, don't trust send=200.) |
 | 4 | `generate_image` custom-tool handler (wraps Generate Images Parallel via the reference_urls seam) | ✅ **DONE 2026-06-18** — `Image Tool Handler (v1)` (`vpGswBj2kR2D85hl`, active). Parses `{prompt, reference_file_ids?, count?, aspect_ratio?, size?}`; resolves `reference_file_ids`→`reference_urls` via the session `{file_id→url}` map; calls `Generate Images Parallel (v1)` (`2keb6XVWq5PG0leK`) **unchanged** (ADR-052 seam); base64→binary (Convert to File) → Files-API upload (`purpose=agent`, Block-3 node) → returns `tool_result {status, file_ids[], images[]{file_id,b64_json,…}, warnings[], message}`. **No second cost writer** (batch's own Log Model Run writes per-image rows). Fail-soft, branch-free terminal, never throws into the session. DoD verified live: plain gen → `file_id` (exec 2683); reference path → `used_reference:true` + `file_id` (exec 2676); one priced `agent_runs` row (gemini flash, `cost_pln` 0.1414); no-prompt → clean `failed`. **Finding:** per-image `triggered_by` must satisfy `agent_runs_triggered_by_check` — handler fallback defaults to `image_gen`; **Block 5 must forward a valid `triggered_by`** (e.g. `explicit_mention`). 3 test image uploads left in the Files API (harmless, `purpose=agent`; matches Block 3 precedent — couldn't delete without exposing the key on the CLI). |
 | 5 | `Execute Agent Session (v1)` — the session loop servicing the custom tool callback | ✅ **DONE 2026-06-18** — `Execute Agent Session (v1)` (`Rtb1cZbmUqmfGD98`, active). Persistent env `env_01T1PexJQheEUVnzVTKjyrz4` created once, stored in `config.managed_agent_environment_id`. Resolves tier agent from `agent_routing`; calls `Upload Input Images (v1)`; builds `user.message` (image file_id blocks + text); creates session; sends message. **Poll Round** (one Code node) does the whole wait via `GET /events`+`GET /session` polling with `this.helpers.httpRequest` + 840s absolute soft-deadline (carried `deadline_epoch`); stateless pending-tool detection (answered iff a `user.custom_tool_result` with the id exists in history); done = idle + `agent.message` after last user event. **Recurses** (research-the-web `executeWorkflow` idiom) once per `generate_image` tool round (cap 12), calling `Image Tool Handler (v1)` + POSTing the `user.custom_tool_result`. Single branch-free terminal (`Final Return` re-reads `Merge Final`); one consolidated `Post Alert (v1)`. Returns `{status, output_message (block-array), files[]{file_id,b64_json}, file_ids[], session_usage, duration_seconds, web_search_count, model_used, session_id, warnings[]}`; **`usd_cost` is a NULL stub for Block 6** (raw usage + duration carried). DoD verified live: text task → block-array + raw usage (exec 2688, 8s); web-search → cited findings, `web_search_count` 1, no research workflows (exec 2691); `generate_image` → serviced callback through one recursive round, returned `file_id`+b64, one priced image `agent_runs` row (gemini-flash, `triggered_by=explicit_mention` forwarded), clean alert channel (parent exec 2694 + child 2700). Test sessions/file + test `agent_runs` row deleted. |
-| 6 | Output adapter + session cost into Log Model Run | ☐ to do — **NEXT** |
+| 5.1 | **(ADR-055)** MCP capability gate: prove the harness calls a self-hosted remote MCP tool; transport/auth; max tool-call duration; session-context-to-MCP; n8n MCP-trigger availability | ☐ to do — **NEXT** |
+| 5.2 | **(ADR-055)** Image MCP server + `agent_input_file_map` table + `Upload Input Images` write-back (reuses `Generate Images Parallel` + Files-API upload + cost logging) | ☐ to do |
+| 5.3 | **(ADR-055)** Switch the 4 agents from the `generate_image` custom tool → the image `mcp_servers` entry; image MCP health dead-man's-switch; loop retained for ADR-054's Google tool, dormant for image | ☐ to do |
+| 6 | Output adapter + session cost into Log Model Run | ☐ to do |
 | 7 | Post Reply office-doc delivery (attachment + validation gate + erasure recording) | ☐ to do |
-| 8 | Lane switch flag + orchestrator wiring + retire research workflows | ☐ to do |
-| 9 | End-to-end cutover, GDPR record, current.md/ADR write-backs, supersede the file-output plan | ☐ to do |
+| 8 | Lane switch flag + orchestrator wiring + retire research workflows (+ note image custom-tool path is now the dormant rollback, ADR-055) | ☐ to do |
+| 9 | End-to-end cutover, GDPR record (incl. the image MCP endpoint, ADR-055), current.md/ADR write-backs, supersede the file-output plan | ☐ to do |
 
 Each block ends with: write-back to `current.md` + ADR-053, status-table update, commit, handoff. Live
 verification (not "looks right") per Definition of Done; all alerts through `Post Alert (v1)`; never read or
@@ -216,6 +237,55 @@ live change, never hand-edited.
   stall; a non-deterministic multi-branch return → enforced single terminal; a tool loop that never settles
   → a max-rounds cap (mirrors research `max_depth`) + WARN.
 
+### Block 5.1 — MCP capability gate (ADR-055; the linchpin for 5.2/5.3)
+- **Do:** against the live beta, with a throwaway self-hosted MCP server (a minimal endpoint exposing one
+  echo tool), prove and record: (a) Managed Agents can register a **remote/self-hosted** MCP server on an
+  agent (`mcp_servers`) and the agent invokes its tool in-harness — the exact transport (Streamable HTTP?)
+  and auth shape (Vault bearer); (b) the **maximum tool-call duration** the harness tolerates before it
+  times out (must clear ~170s for gpt-image-2 high — the kill-criterion); (c) whether the MCP tool call
+  carries any **session/correlation context** (decides whether Google DWD could later be MCP, ADR-055 R4 —
+  not needed for image, which resolves references via the `agent_input_file_map` table); (d) whether
+  **n8n's MCP Server Trigger** exists and works on our instance (preferred host) or we need a thin
+  server (Supabase Edge Function / a small VPS Node service). Also confirm any MCP-specific cost surface.
+- **DoD:** a findings note (saved under this plan's dir) capturing every shape above, **or** a clear
+  "infeasible (tool-call timeout < image-gen time)" finding that abandons 5.2/5.3 and keeps image on the
+  Block-5 client-side path. No production wiring; tear down the throwaway server + agent edits.
+- **Silent-failure modes:** none in production (spike only); the risk it retires is *building the image MCP
+  on a wrong transport/timeout assumption*.
+
+### Block 5.2 — Image MCP server + reference-resolution table (ADR-055)
+- **Do:** migration for `agent_input_file_map(file_id pk, url, mime, source_ref, created_at)` (append-only)
+  + a TTL prune; extend `Upload Input Images (v1)` to upsert `{file_id→url,mime,source_ref}` rows (additive,
+  fail-soft). Build the **image MCP server** (n8n MCP Server Trigger workflow if the gate allows, else the
+  thin server) exposing `generate_image{prompt, reference_file_ids?, count?, aspect_ratio?, size?}`: resolve
+  `reference_file_ids`→URLs from the table, call `Generate Images Parallel (v1)` **unchanged** (ADR-052
+  seam) + Files-API upload + the batch's own per-image `Log Model Run` (reuse the Block-4 logic behind the
+  MCP entry — **no second cost writer**), return `{file_ids[], message, status, warnings[]}`. Bearer auth;
+  secret in Supabase Vault, mirrored into the Anthropic Vault.
+- **DoD:** the MCP server, invoked directly (curl as the harness would, with the bearer), generates an image
+  and returns `file_id`s, writes exactly one priced per-image `agent_runs` row, fails soft on bad input; the
+  reference path resolves a `reference_file_id` via the table to a real generation; verified live.
+- **Silent-failure modes:** a generation/upload failure → a tool-error result + WARN, never a throw into the
+  session; a missing key/down image lane → the batch's existing CRITICAL + this server's health check (5.3);
+  an unresolved `reference_file_id` → generate without the reference + WARN (mirrors the Block-4 fail-soft).
+
+### Block 5.3 — Switch agents to the image MCP; retire image from the loop (ADR-055)
+- **Do:** via `Sync Agent Definitions (v1)`, update the four tier agents to **drop the `generate_image`
+  custom tool** and **add the image `mcp_servers` entry** (Vault-held bearer) — only after 5.2 is verified
+  live. `Execute Agent Session (v1)` keeps its pause/resume loop (ADR-054's Google DWD tool needs it) but no
+  longer sees image as a registered custom tool, so the tool-servicing branch is dormant for image. Add an
+  **image-MCP health dead-man's-switch** (mirror `Managed Agents Auth Monitor (v1)`: probe the endpoint,
+  WARN/CRITICAL via `Post Alert (v1)`). Document the rollback (re-register the custom tool → the Block-5
+  client-side path re-activates).
+- **DoD live:** an @-mention (or `test-subworkflow.mjs`) image task generates via the **MCP path**
+  end-to-end and returns the `file_id`(s); the `Execute Agent Session` custom-tool branch does **not** fire;
+  one priced image `agent_runs` row; alert channel clean; the health check trips on a deliberately-down
+  endpoint.
+- **Silent-failure modes:** a down image MCP silently failing every image → the health dead-man's-switch;
+  agents updated but the MCP unregistered/misconfigured (sync partial) → `Sync Agent Definitions`' existing
+  per-tier CRITICAL + a live image test; image quietly falling back to text-only → the agent surfaces the
+  tool error + WARN.
+
 ### Block 6 — Output adapter + session cost
 - **Do:** convert the session output into the Post Reply contract: download produced files (Files API) →
   `image_manifest` (kind image) + an attachment list (kind doc); reuse `Image Resolver`'s block-array →
@@ -285,8 +355,12 @@ live change, never hand-edited.
 - Retire: `decide-research-and-deliver.json`, `research-the-web.json` (Block 8).
 - Reuse pattern: `research-the-web.json`'s recursive `executeWorkflow` mechanism → reused **only** to service
   the custom `generate_image` tool callback (web search is in-harness; not re-implemented).
-- Migrations (append-only): `agent_routing` table (Block 2), optional `agent_runs` cost-breakdown columns
-  (Block 6), `research_parameters` drop (Block 8).
+- Migrations (append-only): `agent_routing` table (Block 2), `agent_input_file_map` table (Block 5.2,
+  ADR-055), optional `agent_runs` cost-breakdown columns (Block 6), `research_parameters` drop (Block 8).
+- **ADR-055:** new image **MCP server** (n8n MCP-trigger workflow or a thin self-hosted endpoint); a small
+  additive change to `Upload Input Images (v1)` (write the `agent_input_file_map` rows); `Sync Agent
+  Definitions (v1)` swaps the `generate_image` custom tool for the `mcp_servers` entry (Block 5.3); the
+  Block-4/Block-5 client-side image path is retained as the dormant rollback.
 
 ## Open risks the plan stays alert to
 
@@ -297,6 +371,13 @@ live change, never hand-edited.
 - **Anthropic-only multimodal input** changes the input path (Block 3) and means image input now runs on
   Claude, not Gemini — capability-neutral per the existing ADR-045 research, verified in Block 9's matrix.
 - **Stateful sessions for multi-turn** are deliberately deferred (fresh session per run in v1).
+- **(ADR-055) MCP tool-call timeout vs image-gen duration** is the chief new unknown: if the harness times
+  out MCP tool calls below ~170s (gpt-image-2 high), image-via-MCP is infeasible → Block 5.1 gate kills
+  5.2/5.3 and image stays on the verified client-side path. A new always-on image MCP endpoint is also a new
+  operational/failure surface (covered by the Block-5.3 health dead-man's-switch).
+- **(ADR-055) The client-side servicing loop is NOT retired** by this change — ADR-054's Google DWD tool
+  needs it. Retiring it entirely (all-MCP) is gated on the session-context-to-MCP finding (Block 5.1) and is
+  a separate future decision, not part of this plan.
 
 ## Verification (how each block and the whole is proven)
 
