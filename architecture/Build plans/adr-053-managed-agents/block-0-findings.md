@@ -84,9 +84,25 @@ The `xlsx` skill + code execution wrote `budget.xlsx` (4956 bytes, mime
 - **Upload (input, Block 3):** `POST /v1/files` multipart (`file` part + `purpose=agent`, header
   `files-api-2025-04-14`) → `{id:"file_…", filename, mime_type, size_bytes, downloadable:false}`.
   Uploaded files are **not downloadable** (only code-exec/skill outputs are) — fine, we only need the
-  `file_id` to reference input images in the session. (Open Block-3 sub-check: confirm the exact way to
-  attach an input image to a `user.message` — image content block `{type:"image", source:{type:"file",
-  file_id}}` vs a session `resources` file mount — pick during Block 3.)
+  `file_id` to reference input images in the session.
+
+> **Resolved in Block 3 (live, 2026-06-18) — vision confirmed end-to-end:** an input image attaches to a
+> `user.message` as an **image content block** `{type:"image", source:{type:"file", file_id:"file_…"}}`
+> (Messages-API parity), *not* a session `resources` mount (resources are for sandbox/code-exec file
+> access — wrong semantics for "the agent should see this image"). Probe `scripts/ma-spike3.py` uploaded a
+> PNG to the Files API with `purpose=agent` (the upload default below), created a session on the live Haiku
+> tier agent, POSTed that content block in a `user.message`, and the session reached `idle` with an
+> `agent.message` correctly **describing the image** ("Red square."). So the file_ids `Upload Input Images
+> (v1)` returns ARE usable as vision input — no change to the upload (`purpose=agent` is fine).
+> - **Send BOTH betas on the events call** when a `user.message` references a `file_id`:
+>   `anthropic-beta: managed-agents-2026-04-01,files-api-2025-04-14`. (Block 5 sets this on the
+>   send-message HTTP node, mirroring the file-listing call.)
+> - **Failure signature if the bytes are bad:** a malformed/corrupt image is *accepted at send* (HTTP 200,
+>   the event lands in the log) and only fails later as a `session.error` `{message:"Could not process
+>   image", retry_status: terminal}` → `session.status_terminated`. So "send 200" does **not** mean the
+>   image is valid — you must read the events to idle and check for `session.error`. (A copy-corrupted
+>   test base64 produced exactly this and looked like an API limitation until isolated against the bare
+>   Messages API; generate test images in-process, never hand-copy base64.)
 
 ## Cost / usage surface (confirmed) — Block 6 computes USD itself
 

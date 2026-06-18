@@ -241,7 +241,7 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
   gate** — a mis-mapped credential fails silently and the departmental boundary (e.g. Marketing cannot
   read Purchasing) is the entire point.
 
-> **Build progress (ADR-053 lane).** Blocks 0–2 have landed; the lane is **not yet serving traffic**.
+> **Build progress (ADR-053 lane).** Blocks 0–3 have landed; the lane is **not yet serving traffic**.
 > Live now:
 > - **Block 0** — capability spike (`block-0-findings.md`).
 > - **Block 1** — credential plumbing: the `get_anthropic_key()` Vault getter (migration 034) and
@@ -261,6 +261,19 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
 >   re-hashes the CU doc and compares it to a provenance marker embedded in each **live** agent's
 >   `system`, so stale/out-of-band-drifted rules cannot serve silently (drift → WARN, never-synced /
 >   missing-marker / unreadable agent → CRITICAL, all via `Post Alert (v1)`). Both run every 6h.
+> - **Block 3** — the Files-API input path: **`Upload Input Images (v1)`** (`2VkZN5UeqVk6MDLW`) takes
+>   Read Input's image blocks (loose ClickUp pre-signed URLs **and** zip-inner Supabase-signed URLs —
+>   both arrive as `{type:image, ref, mime, source_ref, alt, order}`), fetches each to a binary property
+>   (never base64 in the flow), uploads it to the Anthropic Files API (`POST /v1/files`, multipart
+>   `file` + `purpose=agent`, beta header `files-api-2025-04-14`), and returns a
+>   `{file_id, url, source_ref, mime, alt, order}` map for Stage B to carry into the session. Per-image
+>   **fail-soft**: an un-fetchable or upload-failed image is dropped with a `warnings[]` entry while the
+>   rest proceed (Stage B fires the warnings via `Post Alert (v1)`, mirroring Read Input → Stage A; the
+>   helper's return stays a single branch-free terminal). Input images attach to the `user.message` as an
+>   image content block `{type:image, source:{type:file, file_id}}` (Messages-API parity) — **confirmed
+>   live end-to-end** (the agent correctly described a supplied image); the events call carries both betas
+>   (`managed-agents-2026-04-01,files-api-2025-04-14`) when a message references a `file_id`.
+>   `Read Input (v1)` itself is unchanged (still URL-based).
 > Plan + per-block detail: `architecture/Build plans/adr-053-managed-agents/`.
 
 ---
