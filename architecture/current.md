@@ -241,7 +241,8 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
   gate** — a mis-mapped credential fails silently and the departmental boundary (e.g. Marketing cannot
   read Purchasing) is the entire point.
 
-> **Build progress (ADR-053 lane).** Blocks 0–4 have landed; the lane is **not yet serving traffic**.
+> **Build progress (ADR-053 lane).** Blocks 0–5 have landed; the lane is **not yet serving traffic**
+> (the orchestrator still routes Stage B to the bare `Execute LLM Call (v1)` until the Block-8 lane flag).
 > Live now:
 > - **Block 0** — capability spike (`block-0-findings.md`).
 > - **Block 1** — credential plumbing: the `get_anthropic_key()` Vault getter (migration 034) and
@@ -294,6 +295,32 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
 >   value allowed by the `agent_runs_triggered_by_check` constraint — the handler defaults the fallback to
 >   `image_gen` and otherwise forwards the session's `triggered_by` (Block 5 should forward a valid one,
 >   e.g. `explicit_mention`).
+> - **Block 5** — the new Stage B core: **`Execute Agent Session (v1)`** (`Rtb1cZbmUqmfGD98`). Given a
+>   `user_message` (person prefs + task context + triggering comment), `impact`, `input_images_json`, and
+>   caller metadata, it resolves the tier agent from `agent_routing` (with `__default__` fallback) bound to
+>   a **persistent shared environment** (`env_01T1PexJQheEUVnzVTKjyrz4`, created once and stored in
+>   `config.managed_agent_environment_id`), calls `Upload Input Images (v1)` (Block 3), builds the
+>   `user.message` (input-image `{type:image,source:{type:file,file_id}}` blocks + text), creates a session
+>   and sends the message. **Web search, code execution, and Skills run in-harness — no n8n loop and no
+>   search logic** (verified: a web-search task returned cited findings with a source URL, `web_search_count`
+>   1, with no research workflows invoked). The one n8n-serviced callback is the custom **`generate_image`**
+>   tool: a single **`Poll Round`** Code node does the entire wait by polling `GET /v1/sessions/{id}/events`
+>   (full history) + `GET /v1/sessions/{id}` for `.status` with `this.helpers.httpRequest` + an absolute
+>   **840 s soft-deadline** (carried as `deadline_epoch`, mirrors the image batch's 840 s < 900 s task-runner
+>   kill); on an unanswered `agent.custom_tool_use` it calls `Image Tool Handler (v1)` (forwarding the session
+>   `file_map_json` + a valid `triggered_by`), POSTs the `user.custom_tool_result` (echoing the tool-use id),
+>   and **recurses** (the `research-the-web` `executeWorkflow` self-call idiom) once per tool round (capped
+>   at 12). Pending-tool detection is **stateless** — a tool use is answered iff a `user.custom_tool_result`
+>   with its id exists in the event history; "done" = status `idle` **and** an `agent.message` after the last
+>   user event (robust against the transient pre-run/post-result idle). The return is a single branch-free
+>   terminal (`Final Return` re-reads the canonical output) carrying `{status, output_message (the block-array),
+>   files[]{file_id,b64_json,…}, file_ids[], session_usage, duration_seconds, web_search_count, model_used,
+>   session_id, warnings[]}`; **`usd_cost` is a NULL stub — Block 6 computes it** from the raw `session.usage`
+>   token tiers + `stats.duration_seconds` + web-search count. All warnings (Upload Input Images + Image Tool
+>   Handler + poll/deadline/terminated/max-rounds) are bundled into one consolidated `Post Alert (v1)` firing.
+>   Verified live end-to-end: a text task returned the block-array + raw usage/duration (8 s); a web-search
+>   task returned cited findings; a `generate_image` task serviced the callback through one recursive round
+>   and returned the produced `file_id` + b64 (`status` `completed`, no warnings, clean alert channel).
 > Plan + per-block detail: `architecture/Build plans/adr-053-managed-agents/`.
 
 ---

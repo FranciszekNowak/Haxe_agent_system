@@ -1,0 +1,1005 @@
+{
+  "name": "Execute Agent Session (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "notes": "ADR-053 Block 5 — Execute Agent Session (v1), the managed-agents Stage B core. CONTRACT inputs (first call from Stage A/orchestrator): user_message (person prefs + task context + triggering comment), impact, input_images_json (Read Input's image blocks, fed to Upload Input Images), clickup_task_id, caller_user_id, process_type, triggered_by (a valid agent_runs enum, e.g. explicit_mention), invocation_type. CARRIED-STATE inputs (empty on first call, set by the Recurse self-call per generate_image tool round): session_id, anthropic_key, file_map_json, deadline_epoch, tool_round, images_json, warnings_json, agent_id, model_id. Same When Called serves both initial and recursive entry (research-the-web idiom); Is Recursive? branches on session_id.",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "user_message"
+            },
+            {
+              "name": "impact"
+            },
+            {
+              "name": "input_images_json"
+            },
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "caller_user_id"
+            },
+            {
+              "name": "process_type"
+            },
+            {
+              "name": "triggered_by"
+            },
+            {
+              "name": "invocation_type"
+            },
+            {
+              "name": "session_id"
+            },
+            {
+              "name": "anthropic_key"
+            },
+            {
+              "name": "file_map_json"
+            },
+            {
+              "name": "deadline_epoch",
+              "type": "number"
+            },
+            {
+              "name": "tool_round",
+              "type": "number"
+            },
+            {
+              "name": "images_json"
+            },
+            {
+              "name": "warnings_json"
+            },
+            {
+              "name": "agent_id"
+            },
+            {
+              "name": "model_id"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "is-recursive",
+      "name": "Is Recursive?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [220, 300],
+      "notes": "session_id non-empty => this is a recursive tool-servicing round (TRUE, main[0]) -> carry state straight to Merge State. Empty => first call (FALSE, main[1]) -> run setup (key, agent, upload images, create session, send message). Mirrors research-the-web's depth-gated re-entry.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-recursive",
+              "leftValue": "={{ $json.session_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "get-key",
+      "name": "Get Anthropic Key",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [440, 440],
+      "notes": "Reads the anthropic_api_key Vault secret via SECURITY DEFINER getter public.get_anthropic_key() (migration 034). Code nodes can't use n8n credentials and $env/$vars are unavailable on this CE (CLAUDE.md). Returns {key} (null if unseeded -> Create Session 401 -> CRITICAL on the error branch). Hard DB failure throws -> errorWorkflow CRITICAL.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_anthropic_key() as key;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "resolve-agent",
+      "name": "Resolve Agent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [660, 440],
+      "notes": "impact -> tier agent (agent_routing, ADR-053 Block 2) with __default__ fallback, plus the persistent environment id from config.managed_agent_environment_id (Block 5 one-time setup). Returns {agent_id, model_id, environment_id}. onError=continueRegularOutput + alwaysOutputData so a transient miss still flows; a missing agent_id/env -> Create Session 4xx -> CRITICAL error branch.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select r.agent_id, r.model_id,\n       (select value from public.config where key = 'managed_agent_environment_id') as environment_id\nfrom public.agent_routing r\nwhere r.impact in ($1, '__default__') and r.active = true\norder by (r.impact = $1) desc\nlimit 1;",
+        "options": {
+          "queryReplacement": "={{ [ $('When Called').first().json.impact || '__default__' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "call-upload-images",
+      "name": "Call Upload Input Images",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [880, 440],
+      "notes": "ADR-053 Block 3: fetch + upload Read Input's image blocks to the Files API. Returns {file_map:[{file_id,url,source_ref,mime,alt,order}], warnings[]}. onError=continueRegularOutput so an upload failure (its own WARNs are RETURNED) never blocks the session — the task proceeds text-only. Build Setup folds file_map into the user.message image blocks and carries warnings forward.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "2VkZN5UeqVk6MDLW",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "input_images_json": "={{ $('When Called').first().json.input_images_json }}",
+            "clickup_task_id": "={{ $('When Called').first().json.clickup_task_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "build-setup",
+      "name": "Build Setup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 440],
+      "notes": "Compose the session create body + user.message. Input images (sorted by order) become {type:image, source:{type:file, file_id}} blocks; user_message text last (image-then-text, mirrors the Block-3 vision probe). Carries Upload Input Images' warnings into warnings_json. Emits key/agent_id/environment_id/file_map_json/message_body_json + passthrough metadata.",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nconst key = ((($('Get Anthropic Key').first() || {}).json || {}).key || '').toString().trim();\nconst ra = (($('Resolve Agent').first() || {}).json) || {};\nconst up = $json || {};\nlet fileMap = Array.isArray(up.file_map) ? up.file_map.slice() : [];\nfileMap.sort(function(a,b){ return (Number(a.order||0)) - (Number(b.order||0)); });\nconst content = [];\nfor (const f of fileMap) { if (f && f.file_id) content.push({ type: 'image', source: { type: 'file', file_id: f.file_id } }); }\ncontent.push({ type: 'text', text: String(wc.user_message || '') });\nconst warnings = Array.isArray(up.warnings) ? up.warnings.slice() : [];\nconst message_body_json = JSON.stringify({ events: [{ type: 'user.message', content: content }] });\nreturn [{ json: {\n  key: key,\n  agent_id: ra.agent_id || '',\n  model_id: ra.model_id || '',\n  environment_id: ra.environment_id || '',\n  file_map_json: JSON.stringify(fileMap),\n  warnings_json: JSON.stringify(warnings),\n  message_body_json: message_body_json,\n  impact: wc.impact || '__default__',\n  clickup_task_id: wc.clickup_task_id || '',\n  caller_user_id: wc.caller_user_id || '',\n  process_type: wc.process_type || '',\n  triggered_by: wc.triggered_by || 'explicit_mention',\n  invocation_type: wc.invocation_type || 'explicit'\n} }];"
+      }
+    },
+    {
+      "id": "create-session",
+      "name": "Create Session",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 440],
+      "notes": "POST /v1/sessions {agent, environment_id} (Block 0 shape). Both betas. onError=continueErrorOutput: a 4xx/5xx (missing/invalid key, missing agent_id, missing env) routes to Build Create Failed -> CRITICAL + a failed output (the whole lane is unusable for this task, not a silent degrade).",
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/sessions",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $json.key }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "managed-agents-2026-04-01,files-api-2025-04-14"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ agent: $json.agent_id, environment_id: $json.environment_id }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "send-message",
+      "name": "Send User Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1540, 340],
+      "notes": "POST /v1/sessions/{id}/events with the user.message built by Build Setup (text + input-image file_id blocks). Both betas (required when a user.message references a file_id, Block 0/3). onError=continueErrorOutput -> Build Send Failed -> CRITICAL + failed output. NB Block 0: a corrupt input image is accepted at send=200 and only fails later as session.error 'Could not process image' — Poll Round reads events to idle and surfaces that as outcome=terminated, so send=200 is not trusted as success of the image.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.anthropic.com/v1/sessions/{{ $json.id }}/events",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $('Build Setup').first().json.key }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "managed-agents-2026-04-01,files-api-2025-04-14"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $('Build Setup').first().json.message_body_json }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "build-initial-state",
+      "name": "Build Initial State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 340],
+      "notes": "Seed the carried loop state after the first message is sent: session_id (from Create Session), the absolute soft-deadline (now + 840s, mirrors the image batch's 840s<900s), tool_round 0, empty images, Upload Input Images' warnings, agent/model + passthrough metadata. Feeds Merge State (input 0).",
+      "parameters": {
+        "jsCode": "const bs = $('Build Setup').first().json;\nconst sess = ($('Create Session').first() || {}).json || {};\nconst SOFT_DEADLINE_MS = 840000;\nreturn [{ json: {\n  session_id: sess.id || '',\n  anthropic_key: bs.key,\n  file_map_json: bs.file_map_json,\n  deadline_epoch: Date.now() + SOFT_DEADLINE_MS,\n  tool_round: 0,\n  images_json: '[]',\n  warnings_json: bs.warnings_json,\n  agent_id: bs.agent_id,\n  model_id: bs.model_id,\n  impact: bs.impact,\n  clickup_task_id: bs.clickup_task_id,\n  caller_user_id: bs.caller_user_id,\n  process_type: bs.process_type,\n  triggered_by: bs.triggered_by,\n  invocation_type: bs.invocation_type\n} }];"
+      }
+    },
+    {
+      "id": "build-create-failed",
+      "name": "Build Create Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 560],
+      "notes": "Create Session error branch: build a status:failed output + a CRITICAL warning. failure_kind='create' -> Classify Alert fires CRITICAL. Feeds Merge Final (input 1), so the single terminal still returns a well-formed failure.",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nconst e = $json || {};\nconst err = (e.error && (e.error.message || e.error)) || e.message || JSON.stringify(e).slice(0,300);\nreturn [{ json: {\n  status: 'failed', output_message: '', files: [], file_ids: [], usd_cost: null, usd_cost_stub: true,\n  session_usage: {}, duration_seconds: null, web_search_count: 0, model_used: '', agent_id: '', session_id: '',\n  impact: wc.impact || '', clickup_task_id: wc.clickup_task_id || '',\n  warnings: [{ source: 'managed-agents/session-create-failed', err: String(err).slice(0,400), severity: 'CRITICAL' }],\n  failure_kind: 'create', outcome: 'create_failed'\n} }];"
+      }
+    },
+    {
+      "id": "build-send-failed",
+      "name": "Build Send Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 560],
+      "notes": "Send User Message error branch: status:failed + CRITICAL warning. failure_kind='send'. Carries the created session_id (the session exists; the first message POST failed). Feeds Merge Final (input 2).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nconst sess = ($('Create Session').first() || {}).json || {};\nconst e = $json || {};\nconst err = (e.error && (e.error.message || e.error)) || e.message || JSON.stringify(e).slice(0,300);\nreturn [{ json: {\n  status: 'failed', output_message: '', files: [], file_ids: [], usd_cost: null, usd_cost_stub: true,\n  session_usage: {}, duration_seconds: null, web_search_count: 0, model_used: '', agent_id: '', session_id: sess.id || '',\n  impact: wc.impact || '', clickup_task_id: wc.clickup_task_id || '',\n  warnings: [{ source: 'managed-agents/session-send-failed', err: String(err).slice(0,400), severity: 'CRITICAL' }],\n  failure_kind: 'send', outcome: 'send_failed'\n} }];"
+      }
+    },
+    {
+      "id": "merge-state",
+      "name": "Merge State",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [1980, 300],
+      "notes": "Converge the first-call seed (Build Initial State, input 0) and the recursive carry (Is Recursive? TRUE, input 1) into ONE stream so Poll Round keeps a SINGLE input. Append; exactly one branch executes per call.",
+      "parameters": {
+        "numberInputs": 2
+      }
+    },
+    {
+      "id": "poll-round",
+      "name": "Poll Round",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 300],
+      "notes": "The wait. Polls GET /events (full history) + GET /session status to the next pause/settle/deadline, entirely inside this Code node via this.helpers.httpRequest + setTimeout (no n8n Wait-loop, no poll-tick recursion). Absolute 840s soft-deadline carried as deadline_epoch (840s<900s task-runner kill, mirrors the image batch). STATELESS pending detection: a custom_tool_use is answered iff a user.custom_tool_result with its id exists in history (Block 0: our posts land in the log) -> no answered-set to carry. DONE = status idle AND an agent.message exists AFTER the last user event (handles the transient pre-run idle and the post-tool-result idle). Outcomes: pending_tool (idle + unanswered custom tool, round<12) | max_rounds (>=12) | done | terminated (session.error or status terminated) | deadline | poll_error (>=5 consecutive GET errors). Returns the carried state + outcome + the pending tool + final text + raw usage/duration/web_search_count for Block 6.",
+      "parameters": {
+        "jsCode": "const st = $json;\nconst KEY = st.anthropic_key;\nconst SESSION = st.session_id;\nconst deadlineEpoch = Number(st.deadline_epoch) || (Date.now() + 840000);\nconst toolRound = Number(st.tool_round || 0);\nconst MAX_TOOL_ROUNDS = 12;\nconst POLL_INTERVAL_MS = 3000;\nconst MAX_CONSEC_ERRORS = 5;\nconst BASE = 'https://api.anthropic.com';\nconst BOTH = 'managed-agents-2026-04-01,files-api-2025-04-14';\nconst httpRequest = this.helpers.httpRequest;\nconst headers = { 'x-api-key': KEY, 'anthropic-version': '2023-06-01', 'anthropic-beta': BOTH };\nconst sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };\nconst remaining = function(){ return deadlineEpoch - Date.now(); };\nasync function getEvents(){\n  const res = await httpRequest({ method: 'GET', url: BASE + '/v1/sessions/' + SESSION + '/events', headers: headers, json: true, returnFullResponse: true, timeout: 20000 });\n  const body = res.body || {};\n  return Array.isArray(body.data) ? body.data : [];\n}\nasync function getStatus(){\n  const res = await httpRequest({ method: 'GET', url: BASE + '/v1/sessions/' + SESSION, headers: headers, json: true, returnFullResponse: true, timeout: 20000 });\n  return res.body || {};\n}\nfunction analyze(events){\n  let lastUserIdx = -1;\n  for (let i = 0; i < events.length; i++){ const t = events[i].type; if (t === 'user.message' || t === 'user.custom_tool_result') lastUserIdx = i; }\n  const answered = {};\n  for (const e of events){ if (e.type === 'user.custom_tool_result' && e.custom_tool_use_id) answered[e.custom_tool_use_id] = true; }\n  const pending = [];\n  for (const e of events){ if (e.type === 'agent.custom_tool_use' && !answered[e.id]) pending.push(e); }\n  let agentRepliedAfter = false, lastAgentMsg = null;\n  for (let i = 0; i < events.length; i++){ if (events[i].type === 'agent.message'){ lastAgentMsg = events[i]; if (i > lastUserIdx) agentRepliedAfter = true; } }\n  let sessionError = null;\n  for (const e of events){ const t = e.type || ''; if (t === 'session.error' || (t.indexOf('error') >= 0 && e.error)) sessionError = e.error || e; }\n  let webSearchCount = 0;\n  for (const e of events){ if (e.type === 'agent.tool_use' && e.name === 'web_search') webSearchCount++; }\n  return { pending: pending, agentRepliedAfter: agentRepliedAfter, lastAgentMsg: lastAgentMsg, sessionError: sessionError, webSearchCount: webSearchCount };\n}\nfunction extractText(msg){ if (!msg) return ''; const c = msg.content || []; return c.filter(function(b){ return b && b.type === 'text'; }).map(function(b){ return b.text || ''; }).join(''); }\nlet outcome = null, picked = null, analysis = null, statusObj = {}, consecErr = 0;\nawait sleep(1500);\nwhile (true){\n  if (remaining() <= 0){ outcome = 'deadline'; break; }\n  try {\n    const events = await getEvents();\n    statusObj = await getStatus();\n    consecErr = 0;\n    analysis = analyze(events);\n    const status = statusObj.status;\n    if (analysis.sessionError){ outcome = 'terminated'; break; }\n    if (status === 'terminated'){ outcome = 'terminated'; break; }\n    if (status === 'idle'){\n      if (analysis.pending.length > 0){ if (toolRound >= MAX_TOOL_ROUNDS){ outcome = 'max_rounds'; } else { outcome = 'pending_tool'; picked = analysis.pending[0]; } break; }\n      if (analysis.agentRepliedAfter){ outcome = 'done'; break; }\n    }\n  } catch (e){\n    consecErr++;\n    if (consecErr >= MAX_CONSEC_ERRORS){ outcome = 'poll_error'; break; }\n  }\n  if (remaining() <= 0){ outcome = 'deadline'; break; }\n  await sleep(POLL_INTERVAL_MS);\n}\nconst finalText = extractText(analysis ? analysis.lastAgentMsg : null);\nreturn [{ json: Object.assign({}, st, {\n  outcome: outcome,\n  pending_tool_id: picked ? picked.id : '',\n  pending_tool_name: picked ? picked.name : '',\n  pending_tool_input_json: picked ? JSON.stringify(picked.input || {}) : '',\n  final_message_text: finalText,\n  web_search_count: analysis ? analysis.webSearchCount : 0,\n  duration_seconds: (statusObj && statusObj.stats) ? statusObj.stats.duration_seconds : null,\n  session_usage_json: JSON.stringify((statusObj && statusObj.usage) ? statusObj.usage : {}),\n  terminated_error_json: (analysis && analysis.sessionError) ? JSON.stringify(analysis.sessionError).slice(0,500) : ''\n}) }];"
+      }
+    },
+    {
+      "id": "has-pending-tool",
+      "name": "Has Pending Tool?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2420, 300],
+      "notes": "TRUE (main[0]): outcome=pending_tool -> service the custom tool, then recurse. FALSE (main[1]): done/terminated/deadline/max_rounds/poll_error -> Build Final Output (the terminal path). Mutually exclusive leaves Recurse vs Final Return (research-the-web pattern).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-pending",
+              "leftValue": "={{ $json.outcome }}",
+              "rightValue": "pending_tool",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "is-generate-image",
+      "name": "Is generate_image?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2640, 200],
+      "notes": "Route the pending custom tool. TRUE: name=generate_image -> Call Image Tool Handler. FALSE: an unregistered custom tool -> Build Error Result Text answers it with a 'tool not available' result (+ WARN) so the session never stalls on an unanswerable tool. v1 registers only generate_image; the FALSE branch is defensive.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-gen",
+              "leftValue": "={{ $json.pending_tool_name }}",
+              "rightValue": "generate_image",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "call-image-handler",
+      "name": "Call Image Tool Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [2860, 120],
+      "notes": "ADR-053 Block 4: service the generate_image custom-tool call. Forwards tool_input_json (the agent's tool input), the session file_map_json (file_id->url for reference resolution), impact, a valid triggered_by (NOT image_gen — the handler defaults to image_gen only as a fallback; the per-image agent_runs rows need a valid enum), and passthrough metadata. Returns {status, file_ids[], images[]{file_id,b64_json,...}, message, warnings[], count_*}. The handler is fail-soft/branch-free and never throws into the session; onError=continueRegularOutput is a belt-and-braces guard. Its warnings are RETURNED here and fired once, consolidated, by Classify Alert -> Post Alert.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "vpGswBj2kR2D85hl",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "tool_input_json": "={{ $json.pending_tool_input_json }}",
+            "file_map_json": "={{ $json.file_map_json }}",
+            "impact": "={{ $json.impact }}",
+            "concurrency_cap": "5",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "build-result-text",
+      "name": "Build Result Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3080, 120],
+      "notes": "Serialize the Image Tool Handler result into the user.custom_tool_result text the agent reads (status + file_ids the agent embeds + the handler's human-readable message). Carries the produced images (file_id+b64) and the handler's warnings forward (new_images_json / new_warnings_json) for accumulation in Build Next State.",
+      "parameters": {
+        "jsCode": "const h = $json || {};\nconst status = h.status || 'failed';\nconst file_ids = Array.isArray(h.file_ids) ? h.file_ids : [];\nconst msg = h.message || 'Image tool returned no message.';\nconst text = JSON.stringify({ status: status, file_ids: file_ids, message: msg, count_uploaded: h.count_uploaded, count_failed: h.count_failed });\nreturn [{ json: {\n  tool_result_text: text,\n  new_images_json: JSON.stringify(Array.isArray(h.images) ? h.images : []),\n  new_warnings_json: JSON.stringify(Array.isArray(h.warnings) ? h.warnings : [])\n} }];"
+      }
+    },
+    {
+      "id": "build-error-result-text",
+      "name": "Build Error Result Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3080, 300],
+      "notes": "Defensive: an unregistered custom tool is answered with a 'not available' tool_result so the session resumes instead of stalling, plus a WARN. v1 only registers generate_image, so this is rarely reached.",
+      "parameters": {
+        "jsCode": "const st = $('Poll Round').first().json;\nconst name = st.pending_tool_name || 'unknown';\nconst text = JSON.stringify({ status: 'failed', message: 'The tool \"' + name + '\" is not available. Proceed without it and inform the user if relevant.' });\nreturn [{ json: {\n  tool_result_text: text,\n  new_images_json: '[]',\n  new_warnings_json: JSON.stringify([{ source: 'managed-agents/unknown-tool', err: 'agent requested an unregistered custom tool: ' + name, severity: 'WARN' }])\n} }];"
+      }
+    },
+    {
+      "id": "merge-result",
+      "name": "Merge Result",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [3300, 200],
+      "notes": "Converge the handler result text (input 0) and the unknown-tool error text (input 1) into ONE stream so Post Tool Result + Build Next State keep a single input. Exactly one branch executes per round.",
+      "parameters": {
+        "numberInputs": 2
+      }
+    },
+    {
+      "id": "post-tool-result",
+      "name": "Post Tool Result",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3520, 200],
+      "notes": "POST /v1/sessions/{id}/events user.custom_tool_result echoing the agent.custom_tool_use event's own id (Block 0) with the result text. retryOnFail so a transient post failure doesn't strand the tool (an unanswered tool is re-detected next poll; the 12-round cap bounds any waste). onError=continueRegularOutput so we still recurse and keep polling.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.anthropic.com/v1/sessions/{{ $('Poll Round').first().json.session_id }}/events",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $('Poll Round').first().json.anthropic_key }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "managed-agents-2026-04-01,files-api-2025-04-14"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ events: [ { type: 'user.custom_tool_result', custom_tool_use_id: $('Poll Round').first().json.pending_tool_id, content: [ { type: 'text', text: $json.tool_result_text } ] } ] }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "build-next-state",
+      "name": "Build Next State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3740, 200],
+      "notes": "Accumulate produced images + warnings into the carried state, increment tool_round, and re-emit the full carried state for the Recurse self-call. deadline_epoch is preserved (absolute) so the soft-deadline spans all rounds. Contract-only inputs (user_message, input_images_json) are blanked — not needed after setup.",
+      "parameters": {
+        "jsCode": "const st = $('Poll Round').first().json;\nconst r = ($('Merge Result').first() || {}).json || {};\nlet images = []; try { images = JSON.parse(st.images_json || '[]'); } catch (e) {}\nlet warnings = []; try { warnings = JSON.parse(st.warnings_json || '[]'); } catch (e) {}\nlet ni = []; try { ni = JSON.parse(r.new_images_json || '[]'); } catch (e) {}\nlet nw = []; try { nw = JSON.parse(r.new_warnings_json || '[]'); } catch (e) {}\nimages = images.concat(ni);\nwarnings = warnings.concat(nw);\nreturn [{ json: {\n  session_id: st.session_id, anthropic_key: st.anthropic_key, file_map_json: st.file_map_json,\n  deadline_epoch: st.deadline_epoch, tool_round: Number(st.tool_round || 0) + 1,\n  images_json: JSON.stringify(images), warnings_json: JSON.stringify(warnings),\n  agent_id: st.agent_id, model_id: st.model_id, impact: st.impact,\n  clickup_task_id: st.clickup_task_id, caller_user_id: st.caller_user_id, process_type: st.process_type,\n  triggered_by: st.triggered_by, invocation_type: st.invocation_type,\n  user_message: '', input_images_json: ''\n} }];"
+      }
+    },
+    {
+      "id": "recurse",
+      "name": "Recurse",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [3960, 200],
+      "notes": "Recursive self-call for the next tool-servicing round (research-the-web mechanism). workflowId is THIS workflow (set post-create). LEAF: returns the child's eventual Final Return = the final result, propagated up the recursion. Depth bounded by the 12-round cap. session_id is set so the child takes the Is Recursive? TRUE path (skips setup).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "Rtb1cZbmUqmfGD98",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "session_id": "={{ $json.session_id }}",
+            "anthropic_key": "={{ $json.anthropic_key }}",
+            "file_map_json": "={{ $json.file_map_json }}",
+            "deadline_epoch": "={{ $json.deadline_epoch }}",
+            "tool_round": "={{ $json.tool_round }}",
+            "images_json": "={{ $json.images_json }}",
+            "warnings_json": "={{ $json.warnings_json }}",
+            "agent_id": "={{ $json.agent_id }}",
+            "model_id": "={{ $json.model_id }}",
+            "impact": "={{ $json.impact }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "user_message": "={{ $json.user_message }}",
+            "input_images_json": "={{ $json.input_images_json }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "build-final-output",
+      "name": "Build Final Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, 440],
+      "notes": "Terminal (non-recursive) outcomes -> the Agent Session output contract: {status, output_message (final block-array text), files[] (produced image file_id+b64), file_ids[], usd_cost (NULL stub — Block 6 computes), session_usage + duration_seconds + web_search_count (raw cost surface for Block 6), model_used, session_id, warnings[]}. deadline/terminated/max_rounds/poll_error append their own WARN. Feeds Merge Final (input 0).",
+      "parameters": {
+        "jsCode": "const st = $json;\nlet warnings = []; try { warnings = JSON.parse(st.warnings_json || '[]'); } catch (e) {}\nlet images = []; try { images = JSON.parse(st.images_json || '[]'); } catch (e) {}\nlet usage = {}; try { usage = JSON.parse(st.session_usage_json || '{}'); } catch (e) {}\nconst outcome = st.outcome;\nlet status = 'completed';\nif (outcome === 'deadline'){ status = 'partial'; warnings.push({ source: 'managed-agents/session-deadline', err: 'Sesja agenta przekroczyla limit czasu (840s) — zwrocono wynik czesciowy', severity: 'WARN' }); }\nelse if (outcome === 'terminated'){ status = 'failed'; warnings.push({ source: 'managed-agents/session-error', err: 'Sesja zakonczona bledem: ' + (st.terminated_error_json || 'nieznany'), severity: 'WARN' }); }\nelse if (outcome === 'max_rounds'){ status = 'partial'; warnings.push({ source: 'managed-agents/max-tool-rounds', err: 'Osiagnieto limit rund narzedzia generate_image (12) — zwrocono wynik czesciowy', severity: 'WARN' }); }\nelse if (outcome === 'poll_error'){ status = 'partial'; warnings.push({ source: 'managed-agents/poll-error', err: 'Wielokrotne bledy odczytu zdarzen sesji — zwrocono wynik czesciowy', severity: 'WARN' }); }\nconst file_ids = images.map(function(im){ return im.file_id; }).filter(Boolean);\nreturn [{ json: {\n  status: status,\n  output_message: st.final_message_text || '',\n  files: images,\n  file_ids: file_ids,\n  usd_cost: null,\n  usd_cost_stub: true,\n  session_usage: usage,\n  duration_seconds: (st.duration_seconds != null) ? st.duration_seconds : null,\n  web_search_count: st.web_search_count || 0,\n  model_used: st.model_id || '',\n  agent_id: st.agent_id || '',\n  session_id: st.session_id || '',\n  impact: st.impact || '',\n  clickup_task_id: st.clickup_task_id || '',\n  warnings: warnings,\n  failure_kind: '',\n  outcome: outcome\n} }];"
+      }
+    },
+    {
+      "id": "merge-final",
+      "name": "Merge Final",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [2860, 440],
+      "notes": "Converge the normal terminal output (Build Final Output, 0), the create-failed output (1) and the send-failed output (2) into the ONE canonical output object. Final Return re-reads this node (research-the-web idiom) so the alert side-trip can't corrupt the return.",
+      "parameters": {
+        "numberInputs": 3
+      }
+    },
+    {
+      "id": "classify-alert",
+      "name": "Classify Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3080, 440],
+      "notes": "Decide a single consolidated alert from the output's warnings: failure_kind -> CRITICAL (session never started); any CRITICAL warning -> CRITICAL; else any warnings -> WARN; else no alert. Bundles all warnings (Upload Input Images + Image Tool Handler + poll/deadline/terminated) into one Post Alert call rather than spamming the channel.",
+      "parameters": {
+        "jsCode": "const o = $json;\nlet do_alert = false, sev = 'WARN', msg = '', det = '';\nconst warnings = Array.isArray(o.warnings) ? o.warnings : [];\nif (o.failure_kind){ do_alert = true; sev = 'CRITICAL'; msg = 'Sesja Managed Agents nie wystartowala (' + o.failure_kind + ') dla zadania ' + (o.clickup_task_id || '?'); det = warnings.map(function(w){ return (w.source || '') + ': ' + (w.err || ''); }).join(' | ').slice(0,1500); }\nelse if (warnings.length > 0){ do_alert = true; const hasCrit = warnings.some(function(w){ return w.severity === 'CRITICAL'; }); sev = hasCrit ? 'CRITICAL' : 'WARN'; msg = 'Sesja Managed Agents zakonczona z ostrzezeniami (' + warnings.length + ') [status: ' + (o.status || '?') + '] dla zadania ' + (o.clickup_task_id || '?'); det = warnings.map(function(w){ return (w.source || '') + ': ' + (w.err || ''); }).join(' | ').slice(0,1500); }\nreturn [{ json: Object.assign({}, o, { do_alert: do_alert, _sev: sev, _msg: msg, _details: det }) }];"
+      }
+    },
+    {
+      "id": "should-alert",
+      "name": "Should Alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [3300, 440],
+      "notes": "TRUE -> Post Alert (one consolidated WARN/CRITICAL). FALSE -> straight to Merge Tail. Both rejoin at Merge Tail -> Final Return (single terminal).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-alert",
+              "leftValue": "={{ $json.do_alert }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "post-alert",
+      "name": "Post Alert",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [3520, 360],
+      "notes": "Centralized Post Alert (v1) seam (ADR-025) — never post to ClickUp directly. One call per session run. onError=continueRegularOutput so an alert-channel hiccup never breaks the session return. No loop risk: this workflow's trigger is executeWorkflow (orchestrator), not a webhook watching the Alerts task.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "={{ $json._sev }}",
+            "source": "managed-agents/session",
+            "message": "={{ $json._msg }}",
+            "details": "={{ $json._details }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "merge-tail",
+      "name": "Merge Tail",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [3740, 440],
+      "notes": "Rejoin the alerted (input 0) and not-alerted (input 1) paths into the single terminal input. Append; exactly one executes.",
+      "parameters": {
+        "numberInputs": 2
+      }
+    },
+    {
+      "id": "final-return",
+      "name": "Final Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3960, 440],
+      "notes": "SOLE non-recursive TERMINAL. Re-reads the canonical output object from Merge Final (NOT its direct input, which Post Alert would have replaced) — the research-the-web return-determinism idiom. Returns the Agent Session contract object the caller (orchestrator / Block 6 output adapter) consumes.",
+      "parameters": {
+        "jsCode": "return [{ json: $('Merge Final').first().json }];"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Is Recursive?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Recursive?": {
+      "main": [
+        [
+          {
+            "node": "Merge State",
+            "type": "main",
+            "index": 1
+          }
+        ],
+        [
+          {
+            "node": "Get Anthropic Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Anthropic Key": {
+      "main": [
+        [
+          {
+            "node": "Resolve Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Agent": {
+      "main": [
+        [
+          {
+            "node": "Call Upload Input Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Upload Input Images": {
+      "main": [
+        [
+          {
+            "node": "Build Setup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Setup": {
+      "main": [
+        [
+          {
+            "node": "Create Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Session": {
+      "main": [
+        [
+          {
+            "node": "Send User Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Create Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send User Message": {
+      "main": [
+        [
+          {
+            "node": "Build Initial State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Send Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Initial State": {
+      "main": [
+        [
+          {
+            "node": "Merge State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge State": {
+      "main": [
+        [
+          {
+            "node": "Poll Round",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Round": {
+      "main": [
+        [
+          {
+            "node": "Has Pending Tool?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Pending Tool?": {
+      "main": [
+        [
+          {
+            "node": "Is generate_image?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Final Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is generate_image?": {
+      "main": [
+        [
+          {
+            "node": "Call Image Tool Handler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Result Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Image Tool Handler": {
+      "main": [
+        [
+          {
+            "node": "Build Result Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Result Text": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Error Result Text": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Result": {
+      "main": [
+        [
+          {
+            "node": "Post Tool Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Tool Result": {
+      "main": [
+        [
+          {
+            "node": "Build Next State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Next State": {
+      "main": [
+        [
+          {
+            "node": "Recurse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Final Output": {
+      "main": [
+        [
+          {
+            "node": "Merge Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Create Failed": {
+      "main": [
+        [
+          {
+            "node": "Merge Final",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Build Send Failed": {
+      "main": [
+        [
+          {
+            "node": "Merge Final",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge Final": {
+      "main": [
+        [
+          {
+            "node": "Classify Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Alert": {
+      "main": [
+        [
+          {
+            "node": "Should Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Alert?": {
+      "main": [
+        [
+          {
+            "node": "Post Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Tail",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Post Alert": {
+      "main": [
+        [
+          {
+            "node": "Merge Tail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Tail": {
+      "main": [
+        [
+          {
+            "node": "Final Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}
