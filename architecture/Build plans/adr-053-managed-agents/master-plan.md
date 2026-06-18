@@ -100,8 +100,8 @@ Bytes never cross a workflow boundary except as base64 inside execution data (mi
 
 | # | Block | State |
 |---|---|---|
-| 0 | Capability gate: prove the beta API shapes live (sessions, custom-tool pause/resume, web_search, a skill, Files API up/down, the cost surface) | ☐ to do — **NEXT (gated on confirming beta access)** |
-| 1 | Anthropic credential + key plumbing + auth health-check | ☐ to do |
+| 0 | Capability gate: prove the beta API shapes live (sessions, custom-tool pause/resume, web_search, a skill, Files API up/down, the cost surface) | ✅ **DONE 2026-06-18** — see `block-0-findings.md`. Pause/resume confirmed (no sidecar); poll `GET /events`, not SSE; cost computed from tokens + `stats.duration_seconds`, no aggregate $ field |
+| 1 | Anthropic credential + key plumbing + auth health-check | ☐ to do — **NEXT** |
 | 2 | Agent definitions (4 tiers) + CU global-rules sync workflow + freshness dead-man's-switch + impact→agent routing | ☐ to do |
 | 3 | Files-API input path (image refs → bytes → file_id; carry the {file_id→url} map) | ☐ to do |
 | 4 | `generate_image` custom-tool handler (wraps Generate Images Parallel via the reference_urls seam) | ☐ to do |
@@ -119,6 +119,8 @@ live change, never hand-edited.
 ## The blocks
 
 ### Block 0 — Capability gate (the linchpin; everything is gated on it)
+> ✅ **DONE 2026-06-18 — full results in `block-0-findings.md`.** Gate passed: custom-tool pause/resume is
+> real and n8n-drivable by polling (no SSE, no sidecar). Probes `scripts/ma-spike.py` + `ma-spike2.py`.
 - **Do:** against the live beta with our key + the `managed-agents-2026-04-01` beta header, prove each
   primitive in isolation and record the exact request/response shapes: (a) create an agent with `model` +
   `system` + one custom tool def + `web_search` + one anthropic skill; (b) create a session, send a
@@ -188,7 +190,10 @@ live change, never hand-edited.
   in the agent `system`).** The n8n loop exists solely to service the **custom `generate_image` tool**: on
   its `tool_use`, call Block 4, POST the `tool_result`, resume; iterate only for further custom-tool calls.
   Reuse the `research-the-web` recursive-`executeWorkflow` *mechanism* for that callback servicing (not its
-  search content). On idle collect the final **block-array** message + produced `file_id`s. Keep the return
+  search content). **Block 0 confirmed the transport: poll `GET /v1/sessions/{id}/events` (full history) +
+  `GET /v1/sessions/{id}` for `.status`; no SSE; dedup answered `custom_tool_use` ids session-wide (the
+  history re-returns them every poll); `status:"idle"` is "done" only when no custom-tool use is
+  unanswered.** On idle collect the final **block-array** message + produced `file_id`s. Keep the return
   a single branch-free terminal (n8n return-determinism trap). Carry a soft-deadline/partial-return like the
   image batch's 840 s pattern.
 - **DoD:** a text task runs end-to-end through one session and returns the block-array + a usd cost, verified
@@ -203,8 +208,10 @@ live change, never hand-edited.
   `rendered_delta` renderer. **Cost (depends on Block 0's finding of the session surface):** if the session
   returns an aggregate cost or token usage, extract/sum it; otherwise compute USD ourselves from data we
   control — token usage × the per-model prices we hold, plus runtime from session wall-clock ($0.08/hr),
-  plus a web-search count from the events ($10/1k). If Block 0 shows LiteLLM can proxy the Agents surface,
-  reuse the existing `x-litellm-response-cost` header path instead. Either way pass a single `usd_cost` to
+  plus a web-search count from the events ($10/1k). **Block 0 resolved this: there is NO aggregate $ field
+  and NO LiteLLM passthrough for the agentic lane — compute USD from `session.usage` token tiers (incl.
+  `cache_creation.ephemeral_5m_input_tokens` / `cache_read_input_tokens`) + `0.08 × stats.duration_seconds /
+  3600` + the web-search count.** Either way pass a single `usd_cost` to
   `Log Model Run`, which keeps **sole FX/PLN ownership**. The `generate_image` tool's per-image cost is
   already logged by `Generate Images Parallel`'s own `Log Model Run` path. Optionally add `agent_runs`
   columns (migration) for a runtime/tool cost breakdown.
