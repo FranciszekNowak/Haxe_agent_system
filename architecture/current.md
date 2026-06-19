@@ -241,10 +241,13 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
   gate** — a mis-mapped credential fails silently and the departmental boundary (e.g. Marketing cannot
   read Purchasing) is the entire point.
 
-> **Build progress (ADR-053 lane).** Blocks 0–5 plus 5.1–5.2 (ADR-055) have landed; the lane is **not yet
+> **Build progress (ADR-053 lane).** Blocks 0–5 plus 5.1–5.3 (ADR-055) have landed; the lane is **not yet
 > serving traffic** (the orchestrator still routes Stage B to the bare `Execute LLM Call (v1)` until the
-> Block-8 lane flag), and the image MCP path is built + tested in isolation but **not yet wired to the
-> agents** (that is Block 5.3).
+> Block-8 lane flag). Image generation now runs **via the self-hosted MCP server**: the four tier agents
+> carry the image `mcp_servers` entry and the client-side `generate_image` custom tool is the dormant
+> rollback. **Image delivery to ClickUp does not work until Block 6** adds a bytes carrier (the MCP path
+> returns only `file_id`s, not the bytes) — safe while the lane is dormant, but Block 6 must land the
+> carrier before cutover.
 > Live now:
 > - **Block 0** — capability spike (`block-0-findings.md`).
 > - **Block 1** — credential plumbing: the `get_anthropic_key()` Vault getter (migration 034) and
@@ -357,6 +360,27 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
 >   Block 6 has **no carrier** for MCP-produced image bytes — it will need one (e.g. persist produced bytes
 >   to Supabase Storage / an output `file_id→bytes` map), or an ADR-055 amendment. Findings:
 >   `block-5.2-findings.md`.
+> - **Block 5.3 (ADR-055)** — **the four tier agents are switched to the image MCP server.** `Sync Agent
+>   Definitions (v1)` now bakes, instead of the `generate_image` custom tool, an `mcp_servers` entry
+>   `[{type:url, url:https://agents.haxe.ai/mcp/haxe-image-gen, name:haxe_image}]` **(no auth field)** plus the
+>   paired `tools` entry `{type:mcp_toolset, mcp_server_name:haxe_image, default_config:{enabled:true,
+>   permission_policy:{type:always_allow}}}` (`conventions_version` bumped 1→2 to force the re-sync); all four
+>   agents re-versioned and verified live. **Auth is a per-session Anthropic Vault, not a field on the agent**
+>   (the Block-5.1 open item, resolved against the live API — Managed Agents differs from the Messages-API MCP
+>   connector): a persistent vault `vlt_011CcCBgjtCiZewXB8c6Ty47` (`config.image_mcp_vault_id`) holds a
+>   **`static_bearer`** credential `{auth:{type:static_bearer, mcp_server_url, token}}` keyed by the MCP URL,
+>   its token mirrored from the Supabase Vault `image_mcp_bearer_token` (rotation: update both Vaults + the n8n
+>   credential; a mismatch trips the health monitor with a 403). `Execute Agent Session (v1)` now passes
+>   `vault_ids:[config.image_mcp_vault_id]` on `sessions.create` (fail-soft if the key is missing), so the
+>   harness injects the bearer when the agent calls `generate_image`. The call runs **in-harness**
+>   (`agent.mcp_tool_use`, no client pause), so the pause/resume loop's `generate_image` branch is **dormant for
+>   image** (retained for ADR-054's Google tool). New **`Image MCP Health Monitor (v1)`** (`Er1JlLYAQLkIk7yB`,
+>   every 6h) probes the endpoint with an MCP `initialize` + the bearer (200 = healthy; 403/404/5xx → CRITICAL
+>   via `Post Alert (v1)`; an unseeded Vault secret → its own CRITICAL). Verified live end-to-end: an image task
+>   through `Execute Agent Session (v1)` produced a `file_id` via MCP with `outcome:done` (the custom-tool branch
+>   never fired), one priced `image_mcp` `agent_runs` row, clean alert channel; the health check trips on a
+>   deliberately-down path. **Rollback:** re-add the `generate_image` custom tool in `Build System` (and drop the
+>   `mcp_servers`/`mcp_toolset`) → the Block-4/5 client-side path re-activates. Findings: `block-5.3-findings.md`.
 > Plan + per-block detail: `architecture/Build plans/adr-053-managed-agents/`.
 
 ---

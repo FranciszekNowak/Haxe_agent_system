@@ -131,7 +131,7 @@
       "notes": "impact -> tier agent (agent_routing, ADR-053 Block 2) with __default__ fallback, plus the persistent environment id from config.managed_agent_environment_id (Block 5 one-time setup). Returns {agent_id, model_id, environment_id}. onError=continueRegularOutput + alwaysOutputData so a transient miss still flows; a missing agent_id/env -> Create Session 4xx -> CRITICAL error branch.",
       "parameters": {
         "operation": "executeQuery",
-        "query": "select r.agent_id, r.model_id,\n       (select value from public.config where key = 'managed_agent_environment_id') as environment_id\nfrom public.agent_routing r\nwhere r.impact in ($1, '__default__') and r.active = true\norder by (r.impact = $1) desc\nlimit 1;",
+        "query": "select r.agent_id, r.model_id,\n       (select value from public.config where key = 'managed_agent_environment_id') as environment_id,\n       (select value from public.config where key = 'image_mcp_vault_id') as image_mcp_vault_id\nfrom public.agent_routing r\nwhere r.impact in ($1, '__default__') and r.active = true\norder by (r.impact = $1) desc\nlimit 1;",
         "options": {
           "queryReplacement": "={{ [ $('When Called').first().json.impact || '__default__' ] }}"
         }
@@ -183,7 +183,7 @@
       "position": [1100, 440],
       "notes": "Compose the session create body + user.message. Input images (sorted by order) become {type:image, source:{type:file, file_id}} blocks; user_message text last (image-then-text, mirrors the Block-3 vision probe). Carries Upload Input Images' warnings into warnings_json. Emits key/agent_id/environment_id/file_map_json/message_body_json + passthrough metadata.",
       "parameters": {
-        "jsCode": "const wc = $('When Called').first().json;\nconst key = ((($('Get Anthropic Key').first() || {}).json || {}).key || '').toString().trim();\nconst ra = (($('Resolve Agent').first() || {}).json) || {};\nconst up = $json || {};\nlet fileMap = Array.isArray(up.file_map) ? up.file_map.slice() : [];\nfileMap.sort(function(a,b){ return (Number(a.order||0)) - (Number(b.order||0)); });\nconst content = [];\nfor (const f of fileMap) { if (f && f.file_id) content.push({ type: 'image', source: { type: 'file', file_id: f.file_id } }); }\ncontent.push({ type: 'text', text: String(wc.user_message || '') });\nconst warnings = Array.isArray(up.warnings) ? up.warnings.slice() : [];\nconst message_body_json = JSON.stringify({ events: [{ type: 'user.message', content: content }] });\nreturn [{ json: {\n  key: key,\n  agent_id: ra.agent_id || '',\n  model_id: ra.model_id || '',\n  environment_id: ra.environment_id || '',\n  file_map_json: JSON.stringify(fileMap),\n  warnings_json: JSON.stringify(warnings),\n  message_body_json: message_body_json,\n  impact: wc.impact || '__default__',\n  clickup_task_id: wc.clickup_task_id || '',\n  caller_user_id: wc.caller_user_id || '',\n  process_type: wc.process_type || '',\n  triggered_by: wc.triggered_by || 'explicit_mention',\n  invocation_type: wc.invocation_type || 'explicit'\n} }];"
+        "jsCode": "const wc = $('When Called').first().json;\nconst key = ((($('Get Anthropic Key').first() || {}).json || {}).key || '').toString().trim();\nconst ra = (($('Resolve Agent').first() || {}).json) || {};\nconst up = $json || {};\nlet fileMap = Array.isArray(up.file_map) ? up.file_map.slice() : [];\nfileMap.sort(function(a,b){ return (Number(a.order||0)) - (Number(b.order||0)); });\nconst content = [];\nfor (const f of fileMap) { if (f && f.file_id) content.push({ type: 'image', source: { type: 'file', file_id: f.file_id } }); }\ncontent.push({ type: 'text', text: String(wc.user_message || '') });\nconst warnings = Array.isArray(up.warnings) ? up.warnings.slice() : [];\nconst message_body_json = JSON.stringify({ events: [{ type: 'user.message', content: content }] });\nreturn [{ json: {\n  key: key,\n  agent_id: ra.agent_id || '',\n  model_id: ra.model_id || '',\n  environment_id: ra.environment_id || '',\n  image_mcp_vault_id: ra.image_mcp_vault_id || '',\n  file_map_json: JSON.stringify(fileMap),\n  warnings_json: JSON.stringify(warnings),\n  message_body_json: message_body_json,\n  impact: wc.impact || '__default__',\n  clickup_task_id: wc.clickup_task_id || '',\n  caller_user_id: wc.caller_user_id || '',\n  process_type: wc.process_type || '',\n  triggered_by: wc.triggered_by || 'explicit_mention',\n  invocation_type: wc.invocation_type || 'explicit'\n} }];"
       }
     },
     {
@@ -192,7 +192,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1320, 440],
-      "notes": "POST /v1/sessions {agent, environment_id} (Block 0 shape). Both betas. onError=continueErrorOutput: a 4xx/5xx (missing/invalid key, missing agent_id, missing env) routes to Build Create Failed -> CRITICAL + a failed output (the whole lane is unusable for this task, not a silent degrade).",
+      "notes": "POST /v1/sessions {agent, environment_id, vault_ids} (Block 0 + ADR-055 Block 5.3). vault_ids attaches the Anthropic Vault (config.image_mcp_vault_id) holding the image-MCP static_bearer credential, so the harness injects the bearer when the agent calls the haxe_image MCP tool. Attached conditionally — fail-soft if the config key is missing (MCP 403 surfaces as the agent's tool error, not a silent stall). Both betas. onError=continueErrorOutput: a 4xx/5xx (missing/invalid key, missing agent_id, missing env) routes to Build Create Failed -> CRITICAL + a failed output (the whole lane is unusable for this task, not a silent degrade).",
       "parameters": {
         "method": "POST",
         "url": "https://api.anthropic.com/v1/sessions",
@@ -216,7 +216,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ agent: $json.agent_id, environment_id: $json.environment_id }) }}",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ agent: $json.agent_id, environment_id: $json.environment_id }, $json.image_mcp_vault_id ? { vault_ids: [$json.image_mcp_vault_id] } : {})) }}",
         "options": {
           "timeout": 30000
         }

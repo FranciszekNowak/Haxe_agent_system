@@ -1,0 +1,270 @@
+{
+  "name": "Image MCP Health Monitor (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Every 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [0, 300],
+      "notes": "ADR-055 Block 5.3: health dead-man's-switch for the self-hosted image MCP server (Haxe Image MCP (v1), https://agents.haxe.ai/mcp/haxe-image-gen). Probes the endpoint every 6h with the bearer so a down/misauthed endpoint — which would make EVERY image-via-MCP call fail once the managed lane is live — is caught within ~6h, not silently at the next real image task. Mirrors Managed Agents Auth Monitor (v1).",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 480],
+      "notes": "Test entry for Definition-of-Done verification via scripts/test-subworkflow.mjs (a Schedule Trigger cannot be fired over the n8n API). No inputs needed.",
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "get-bearer",
+      "name": "Get Image MCP Bearer",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [240, 380],
+      "notes": "Reads the image_mcp_bearer_token Vault secret via SECURITY DEFINER getter public.get_image_mcp_bearer() (migration 036). Same value the n8n credential 'Image MCP bearer (ADR-055)' validates on the trigger and that is mirrored into the Anthropic Vault (config.image_mcp_vault_id). Returns {bearer} (null until seeded).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_image_mcp_bearer() as bearer;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "bearer-present",
+      "name": "Bearer Present?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [480, 380],
+      "notes": "Distinguishes a config gap (Vault secret unseeded) from an endpoint failure. Empty bearer -> CRITICAL 'seed the secret'. Non-empty -> probe the live MCP endpoint. (main[1] is the IF false branch.)",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-bearer",
+              "leftValue": "={{ $json.bearer }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "probe",
+      "name": "Probe Image MCP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 300],
+      "notes": "POST an MCP 'initialize' (JSON-RPC) to the image MCP endpoint with the bearer. Verified (Block 5.3): authed initialize -> 200 text/event-stream, closes in ~18ms; bad/missing bearer -> 403; inactive/wrong path -> 404. So 2xx = healthy (endpoint up AND bearer accepted); any non-2xx/network error routes to the error output (onError) -> CRITICAL.",
+      "parameters": {
+        "method": "POST",
+        "url": "https://agents.haxe.ai/mcp/haxe-image-gen",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.bearer }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json, text/event-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'haxe-image-mcp-health', version: '1' } } }) }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "healthy",
+      "name": "Healthy",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [960, 200],
+      "notes": "Terminal for the healthy path. Silent on purpose — a healthy probe must NOT post to the Alerts task every 6h.",
+      "parameters": {}
+    },
+    {
+      "id": "alert-missing",
+      "name": "Alert Bearer Missing",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [720, 520],
+      "notes": "CRITICAL via Post Alert (v1) seam (ADR-025) when the Vault secret is unseeded.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "image-mcp/health",
+            "message": "Sekret Vault 'image_mcp_bearer_token' nie istnieje — health-check Image MCP nie moze sie uwierzytelnic.",
+            "details": "Zasiej sekret w Vault i odswiez poswiadczenie n8n 'Image MCP bearer (ADR-055)' oraz poswiadczenie w Anthropic Vault (config.image_mcp_vault_id). Getter: public.get_image_mcp_bearer() (migracja 036)."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "alert-down",
+      "name": "Alert MCP Down",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [960, 400],
+      "notes": "CRITICAL via Post Alert (v1) when the probe returns non-2xx or the endpoint is unreachable. 403 = bearer rejected (rotate/mismatch between Vault, n8n cred and Anthropic Vault); 404 = workflow inactive/wrong path; 5xx/timeout = endpoint down. Once the managed lane is live, every image-via-MCP call would fail until fixed.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "image-mcp/health",
+            "message": "Sonda Image MCP (initialize) nie powiodla sie — endpoint niedostepny lub bearer odrzucony.",
+            "details": "=Blad: {{ (($json.error || {}).message) || $json.error || JSON.stringify($json).slice(0,300) }}. Endpoint: https://agents.haxe.ai/mcp/haxe-image-gen. Sprawdz: workflow 'Haxe Image MCP (v1)' aktywny; zgodnosc bearera (Vault image_mcp_bearer_token == n8n cred 'Image MCP bearer (ADR-055)' == Anthropic Vault config.image_mcp_vault_id); dostepnosc agents.haxe.ai."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 6h": {
+      "main": [
+        [
+          {
+            "node": "Get Image MCP Bearer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Get Image MCP Bearer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Image MCP Bearer": {
+      "main": [
+        [
+          {
+            "node": "Bearer Present?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bearer Present?": {
+      "main": [
+        [
+          {
+            "node": "Probe Image MCP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Bearer Missing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Probe Image MCP": {
+      "main": [
+        [
+          {
+            "node": "Healthy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert MCP Down",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}
