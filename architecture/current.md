@@ -401,6 +401,25 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
 >   work on the managed lane (no downstream generator). Verified live end-to-end: the agent embedded a produced
 >   `file_id`, the carrier held the 1.23 MB PNG, the adapter resolved it to a deliverable base64
 >   `image_manifest`, one priced session row + one `image_mcp` row, clean alerts. Findings: `block-6-findings.md`.
+> - **Block 7** — **office-doc delivery** (xlsx/docx/pptx/pdf the agent produces via Skills/code-exec) to
+>   ClickUp. **Fork resolved live: enumeration-authoritative** — the agent's output is prose-only (it names the
+>   doc but emits no `file_id`), so `Execute Agent Session (v1)`'s `Build Final Output` lists the session's
+>   downloadable output files (`GET /v1/files?scope_id=<session_id>`, both betas, `downloadable:true` +
+>   office-doc mime) and returns `doc_files[] = [{file_id, filename, mime, size_bytes}]`. **`Post Reply (v1)`**
+>   gains a `Has Docs?` branch (new inputs `doc_attachments`+`session_id`; a no-op for the bare lane, which
+>   never sets them): `Get Doc Key` (the `get_anthropic_key()` getter) → `Download Doc` (`GET
+>   /v1/files/{id}/content`) → **`Validate Doc`** (a zip-library-free structural gate — OOXML must be a PK ZIP
+>   with the EOCD record, `[Content_Types].xml`, and the type's required part; PDF must be `%PDF-`+`%%EOF`+`/Page`)
+>   → `Upload Doc` (ClickUp task attachment, reusing the Block-10 upload pattern) → `Append Doc Ops` (a
+>   "Załączniki" section: a `📎` link per delivered doc, a Polish note per dropped one) → fail-soft
+>   `Docs Dropped?` → one consolidated WARN via `Post Alert (v1)`. **Migration 038** adds
+>   `agent_runs.clickup_attachment_ids` (jsonb); `Record Artifact` records the doc **and** inline-image
+>   attachment ids (ADR-044 erasure hub). **Agent convention `conventions_version` 3→4:** office docs are saved
+>   to session outputs and the system attaches them automatically — the agent must **not** supply a doc `file_id`,
+>   just mention the file in a `text` block. Verified live: an xlsx attachment opens and contains the fed numbers
+>   (`<v>111/222/333</v>`), its attachment id is recorded; a deliberately corrupt output (mime-mismatch + bad
+>   file_id) → WARN + Polish notes + nothing uploaded + `clickup_attachment_ids=[]`; 0 CRITICAL. Office-doc OUTPUT
+>   files are downloadable, so this path is separate from the Block-6 image carrier. Findings: `block-7-findings.md`.
 > Plan + per-block detail: `architecture/Build plans/adr-053-managed-agents/`.
 
 ---
