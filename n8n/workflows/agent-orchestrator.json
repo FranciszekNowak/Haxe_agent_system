@@ -199,10 +199,10 @@
       "parameters": {
         "conditions": {
           "options": {
-            "version": 3,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "loose"
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
           },
           "conditions": [
             {
@@ -353,6 +353,331 @@
         "options": {}
       },
       "onError": "continueRegularOutput"
+    },
+    {
+      "id": "9e324557-5611-4445-a5ef-3e2de90e37df",
+      "name": "Read Agent Lane",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [300, 540],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select value as agent_lane from public.config where key = 'agent_lane' limit 1;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "f99d9a36-d54b-4b0c-8bf7-898792b61d78",
+      "name": "Resolve Lane",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 540],
+      "parameters": {
+        "jsCode": "// Block 8: resolve the managed|bare lane flag, fail-safe to bare. Preserves the full Stage A\n// context (spread from Call Assemble Context) so the bare lane's Call Execute LLM mapping ($json.prompt etc.)\n// still resolves downstream. On a DB error (onError=continueRegularOutput passes the input item through) or\n// a missing/malformed flag, agent_lane is absent -> lane_unreadable=true -> bare + a WARN (Lane Unreadable?).\nconst ctx = $('Call Assemble Context').first().json || {};\nconst row = ($input.first() && $input.first().json) || {};\nlet lane = String(row.agent_lane || '').trim().toLowerCase();\nlet lane_unreadable = false;\nif (lane !== 'managed' && lane !== 'bare') { lane_unreadable = true; lane = 'bare'; }\nreturn [{ json: Object.assign({}, ctx, { agent_lane: lane, lane_unreadable: lane_unreadable }) }];"
+      }
+    },
+    {
+      "id": "ddd4e598-45da-405b-8715-26f64b7959b5",
+      "name": "Lane = managed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [680, 540],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "lane1",
+              "leftValue": "={{ $json.agent_lane }}",
+              "rightValue": "managed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "8c421f0f-1877-448d-9ab5-1cfd2fa827e2",
+      "name": "Lane Unreadable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [680, 720],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "unr1",
+              "leftValue": "={{ $json.lane_unreadable }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "20780eed-a237-4767-aee8-79eb6f1ce640",
+      "name": "Alert Lane Unreadable",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [900, 720],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-orchestrator/lane-flag",
+            "message": "Nie udało się odczytać flagi config.agent_lane — przełączono awaryjnie na tryb 'bare'.",
+            "details": "=task={{ $('Call Assemble Context').first().json.clickup_task_id }}; ustaw config.agent_lane = 'managed' lub 'bare'"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "019c0d77-ec35-4fe1-ada9-bd1455c065e1",
+      "name": "Call Execute Agent Session",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [900, 500],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "Rtb1cZbmUqmfGD98",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "user_message": "={{ $json.prompt }}",
+            "impact": "={{ $json.impact }}",
+            "input_images_json": "={{ $json.image_blocks_json || '[]' }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "327820e7-8af5-4246-8fce-c76c3e8c8666",
+      "name": "Session OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1100, 500],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "sok1",
+              "leftValue": "={{ $json.output_message }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "9e38c8fb-5612-4aa2-9b56-0724af408afa",
+      "name": "Call Render Agent Output",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1320, 440],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "vPbbN4UQj0LAAtiV",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "output_message": "={{ $('Call Execute Agent Session').first().json.output_message }}",
+            "clickup_task_id": "={{ $('Call Execute Agent Session').first().json.clickup_task_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f7dda3fa-bf8c-4c73-8a81-3f6ed261e120",
+      "name": "Call Post Reply (Managed)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1540, 440],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "t17moGs7Vxo5ZcFv",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "completion": "={{ $('Call Execute Agent Session').first().json.output_message }}",
+            "model": "={{ $('Call Execute Agent Session').first().json.model_used }}",
+            "cost_pln": "={{ 0 }}",
+            "clickup_task_id": "={{ $('Call Assemble Context').first().json.clickup_task_id }}",
+            "reviewer_user_id": "={{ $('Call Assemble Context').first().json.reviewer_user_id }}",
+            "triggering_comment_id": "={{ $('Call Assemble Context').first().json.triggering_comment_id }}",
+            "web_sources": "={{ '[]' }}",
+            "image_manifest": "={{ $json.image_manifest }}",
+            "rendered_delta": "={{ $json.rendered_delta }}",
+            "image_models": "={{ $json.image_models }}",
+            "total_image_cost_pln": "={{ $json.total_image_cost_pln }}",
+            "doc_attachments": "={{ $('Call Execute Agent Session').first().json.doc_files }}",
+            "session_id": "={{ $('Call Execute Agent Session').first().json.session_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "694fcc5a-670b-41a1-96b3-81f4b84e7f83",
+      "name": "Alert Session Empty",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1320, 620],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-orchestrator/managed-session",
+            "message": "Sesja Managed Agents nie zwróciła treści do opublikowania — nie opublikowano odpowiedzi.",
+            "details": "=task={{ $('Call Execute Agent Session').first().json.clickup_task_id }}; status={{ $('Call Execute Agent Session').first().json.status }}; outcome={{ $('Call Execute Agent Session').first().json.outcome }}; szczegóły w alertach managed-agents"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "cee8ba23-9594-455a-9ced-26f1df653a4e",
+      "name": "Render Has Warnings?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1540, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "rw1",
+              "leftValue": "={{ Array.isArray($json.warnings) ? $json.warnings.length > 0 : false }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "24c8b2ea-a8b8-46e8-83ed-f5cb02b84005",
+      "name": "Alert Render Warnings",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1760, 300],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-orchestrator/render",
+            "message": "Adapter wyjścia (Render Agent Output) zgłosił ostrzeżenia — możliwa degradacja dostarczenia obrazu/treści.",
+            "details": "=task={{ $('Call Assemble Context').first().json.clickup_task_id }}; warnings={{ JSON.stringify($json.warnings || []) }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -444,7 +769,7 @@
       "main": [
         [
           {
-            "node": "Call Execute LLM",
+            "node": "Read Agent Lane",
             "type": "main",
             "index": 0
           }
@@ -452,6 +777,118 @@
         [
           {
             "node": "Alert Context Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Agent Lane": {
+      "main": [
+        [
+          {
+            "node": "Resolve Lane",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Lane": {
+      "main": [
+        [
+          {
+            "node": "Lane = managed?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Lane Unreadable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lane = managed?": {
+      "main": [
+        [
+          {
+            "node": "Call Execute Agent Session",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Execute LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lane Unreadable?": {
+      "main": [
+        [
+          {
+            "node": "Alert Lane Unreadable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Execute Agent Session": {
+      "main": [
+        [
+          {
+            "node": "Session OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session OK?": {
+      "main": [
+        [
+          {
+            "node": "Call Render Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Session Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Render Agent Output": {
+      "main": [
+        [
+          {
+            "node": "Call Post Reply (Managed)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Render Has Warnings?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render Has Warnings?": {
+      "main": [
+        [
+          {
+            "node": "Alert Render Warnings",
             "type": "main",
             "index": 0
           }

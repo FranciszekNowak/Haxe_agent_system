@@ -203,7 +203,7 @@
       "name": "Build Text Block",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2016, 672],
+      "position": [2032, 832],
       "notes": "Extractable branch per-item: success -> { type:text, order, md }; any failure (fetch error, Docling error, or 200/status=failure/empty md) -> [BRAK: extraction_failed <file>] + needs_alert + warn_source. Flags has_embedded on placeholder markers (embedded in-doc images dropped+warned - hosting is Block 10). warn_source/needs_alert/has_embedded drive the `warnings` Aggregate hands to Stage A.",
       "parameters": {
         "mode": "runOnceForEachItem",
@@ -215,7 +215,7 @@
       "name": "Merge Branches",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
-      "position": [2048, 352],
+      "position": [2336, 352],
       "notes": "Converge the image-passthrough branch (input 0) and the Docling-extract branch (input 1) into ONE stream so Aggregate keeps a SINGLE input (a run-once-for-all-items node with N input connections runs once per connection and drops items - Block 2 trap, CLAUDE.md). Append = concat all items. VERIFY at build: must not stall when one branch is empty (all-text OR all-image task); if it stalls, apply ADR-036 fallback (alwaysOutputData on tails / single run-once-for-each builder).",
       "parameters": {
         "numberInputs": 5
@@ -226,7 +226,7 @@
       "name": "Aggregate Blocks",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2288, 400],
+      "position": [2560, 400],
       "notes": "SOLE TERMINAL (single input via Merge -> runs once over all items). Returns { blocks (sorted by order), clickup_task_id, warnings:[{source,title,err}] }. Stage A (Block 5) fires `warnings` via Post Alert (v1): each builder names its own warn_source (multimodal/extraction-failed, /image-ref-missing) + /embedded-image-skipped for dropped in-doc images. Branch-free convergence => n8n returns THIS node deterministically.",
       "parameters": {
         "jsCode": "const rows = $input.all().map(i => i.json).filter(j => j && j.block);\nconst blocks = rows.map(j => j.block).sort((a, b) => (a.order || 0) - (b.order || 0));\nconst warnings = [];\nfor (const j of rows) {\n  if (j.needs_alert) warnings.push({ source: j.warn_source || 'multimodal/extraction-failed', title: j.title, err: j.err || 'unknown' });\n  else if (j.has_embedded) warnings.push({ source: 'multimodal/embedded-image-skipped', title: j.title });\n}\nlet taskId = null;\ntry { taskId = $('When Called').first().json.clickup_task_id; } catch (e) {}\nif (!taskId) { try { taskId = $('Form Trigger').first().json.taskId; } catch (e) {} }\nif (!taskId) { const f = rows.find(j => j.clickup_task_id); taskId = f ? f.clickup_task_id : null; }\nreturn [{ json: { blocks, clickup_task_id: taskId, warnings } }];"
@@ -559,10 +559,10 @@
       "parameters": {
         "conditions": {
           "options": {
-            "version": 2,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "loose"
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
           },
           "combinator": "and",
           "conditions": [
@@ -586,7 +586,7 @@
       "name": "Restore Doc Binary",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1600, 880],
+      "position": [1840, 640],
       "notes": "ADR-048 Block 5: the Docling HTTP response drops the input binary, but the OCR-retry pass must re-send the same file bytes. Copy the binary reference from Merge Extractable (the single shared point holding the on-disk `data` binary for BOTH loose and zip-inner docs). Paired-item resolves because retry items descend from Merge Extractable; mirrors Build Text Block's $('...').item recovery pattern. Code node justified: no normal node can reference a prior node's binary.",
       "parameters": {
         "mode": "runOnceForEachItem",
@@ -598,7 +598,7 @@
       "name": "Docling OCR Retry",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1808, 880],
+      "position": [2048, 640],
       "notes": "ADR-048 Block 5: second pass for scanned/image-only PDFs only (reached when the no-OCR pass returned empty). Identical to Docling Convert EXCEPT do_ocr=true (table_mode=fast, document_timeout=120, image_export_mode=placeholder). continueRegularOutput: if OCR also yields nothing (truly unextractable/corrupt), the empty result flows to Build Text Block -> [BRAK: extraction_failed] + WARN (no silent loss).",
       "parameters": {
         "method": "POST",
@@ -646,11 +646,9 @@
       "name": "Merge OCR Result",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
-      "position": [1872, 700],
+      "position": [1856, 832],
       "notes": "ADR-048 Block 5: converge the no-OCR-OK branch (OCR Empty? false) and the OCR-retry branch (Docling OCR Retry) into ONE stream so Build Text Block keeps a SINGLE input. Two input connections on Build Text Block made it (and Aggregate Blocks downstream) run once PER connection, splitting the reply into two partial Aggregate outputs (CLAUDE.md trap). Append concats and tolerates an empty input (all-digital -> retry side empty; all-scanned -> false side empty), same as Merge Extractable / Merge Branches.",
-      "parameters": {
-        "numberInputs": 2
-      }
+      "parameters": {}
     }
   ],
   "connections": {

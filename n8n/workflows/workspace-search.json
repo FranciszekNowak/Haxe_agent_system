@@ -8,7 +8,7 @@
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
       "position": [0, 0],
-      "notes": "Inputs: current_task (object), triggering_comment_text (string), caller_user_id (string), clickup_task_id (string). Returns: {task_comments, additional_context, sources_used, sources_filtered_out}.",
+      "notes": "Inputs: current_task (object), triggering_comment_text (string), caller_user_id (string), personal_data (boolean), clickup_task_id (string). Returns: {task_comments, additional_context, sources_used, sources_filtered_out}.",
       "parameters": {
         "workflowInputs": {
           "values": [
@@ -537,10 +537,10 @@
       "parameters": {
         "conditions": {
           "options": {
-            "version": 2,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "loose"
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
           },
           "combinator": "and",
           "conditions": [
@@ -554,7 +554,8 @@
               }
             }
           ]
-        }
+        },
+        "options": {}
       }
     },
     {
@@ -562,7 +563,7 @@
       "name": "Expand Threads",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [672, 600],
+      "position": [672, 608],
       "notes": "Expand thread_ids to one item per comment id so Fetch Replies runs once per thread.",
       "parameters": {
         "jsCode": "return ($json.thread_ids || []).map(id => ({ json: { comment_id: id } }));"
@@ -573,7 +574,7 @@
       "name": "Fetch Replies",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [896, 600],
+      "position": [896, 496],
       "notes": "GET /comment/{id}/reply per threaded comment. onError=continueRegularOutput: a failed thread fetch yields an error item (kept in order) so Collect Replies can skip it without breaking alignment. Best-effort enrichment (matches Fetch Task Comments).",
       "parameters": {
         "url": "=https://api.clickup.com/api/v2/comment/{{ $json.comment_id }}/reply",
@@ -610,10 +611,10 @@
       "parameters": {
         "conditions": {
           "options": {
-            "version": 2,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "loose"
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
           },
           "combinator": "and",
           "conditions": [
@@ -628,7 +629,8 @@
               }
             }
           ]
-        }
+        },
+        "options": {}
       }
     },
     {
@@ -670,10 +672,10 @@
       "parameters": {
         "conditions": {
           "options": {
-            "version": 2,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "loose"
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
           },
           "combinator": "and",
           "conditions": [
@@ -687,7 +689,8 @@
               }
             }
           ]
-        }
+        },
+        "options": {}
       }
     },
     {

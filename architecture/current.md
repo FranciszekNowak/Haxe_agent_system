@@ -241,13 +241,15 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
   gate** — a mis-mapped credential fails silently and the departmental boundary (e.g. Marketing cannot
   read Purchasing) is the entire point.
 
-> **Build progress (ADR-053 lane).** Blocks 0–5 plus 5.1–5.3 (ADR-055) have landed; the lane is **not yet
-> serving traffic** (the orchestrator still routes Stage B to the bare `Execute LLM Call (v1)` until the
-> Block-8 lane flag). Image generation now runs **via the self-hosted MCP server**: the four tier agents
-> carry the image `mcp_servers` entry and the client-side `generate_image` custom tool is the dormant
-> rollback. **Image delivery to ClickUp does not work until Block 6** adds a bytes carrier (the MCP path
-> returns only `file_id`s, not the bytes) — safe while the lane is dormant, but Block 6 must land the
-> carrier before cutover.
+> **Build progress (ADR-053 lane).** Blocks 0–8 (incl. 5.1–5.3, ADR-055) have landed; the lane is **wired
+> but not yet the default**. The orchestrator now routes Stage B by the **`config.agent_lane`** flag
+> (`managed` | `bare`), which **defaults to `bare`** until the Block-9 cutover — so the managed lane is
+> reachable today by flipping the flag, while normal traffic still runs the bare `Execute LLM Call (v1)`.
+> Image generation runs **via the self-hosted MCP server** (the four tier agents carry the image
+> `mcp_servers` entry; the client-side `generate_image` custom tool is the dormant rollback); Block 6 landed
+> the Supabase Storage bytes carrier so MCP-produced images now deliver to ClickUp. **Before flipping the
+> default to `managed` (Block 9): the Krytycznie ważne tier routes to Fable 5, currently unavailable — that
+> tier must be serviceable first.**
 > Live now:
 > - **Block 0** — capability spike (`block-0-findings.md`).
 > - **Block 1** — credential plumbing: the `get_anthropic_key()` Vault getter (migration 034) and
@@ -420,6 +422,27 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
 >   (`<v>111/222/333</v>`), its attachment id is recorded; a deliberately corrupt output (mime-mismatch + bad
 >   file_id) → WARN + Polish notes + nothing uploaded + `clickup_attachment_ids=[]`; 0 CRITICAL. Office-doc OUTPUT
 >   files are downloadable, so this path is separate from the Block-6 image carrier. Findings: `block-7-findings.md`.
+> - **Block 8** — **the lane switch + orchestrator wiring + research retirement.** New `config.agent_lane`
+>   (`managed`|`bare`, default `bare`). The **`Agent Orchestrator (v1)`** (`a8XKaijkMFNBpRBa`) `Context OK?`
+>   true branch now flows `Read Agent Lane` (Postgres) → `Resolve Lane` (Code; re-reads + spreads the Stage A
+>   context, resolves the flag, fail-safe to `bare` on an unreadable/absent/malformed value) → `Lane =
+>   managed?`. The **managed branch** is wired end-to-end: `Call Execute Agent Session` → `Session OK?` →
+>   `Call Render Agent Output (v1)` → a second **`Call Post Reply (Managed)`** caller of the shared
+>   `Post Reply (v1)` (passing the adapter's `rendered_delta`/`image_manifest` plus `doc_attachments`=`doc_files`
+>   + `session_id` straight through to Block 7's `Has Docs?` branch). The **bare branch** (`Lane = managed?`
+>   false → the existing `Call Execute LLM`) is byte-identical. Guards/alerts (all via `Post Alert (v1)`):
+>   `Lane Unreadable?` → `Alert Lane Unreadable` (WARN, fail-safe flag); `Session OK?` false (empty session) →
+>   `Alert Session Empty` (WARN, no empty reply posted — Execute Agent Session CRITICALs internally on
+>   create/send failure, so this is a deliberate non-duplicate breadcrumb); `Render Has Warnings?` →
+>   `Alert Render Warnings` (WARN, adapter/image-delivery degradation). **Research retired from Stage A:** the
+>   `Call Decide Research` node is removed (`Call Workspace Search → Load Agent Rules` direct), `Build Prompt`
+>   drops the research reads; `decide-research-and-deliver`/`research-the-web` are deleted from the repo (live
+>   copies orphaned — deletion pending operator). `research_parameters` left dormant. **Web research now exists
+>   only in-harness on the managed lane; the bare failover lane is text+image only.** Verified live: bare lane
+>   posts (exec 2827); managed success path session→render→post-reply posts a comment on a clean task (exec
+>   2892); the session-failure guard suppresses empty posts (execs 2849/2873); an `__invalid__` flag falls
+>   safe to bare + WARN (exec 2908); drift `✓ all 32 match`; 0 CRITICAL. **Default stays `bare`**; the flip to
+>   `managed` + the comment-footer cost reconciliation are Block 9. Findings: `block-8-findings.md`.
 > Plan + per-block detail: `architecture/Build plans/adr-053-managed-agents/`.
 
 ---
@@ -1253,10 +1276,11 @@ empty completion (both added 2026-06-11 after a zero-attachment task silently pr
 ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the stages:
 
 - **Stage A — `Assemble Context and Build Prompt (v1)`** (`n8n/workflows/assemble-context-and-build-prompt.json`,
-  id `GGTBvFBgGSNbtUR6`, 12 nodes): `Context Gather (v1)` → Workspace Search
+  id `GGTBvFBgGSNbtUR6`, 11 nodes): `Context Gather (v1)` → Workspace Search
   (now also fetches **threaded comment replies** — `GET /comment/{id}/reply` per top-30 comment with
   `reply_count>0` — and interleaves them under their parent in `task_comments`, ADR-040) →
-  Decide Research → Load Agent Rules → **`Read Input (v1)`** → `Build Prompt`. Returns the prompt payload +
+  Load Agent Rules → **`Read Input (v1)`** → `Build Prompt` (the `Decide Research` web-research call was
+  retired in ADR-053 Block 8 — web search is in-harness on the managed lane). Returns the prompt payload +
   assembled context, plus **`image_blocks_json`** (input image refs for the vision model, non-PD) and
   `input_warnings_*`. Folds attachment **text** into the prompt and fires the reader's `warnings` via
   `Post Alert (v1)` on a reconverging side branch (`Return Context` stays the sole terminal). Multimodal
