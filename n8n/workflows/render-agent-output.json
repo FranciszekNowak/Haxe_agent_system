@@ -1,0 +1,335 @@
+{
+  "name": "Render Agent Output (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "notes": "ADR-053 Block 6 — output adapter. Turns the managed agent's final block-array (output_message: a fenced ```json array, the SAME structured block protocol the bare lane emits, decision #4) into the Post Reply (v1) contract {rendered_delta, image_manifest}. Reuses Image Resolver (v1)'s markdown->ClickUp-ops renderer (mdToOps, copied verbatim into Assemble) and Post Reply's existing image_manifest/{type:image_ref} upload path, so Post Reply is unchanged. Produced images are referenced by Files-API file_id (the managed lane emits {type:image, mode:embed_input, ref:file_...}); their bytes are NOT downloadable from the Files API (purpose=agent) and on the MCP path never return to n8n, so this adapter fetches them from the agent-output-images carrier bucket that Image Tool Handler persists them to (Block 6 carrier). Returns warnings[] for the caller (orchestrator, Block 8) to fire via Post Alert — branch-free terminal (Assemble), mirroring Image Resolver.",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "output_message"
+            },
+            {
+              "name": "clickup_task_id"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "parse-blocks",
+      "name": "Parse Blocks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "notes": "Parse output_message into an ordered assembly (text + image placeholders gen_N) and the list of produced images to fetch (only image blocks whose ref is a Files-API file_id). Strips the ```json fence. A non-array payload falls back to one text block + a WARN (never a hard fail). An image ref that is not a file_id -> WARN + no manifest entry -> Assemble renders [Obraz niedostepny].",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nlet raw = String(wc.output_message || '').trim();\nconst parse_warnings = [];\n// Strip a ```json ... ``` (or bare ```) fence if the agent wrapped the array in one (observed live, 5.3).\nconst fence = raw.match(/^```[a-zA-Z]*\\s*([\\s\\S]*?)\\s*```\\s*$/);\nif (fence) raw = fence[1].trim();\nlet blocks = null;\ntry { blocks = JSON.parse(raw); } catch (e) {}\nif (blocks && !Array.isArray(blocks) && Array.isArray(blocks.blocks)) blocks = blocks.blocks;\nif (!Array.isArray(blocks)) {\n  parse_warnings.push({ source: 'output-adapter/parse-fallback', err: 'output_message nie jest tablica blokow JSON — dostarczono jako zwykly tekst', severity: 'WARN' });\n  blocks = [{ type: 'text', md: String(wc.output_message || '') }];\n}\nconst assembly = [];\nconst images = [];\nlet genIdx = 0;\nfor (let i = 0; i < blocks.length; i++) {\n  const b = blocks[i] || {};\n  const order = (b.order != null) ? Number(b.order) : (i + 1);\n  if (b.type === 'text') {\n    assembly.push({ kind: 'text', order: order, md: (b.md != null ? b.md : (b.text || '')) });\n  } else if (b.type === 'image') {\n    const ref = String(b.ref || b.file_id || '');\n    const pid = 'gen_' + genIdx; genIdx++;\n    assembly.push({ kind: 'image', order: order, placeholder_id: pid, caption: b.caption || '', alt: b.alt || '', ref: ref });\n    if (ref.indexOf('file_') === 0) {\n      images.push({ placeholder_id: pid, file_id: ref, mime: b.mime || 'image/png', caption: b.caption || '', alt: b.alt || '' });\n    } else {\n      parse_warnings.push({ source: 'output-adapter/image-ref-unrecognized', err: 'blok image ma ref ktory nie jest file_id Files-API: ' + (ref || '(pusty)') + ' — nie mozna dostarczyc obrazu', severity: 'WARN' });\n    }\n  }\n  // other block types (future office-doc/file blocks) are skipped here — Block 7.\n}\nreturn [{ json: { assembly: assembly, images: images, parse_warnings: parse_warnings, clickup_task_id: wc.clickup_task_id || '', image_count: images.length } }];"
+      }
+    },
+    {
+      "id": "has-images",
+      "name": "Has Images?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [440, 300],
+      "notes": "TRUE: at least one produced image -> fetch its bytes from the carrier (Split Out -> Download). FALSE (text-only): skip straight to an empty manifest so Assemble still runs (a Code node does not execute on 0 input items — the empty-manifest branch keeps the terminal alive).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-has",
+              "leftValue": "={{ $json.image_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "split-images",
+      "name": "Split Out Images",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [660, 180],
+      "notes": "One item per produced image (placeholder_id, file_id, mime, caption, alt spread to root) so each is fetched from Storage independently. Paired-item idiom (mirrors Upload Input Images): Download + Extract resolve image meta via $('Split Out Images').item.",
+      "parameters": {
+        "fieldToSplitOut": "images",
+        "options": {}
+      }
+    },
+    {
+      "id": "download-storage",
+      "name": "Download Image Bytes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 180],
+      "notes": "GET the produced image bytes from the private agent-output-images carrier bucket (keyed by Files-API file_id), via Supabase Storage REST with the predefined supabaseApi cred (service_role, bypasses RLS). responseFormat=file -> binary `data` (read as base64 in Extract). onError=continueErrorOutput: a missing object (carrier write failed, or already purged at 24h) -> Build Image Missing -> WARN + [Obraz niedostepny], never thrown.",
+      "parameters": {
+        "method": "GET",
+        "url": "=https://hkeslnosxibeuesxndnz.supabase.co/storage/v1/object/agent-output-images/{{ $json.file_id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "54fKsl6xiVi9NhV1",
+          "name": "Supabase account"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "extract-b64",
+      "name": "Extract B64",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 100],
+      "notes": "Download success -> read the binary base64 (item.binary.data.data) into a manifest-ready entry {placeholder_id, b64, mime, caption, alt}. An empty body -> ok:false + WARN (defensive).",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Read each downloaded image's bytes as base64. Binary is in filesystem mode on this instance,\n// so binary.data.data is only the storage marker ('filesystem-v2') -> must use the binary-data helper.\nconst items = $input.all();\nconst split = $('Split Out Images').all();\nconst out = [];\nfor (let k = 0; k < items.length; k++) {\n  let srcIdx = 0;\n  const pi = items[k].pairedItem;\n  if (pi != null) srcIdx = (typeof pi === 'number') ? pi : (pi.item != null ? pi.item : 0);\n  const meta = (split[srcIdx] && split[srcIdx].json) || {};\n  let b64 = '';\n  try { const buf = await this.helpers.getBinaryDataBuffer(k, 'data'); if (buf) b64 = buf.toString('base64'); } catch (e) {}\n  const mime = (items[k].binary && items[k].binary.data && items[k].binary.data.mimeType) || meta.mime || 'image/png';\n  if (b64) out.push({ json: { ok: true, placeholder_id: meta.placeholder_id, file_id: meta.file_id, b64: b64, mime: mime, caption: meta.caption || '', alt: meta.alt || '' } });\n  else out.push({ json: { ok: false, placeholder_id: meta.placeholder_id, file_id: meta.file_id, warning: 'output-adapter/image-bytes-empty: ' + (meta.file_id || '') + ' pobrano pusta zawartosc z carrier' } });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "build-image-missing",
+      "name": "Build Image Missing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 260],
+      "notes": "Download error branch -> the produced image cannot be delivered (carrier write failed or object purged). Emits ok:false + a WARN; Assemble renders [Obraz niedostepny] in its place. The image is omitted, the rest of the message still posts (fail-soft).",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const meta = $('Split Out Images').item.json;\nreturn { json: { ok: false, placeholder_id: meta.placeholder_id, file_id: meta.file_id, warning: 'output-adapter/image-bytes-missing: ' + (meta.file_id || '') + ' nie znaleziono w agent-output-images (zapis carrier mogl sie nie powiesc lub obiekt wygasl)' } };"
+      }
+    },
+    {
+      "id": "merge-images",
+      "name": "Merge Images",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [1320, 180],
+      "notes": "Converge fetched (0) and missing (1) image results into one stream so Aggregate Manifest keeps a single input.",
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 2
+      }
+    },
+    {
+      "id": "aggregate-manifest",
+      "name": "Aggregate Manifest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 180],
+      "notes": "Build the image_manifest (only successfully-fetched images) + image warnings, as a single item for Merge Manifest -> Assemble.",
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(function(i){ return i.json; }).filter(Boolean);\nconst manifest = [];\nconst warnings = [];\nfor (const r of rows) {\n  if (r.ok === true && r.b64) manifest.push({ placeholder_id: r.placeholder_id, b64: r.b64, mime: r.mime, caption: r.caption || '', alt: r.alt || '' });\n  else if (r.warning) warnings.push({ source: 'output-adapter/image', err: r.warning, severity: 'WARN' });\n}\nreturn [{ json: { manifest_json: JSON.stringify(manifest), image_warnings_json: JSON.stringify(warnings) } }];"
+      }
+    },
+    {
+      "id": "build-empty-manifest",
+      "name": "Build Empty Manifest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 420],
+      "notes": "Text-only path (no produced images): empty manifest so Assemble still runs (keeps the single terminal alive when Split Out would yield 0 items).",
+      "parameters": {
+        "jsCode": "return [{ json: { manifest_json: '[]', image_warnings_json: '[]' } }];"
+      }
+    },
+    {
+      "id": "merge-manifest",
+      "name": "Merge Manifest",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [1760, 300],
+      "notes": "Converge the has-images manifest (0) and the empty manifest (1) into the single input Assemble reads. Exactly one branch runs per call.",
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 2
+      }
+    },
+    {
+      "id": "assemble",
+      "name": "Assemble",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 300],
+      "notes": "SOLE TERMINAL (single input via Merge Manifest -> branch-free deterministic return). Walks the assembly in order: text -> mdToOps ops (verbatim from Image Resolver); image -> {type:image_ref, placeholder_id} when its bytes are in the manifest, else [Obraz niedostepny]. Returns the Post Reply (v1) contract {rendered_delta, image_manifest:[{placeholder_id,b64,mime,caption,alt}], warnings, total_image_cost_pln:0, image_models:[], clickup_task_id}. total_image_cost_pln is 0 here: the managed lane's per-image cost is logged separately in agent_runs by Generate Images Parallel, not carried in the comment footer (reconciled in Block 8/9).",
+      "parameters": {
+        "jsCode": "const inp = ($input.first() && $input.first().json) || {};\nlet manifest = []; try { manifest = JSON.parse(inp.manifest_json || '[]'); } catch (e) {}\nlet imageWarnings = []; try { imageWarnings = JSON.parse(inp.image_warnings_json || '[]'); } catch (e) {}\nconst pb = $('Parse Blocks').first().json;\nlet assembly = Array.isArray(pb.assembly) ? pb.assembly.slice() : [];\nlet warnings = Array.isArray(pb.parse_warnings) ? pb.parse_warnings.slice() : [];\nwarnings = warnings.concat(imageWarnings);\nconst byPid = {};\nfor (const e of manifest) { if (e && e.placeholder_id) byPid[e.placeholder_id] = e; }\n\n// --- mdToOps + helpers: copied VERBATIM from Image Resolver (v1) 'Assemble Output' so the ClickUp ops format is identical (Post Reply consumes both lanes' rendered_delta). KEEP IN SYNC if the resolver renderer changes. ---\nconst FENCE = String.fromCharCode(96, 96, 96);\nconst LINK = /\\[([^\\]]+)\\]\\(([^)]+)\\)/;\nconst BOLD = /\\*\\*([^*]+)\\*\\*/;\nconst CODE = /\\x60([^\\x60]+)\\x60/;\nconst ITAL = /\\*([^*]+)\\*|_([^_]+)_/;\nfunction inlineOps(t) {\n  const out = [];\n  let rest = String(t);\n  while (rest.length) {\n    let best = null, kind = null;\n    const cands = [[LINK,'link'],[BOLD,'bold'],[CODE,'code'],[ITAL,'ital']];\n    for (const c of cands) { const m = c[0].exec(rest); if (m && (best === null || m.index < best.index)) { best = m; kind = c[1]; } }\n    if (!best) { out.push({ text: rest }); break; }\n    if (best.index > 0) out.push({ text: rest.slice(0, best.index) });\n    if (kind === 'link') out.push({ text: best[1], attributes: { link: best[2] } });\n    else if (kind === 'bold') out.push({ text: best[1], attributes: { bold: true } });\n    else if (kind === 'code') out.push({ text: best[1], attributes: { code: true } });\n    else out.push({ text: best[1] || best[2], attributes: { italic: true } });\n    rest = rest.slice(best.index + best[0].length);\n  }\n  return out.length ? out : [{ text: '' }];\n}\nfunction isRow(s){ const t=s.trim(); return t.length>1 && t.charAt(0)==='|' && t.charAt(t.length-1)==='|'; }\nfunction isSep(s){ const t=s.trim(); return /^[|\\s:-]+$/.test(t) && t.indexOf('-')>=0; }\nfunction cellsOf(s){ return s.trim().replace(/^\\|/,'').replace(/\\|$/,'').split('|').map(function(c){return c.trim();}); }\nfunction mdToOps(md) {\n  const ops = [];\n  function emit(inline, attrs) { for (const o of inline) ops.push(o); ops.push(attrs ? { text: '\\n', attributes: attrs } : { text: '\\n' }); }\n  const L = String(md).replace(/\\r/g,'').split('\\n');\n  let i=0, gRow=0, inCode=false;\n  while (i < L.length) {\n    const s = L[i];\n    if (s.trim().indexOf(FENCE) === 0) { inCode = !inCode; i++; continue; }\n    if (inCode) { ops.push({ text: s }); ops.push({ text: '\\n', attributes: { 'code-block': 'plain' } }); i++; continue; }\n    if (isRow(s) && i+1 < L.length && isSep(L[i+1])) {\n      const rows=[]; let j=i;\n      while (j < L.length && isRow(L[j])) { rows.push(L[j]); j++; }\n      for (let r=0; r<rows.length; r++) {\n        if (r===1) continue;\n        gRow++;\n        const cs = cellsOf(rows[r]);\n        for (const c of cs) { const io = inlineOps(c); for (const o of io) ops.push(o); ops.push({ text: '\\n', attributes: { table: 'row-'+gRow } }); }\n      }\n      i=j; continue;\n    }\n    const t = s.replace(/^\\s+/,'');\n    let m;\n    if (t.charAt(0)==='#') { const h=t.match(/^(#{1,6})\\s+(.*)$/); if (h) { emit(inlineOps(h[2]), { header: Math.min(h[1].length,3) }); i++; continue; } }\n    if ((m = t.match(/^[-*+]\\s+(.*)$/))) { emit(inlineOps(m[1]), { list: 'bullet' }); i++; continue; }\n    if ((m = t.match(/^\\d+\\.\\s+(.*)$/))) { emit(inlineOps(m[1]), { list: 'ordered' }); i++; continue; }\n    if (t.charAt(0)==='>') { emit(inlineOps(t.replace(/^>\\s?/,'')), { blockquote: true }); i++; continue; }\n    if (/^([-*_])\\1{2,}$/.test(s.trim())) { i++; continue; }\n    if (s.trim()==='') { i++; continue; }\n    emit(inlineOps(s), null);\n    i++;\n  }\n  return ops;\n}\n\nassembly.sort(function(a,b){ return ((a.order==null?99:a.order) - (b.order==null?99:b.order)); });\nconst rendered_delta = [];\nfor (const blk of assembly) {\n  if (blk.kind === 'text') {\n    for (const op of mdToOps(blk.md || '')) rendered_delta.push(op);\n  } else if (blk.kind === 'image') {\n    const hit = byPid[blk.placeholder_id];\n    if (hit) {\n      rendered_delta.push({ type: 'image_ref', placeholder_id: blk.placeholder_id });\n      if (blk.caption) rendered_delta.push({ text: blk.caption + '\\n', attributes: { italic: true } });\n      else rendered_delta.push({ text: '\\n' });\n    } else {\n      rendered_delta.push({ text: '[Obraz niedostepny]\\n', attributes: { italic: true } });\n    }\n  }\n}\nreturn [{ json: { rendered_delta: rendered_delta, image_manifest: manifest, total_image_cost_pln: 0, image_models: [], warnings: warnings, clickup_task_id: pb.clickup_task_id || '' } }];"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Parse Blocks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Blocks": {
+      "main": [
+        [
+          {
+            "node": "Has Images?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Images?": {
+      "main": [
+        [
+          {
+            "node": "Split Out Images",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Empty Manifest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out Images": {
+      "main": [
+        [
+          {
+            "node": "Download Image Bytes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Image Bytes": {
+      "main": [
+        [
+          {
+            "node": "Extract B64",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Image Missing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract B64": {
+      "main": [
+        [
+          {
+            "node": "Merge Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Image Missing": {
+      "main": [
+        [
+          {
+            "node": "Merge Images",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Images": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Manifest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Manifest": {
+      "main": [
+        [
+          {
+            "node": "Merge Manifest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Empty Manifest": {
+      "main": [
+        [
+          {
+            "node": "Merge Manifest",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Manifest": {
+      "main": [
+        [
+          {
+            "node": "Assemble",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}

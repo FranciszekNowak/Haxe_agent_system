@@ -548,7 +548,7 @@
       "position": [2640, 440],
       "notes": "Terminal (non-recursive) outcomes -> the Agent Session output contract: {status, output_message (final block-array text), files[] (produced image file_id+b64), file_ids[], usd_cost (NULL stub — Block 6 computes), session_usage + duration_seconds + web_search_count (raw cost surface for Block 6), model_used, session_id, warnings[]}. deadline/terminated/max_rounds/poll_error append their own WARN. Feeds Merge Final (input 0).",
       "parameters": {
-        "jsCode": "const st = $json;\nlet warnings = []; try { warnings = JSON.parse(st.warnings_json || '[]'); } catch (e) {}\nlet images = []; try { images = JSON.parse(st.images_json || '[]'); } catch (e) {}\nlet usage = {}; try { usage = JSON.parse(st.session_usage_json || '{}'); } catch (e) {}\nconst outcome = st.outcome;\nlet status = 'completed';\nif (outcome === 'deadline'){ status = 'partial'; warnings.push({ source: 'managed-agents/session-deadline', err: 'Sesja agenta przekroczyla limit czasu (840s) — zwrocono wynik czesciowy', severity: 'WARN' }); }\nelse if (outcome === 'terminated'){ status = 'failed'; warnings.push({ source: 'managed-agents/session-error', err: 'Sesja zakonczona bledem: ' + (st.terminated_error_json || 'nieznany'), severity: 'WARN' }); }\nelse if (outcome === 'max_rounds'){ status = 'partial'; warnings.push({ source: 'managed-agents/max-tool-rounds', err: 'Osiagnieto limit rund narzedzia generate_image (12) — zwrocono wynik czesciowy', severity: 'WARN' }); }\nelse if (outcome === 'poll_error'){ status = 'partial'; warnings.push({ source: 'managed-agents/poll-error', err: 'Wielokrotne bledy odczytu zdarzen sesji — zwrocono wynik czesciowy', severity: 'WARN' }); }\nconst file_ids = images.map(function(im){ return im.file_id; }).filter(Boolean);\nreturn [{ json: {\n  status: status,\n  output_message: st.final_message_text || '',\n  files: images,\n  file_ids: file_ids,\n  usd_cost: null,\n  usd_cost_stub: true,\n  session_usage: usage,\n  duration_seconds: (st.duration_seconds != null) ? st.duration_seconds : null,\n  web_search_count: st.web_search_count || 0,\n  model_used: st.model_id || '',\n  agent_id: st.agent_id || '',\n  session_id: st.session_id || '',\n  impact: st.impact || '',\n  clickup_task_id: st.clickup_task_id || '',\n  warnings: warnings,\n  failure_kind: '',\n  outcome: outcome\n} }];"
+        "jsCode": "const st = $json;\nlet warnings = []; try { warnings = JSON.parse(st.warnings_json || '[]'); } catch (e) {}\nlet images = []; try { images = JSON.parse(st.images_json || '[]'); } catch (e) {}\nlet usage = {}; try { usage = JSON.parse(st.session_usage_json || '{}'); } catch (e) {}\nconst outcome = st.outcome;\nlet status = 'completed';\nif (outcome === 'deadline'){ status = 'partial'; warnings.push({ source: 'managed-agents/session-deadline', err: 'Sesja agenta przekroczyla limit czasu (840s) - zwrocono wynik czesciowy', severity: 'WARN' }); }\nelse if (outcome === 'terminated'){ status = 'failed'; warnings.push({ source: 'managed-agents/session-error', err: 'Sesja zakonczona bledem: ' + (st.terminated_error_json || 'nieznany'), severity: 'WARN' }); }\nelse if (outcome === 'max_rounds'){ status = 'partial'; warnings.push({ source: 'managed-agents/max-tool-rounds', err: 'Osiagnieto limit rund narzedzia generate_image (12) - zwrocono wynik czesciowy', severity: 'WARN' }); }\nelse if (outcome === 'poll_error'){ status = 'partial'; warnings.push({ source: 'managed-agents/poll-error', err: 'Wielokrotne bledy odczytu zdarzen sesji - zwrocono wynik czesciowy', severity: 'WARN' }); }\nconst file_ids = images.map(function(im){ return im.file_id; }).filter(Boolean);\n\n// --- Block 6: session USD cost = token tiers + runtime + web search. Image cost is logged separately by Generate Images Parallel (no double-count). ---\n// Per-1M-token USD (claude-api skill, 2026-06). Cache on input price: 5m write x1.25, 1h write x2.0, read x0.1.\nconst PRICES = {\n  'claude-haiku-4-5':  { in: 1.00,  out: 5.00 },\n  'claude-sonnet-4-6': { in: 3.00,  out: 15.00 },\n  'claude-opus-4-8':   { in: 5.00,  out: 25.00 },\n  'claude-fable-5':    { in: 10.00, out: 50.00 }\n};\nconst RUNTIME_USD_PER_HOUR = 0.08;\nconst WEB_SEARCH_USD_PER_CALL = 0.01; // $10 / 1000\nconst model = st.model_id || '';\nconst cc = usage.cache_creation || {};\nconst tIn = Number(usage.input_tokens || 0);\nconst tOut = Number(usage.output_tokens || 0);\nconst tWrite5m = Number(cc.ephemeral_5m_input_tokens || 0);\nconst tWrite1h = Number(cc.ephemeral_1h_input_tokens || 0);\nconst tRead = Number(usage.cache_read_input_tokens || 0);\nconst dur = Number(st.duration_seconds || 0);\nconst ws = Number(st.web_search_count || 0);\nconst p = PRICES[model];\nif (!p) { warnings.push({ source: 'managed-agents/cost-model-unknown', err: 'Brak cennika dla modelu ' + (model || '?') + ' - koszt sesji oszacowano cennikiem Opus 4.8 (gorny prog)', severity: 'WARN' }); }\nconst pr = p || PRICES['claude-opus-4-8'];\nconst tokenCost = (tIn/1e6)*pr.in + (tOut/1e6)*pr.out + (tWrite5m/1e6)*pr.in*1.25 + (tWrite1h/1e6)*pr.in*2.0 + (tRead/1e6)*pr.in*0.1;\nconst runtimeCost = RUNTIME_USD_PER_HOUR * (dur/3600);\nconst webSearchCost = ws * WEB_SEARCH_USD_PER_CALL;\nconst usd_cost = Number((tokenCost + runtimeCost + webSearchCost).toFixed(6));\nif ((status === 'completed' || status === 'partial') && tIn === 0 && tOut === 0 && tRead === 0 && tWrite5m === 0 && tWrite1h === 0) {\n  warnings.push({ source: 'managed-agents/cost-usage-missing', err: 'Sesja bez danych uzycia tokenow - koszt sesji moze byc zanizony', severity: 'WARN' });\n}\n// agent_runs.impact CHECK accepts: Niski / Sredni / Wysoki / Krytycznie wazne / 'n/d - zadanie nie jest dla AI'. Map anything else (e.g. __default__) to null.\nconst ALLOWED = ['Niski','Średni','Wysoki','Krytycznie ważne','n/d - zadanie nie jest dla AI'];\nconst cost_impact = (ALLOWED.indexOf(st.impact) >= 0) ? st.impact : null;\n\nreturn [{ json: {\n  status: status,\n  output_message: st.final_message_text || '',\n  files: images,\n  file_ids: file_ids,\n  usd_cost: usd_cost,\n  usd_cost_stub: false,\n  session_usage: usage,\n  duration_seconds: (st.duration_seconds != null) ? st.duration_seconds : null,\n  web_search_count: st.web_search_count || 0,\n  model_used: st.model_id || '',\n  agent_id: st.agent_id || '',\n  session_id: st.session_id || '',\n  impact: st.impact || '',\n  cost_impact: cost_impact,\n  clickup_task_id: st.clickup_task_id || '',\n  triggered_by: st.triggered_by || 'explicit_mention',\n  invocation_type: st.invocation_type || 'explicit',\n  caller_user_id: st.caller_user_id || '',\n  process_type: st.process_type || '',\n  input_tokens: tIn,\n  output_tokens: tOut,\n  warnings: warnings,\n  failure_kind: '',\n  outcome: outcome\n} }];"
       }
     },
     {
@@ -641,7 +641,7 @@
       "position": [3740, 440],
       "notes": "Rejoin the alerted (input 0) and not-alerted (input 1) paths into the single terminal input. Append; exactly one executes.",
       "parameters": {
-        "numberInputs": 2
+        "numberInputs": 3
       }
     },
     {
@@ -654,6 +654,42 @@
       "parameters": {
         "jsCode": "return [{ json: $('Merge Final').first().json }];"
       }
+    },
+    {
+      "id": "dd73c6b3-d1da-46ad-b0b0-bf93cddd6608",
+      "name": "Log Session Cost",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [2860, 620],
+      "notes": "ADR-053 Block 6: log ONE priced session agent_runs row via Log Model Run (v1) (sole FX/PLN owner). Passes the pre-computed usd_cost from Build Final Output (token tiers + 0.08/hr runtime + web-search) so Log Model Run uses it verbatim (price_in/out left unset -> token-math fallback never fires). impact passed as cost_impact (null if not a valid agent_runs enum, e.g. __default__). Image-gen cost is NOT included here - it is logged separately per-image by Generate Images Parallel (no double-count). Side-branch off Build Final Output into Merge Tail so the single branch-free terminal (Final Return re-reads Merge Final) is preserved; onError=continueRegularOutput + alwaysOutputData so a cost-log failure never breaks the session return (Log Model Run itself WARNs on insert failure).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "ztSIUkp9ytbG1xpE",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "model_used": "={{ $json.model_used }}",
+            "impact": "={{ $json.cost_impact }}",
+            "input_tokens": "={{ $json.input_tokens }}",
+            "output_tokens": "={{ $json.output_tokens }}",
+            "usd_cost": "={{ $json.usd_cost }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
     }
   ],
   "connections": {
@@ -908,6 +944,11 @@
             "node": "Merge Final",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "Log Session Cost",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -992,6 +1033,17 @@
             "node": "Final Return",
             "type": "main",
             "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Session Cost": {
+      "main": [
+        [
+          {
+            "node": "Merge Tail",
+            "type": "main",
+            "index": 2
           }
         ]
       ]

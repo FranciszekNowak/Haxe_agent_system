@@ -381,6 +381,26 @@ caller-scoped Layer A/B model (§3) into the Managed Agents world.
 >   never fired), one priced `image_mcp` `agent_runs` row, clean alert channel; the health check trips on a
 >   deliberately-down path. **Rollback:** re-add the `generate_image` custom tool in `Build System` (and drop the
 >   `mcp_servers`/`mcp_toolset`) → the Block-4/5 client-side path re-activates. Findings: `block-5.3-findings.md`.
+> - **Block 6** — **output adapter + session cost + the image-bytes carrier** (resolves the 5.2/5.3 delivery
+>   gap). **(1) Carrier:** a private Supabase Storage bucket **`agent-output-images`**; `Image Tool Handler (v1)`
+>   now also persists each produced image's bytes there keyed by its Files-API `file_id` (the shared handler →
+>   both lanes populate it), because `purpose=agent` uploads are not downloadable and on the MCP path the bytes
+>   never return to n8n. **Migration 037** prunes the bucket at 24h via the Storage REST DELETE (mirrors the
+>   zip-inner purge). **(2) Output adapter:** new **`Render Agent Output (v1)`** (`vPbbN4UQj0LAAtiV`, active) —
+>   parses the agent's fenced ```json block-array, fetches produced-image bytes from the carrier, and emits the
+>   **`Post Reply (v1)` contract** `{rendered_delta, image_manifest}` reusing `Image Resolver (v1)`'s `mdToOps`
+>   renderer verbatim + Post Reply's existing `{type:image_ref}` upload path (Post Reply unchanged). **(3)
+>   Session cost:** `Execute Agent Session (v1)`'s `Build Final Output` computes the session `usd_cost` (was a
+>   stub) from `session.usage` token tiers + `0.08·duration_seconds/3600` runtime + web-search×$0.01 (price map
+>   haiku/sonnet/opus-4-8/fable-5; unknown model → Opus-4.8 floor + WARN), and a fail-soft `Log Session Cost`
+>   side-branch writes **one priced session `agent_runs` row** via `Log Model Run (v1)` — image cost is NOT
+>   included (the per-image `image_mcp` rows are logged independently by `Generate Images Parallel`, no
+>   double-count). **Agent output protocol corrected (`conventions_version` 2→3):** the agents now **call
+>   `generate_image` and reference the returned `file_id`** in `{type:image, mode:generate, ref:<file_id>}`
+>   (no `prompt` in the output block) — the bare-lane "emit a generate-with-prompt block" convention does not
+>   work on the managed lane (no downstream generator). Verified live end-to-end: the agent embedded a produced
+>   `file_id`, the carrier held the 1.23 MB PNG, the adapter resolved it to a deliverable base64
+>   `image_manifest`, one priced session row + one `image_mcp` row, clean alerts. Findings: `block-6-findings.md`.
 > Plan + per-block detail: `architecture/Build plans/adr-053-managed-agents/`.
 
 ---

@@ -146,3 +146,21 @@ plumbing and a self-hosted MCP host pattern.
   prompts transit it — record it in the processing decisions.
 - ADR-054's "reuses the image-tool session-stream listener" line is superseded; ADR-054's Google DWD tool
   remains a client-side custom tool on the retained loop.
+
+## Amendment (2026-06-19) — ADR-053 Block 6: the image-bytes delivery carrier
+
+The MCP path created a delivery gap: Files-API uploads are `purpose=agent` (not downloadable) and on the MCP
+path the produced base64 is consumed inside our endpoint and never returns to n8n — the harness/agent gets
+only the `file_id`. Block 6 resolves it with a **self-owned Supabase Storage carrier** (private bucket
+`agent-output-images`): `Image Tool Handler (v1)` persists each produced image's bytes there keyed by its
+Files-API `file_id` (in the shared handler, so both lanes populate it), and the new output adapter `Render
+Agent Output (v1)` resolves produced `file_id`s → bytes from there for ClickUp delivery. Migration 037 prunes
+the bucket at 24h (Storage REST DELETE, mirrors the zip-inner purge). **The carrier bucket is an additional
+GDPR processing surface** (agent-produced images may carry personal data) — record it in the Block-9
+processing decisions alongside the MCP endpoint.
+
+Block 6 also corrected the managed-lane **image-output protocol** (`conventions_version` 2→3): the agents
+must **call `generate_image` and reference the returned `file_id`** in `{type:image, mode:generate,
+ref:<file_id>}` (no `prompt` in the output block). The bare-lane "emit a generate-with-prompt block and the
+system generates it" convention does not work on the managed lane (no downstream generator); without this fix
+the agent generated images via MCP but referenced none of them. Verified live. Detail: `block-6-findings.md`.
