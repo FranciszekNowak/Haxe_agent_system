@@ -110,6 +110,8 @@ to surface n8n repo↔live drift loudly instead of relying on memory (see `docs/
 Large changes run as a sequence of self-contained **Blocks** against one durable **master plan**
 (the plan file). The master plan is the single source of truth across `/clear` boundaries.
 
+- **Verify assumptions first** Each plan should start with Block 0, that would verify the assumptions made during planning - especially whether capabilities the whole plan depends on
+ are actually accessible and working.
 - **Every block starts by reading the master plan in full.** Do not rely on prior-session memory.
 - **A block does one verifiable unit of work**, scoped to leave the system working and verified
   (its own Definition of Done) — never a half-cut-over path. Each block must have a Defintion of Done - if it doesn't, write it, and notify the user.
