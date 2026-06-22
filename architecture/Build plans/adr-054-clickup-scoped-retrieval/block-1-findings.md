@@ -82,8 +82,36 @@ the design:
 MCP returns no attachment content), so Option 3's discovery tools are incremental on a build we already owe,
 and it reuses the onboarding we built. The hosted-MCP "commodity" benefit (Option 1) shrinks to "ClickUp
 maintains ~50 tools we mostly don't need," at the cost of a second token + second consent. **Recommendation
-shifted to Option 3** (pending operator confirmation). Both options still need the Block-4 bearer-forwarding
-capability (does our self-hosted MCP read the injected per-user bearer — the deferred Variant-A probe).
+shifted to Option 3** (pending operator confirmation). **Bearer-forwarding probe (2026-06-22) — FAILED.** `scripts/ma-spike-bearer-forward.py` + a throwaway n8n
+MCP Server Trigger (`auth=none`) → Code Tool: the harness called the tool fine (`agent.mcp_tool_use` →
+`agent.mcp_tool_result`, so injection + connection work), but the tool could **not** read the incoming
+request — `$('MCP Server Trigger')` errors ("hasn't been executed"), `$json.headers` null, the SENTINEL
+bearer absent. **n8n's MCP Server Trigger accepts/validates the injected bearer but does NOT surface it to the
+workflow.** So a self-hosted **n8n** MCP cannot act as U — pure-n8n Variant A is dead (the earlier "doubtful"
+is now proven).
+
+### Net architecture after probes 1–3 (decision pending)
+
+The probes establish: the hosted ClickUp MCP needs **its own** OAuth token (works, 10y) and can't extract
+attachments; the MCP token is 401 on REST; and n8n can't read an injected bearer. Extraction therefore
+**must** run where n8n knows the caller — the **client-side tool loop** (the session loop knows
+`caller_user_id`, reads U's REST token from a store, calls ClickUp REST as U) — *not* a self-hosted MCP.
+Three coherent end-states remain:
+- **A — Hosted MCP discovery + client-side extraction.** Discovery via ClickUp's hosted MCP (per-user
+  MCP-OAuth token, in-harness, fast); extraction client-side (REST token from a Supabase mirror keyed by
+  `caller_user_id`). **Two tokens, two consents** at onboarding; richest discovery tools (ClickUp-maintained).
+- **B — Client-side everything, one REST token.** Both discovery *and* extraction are agent-driven
+  client-side tools; n8n reads the one classic REST token (the onboarding already built) from a Supabase
+  mirror by `caller_user_id` and calls ClickUp REST as U. **One token, one consent**; reuses the retained
+  client-side loop (ADR-053/055) and the onboarding webhook as-is; we implement a few discovery REST tools;
+  discovery pays client-side pause latency (acceptable for async task automation).
+- **C — Custom (non-n8n) MCP server.** A small self-hosted service that reads the injected bearer and proxies
+  ClickUp REST as U (discovery + extraction in-harness, one token). Cleanest agent model, but a real
+  build/host/maintain of an MCP server.
+
+**Leaning B** (simplest onboarding — one token/consent/store, reuses the retained loop and the onboarding
+already built; extraction is client-side regardless; the only loss vs A is ClickUp's pre-built tool surface
+and some discovery latency). Operator decision required before building.
 
 The "Operator-gated remainder" below (onboard 2 users + negative smoke) resumes **after** the onboarding rework
 (no point onboarding users on the old, MCP-rejected token type).
