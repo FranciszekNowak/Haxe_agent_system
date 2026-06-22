@@ -128,7 +128,21 @@ onboard/revoke, so there is no refresh cadence to drift (Block-0 already retired
 - [x] CSRF-state table (migration 041) applied.
 - [x] Hosted onboarding workflow built, validated, deployed, drift-clean; start (302) + callback-reject (400)
       paths verified live; local-loopback script retained as a fallback.
-- [ ] OAuth app registered; secrets seeded (`get_clickup_oauth_app()` returns real values). — operator-gated
-- [ ] ≥2 cross-department users onboarded (live Vault credential + mapping row each). — operator-gated
-- [ ] Reading back a credential proves it is the right user's. — operator-gated
+- [x] OAuth app registered; secrets seeded — `get_clickup_oauth_app()` returns both values (2026-06-22).
+- [x] **Full happy path proven end-to-end** by onboarding the first real user (Franciszek, clickup_user_id
+      2521617) through the hosted flow: consent → exchange → `GET /user` → per-user Vault
+      `vlt_011CcJFTSejGJnjA4tEBcM7o` → `static_bearer` credential `vcrd_01JmuSP6peYBrnUuvvhvd1Vv` keyed to
+      `mcp.clickup.com/mcp` → `user_clickup_credentials` row (status active). Alerts channel clean (0/0).
+- [x] Reading back the credential proves it is the right user's — `GET /v1/vaults/{vid}/credentials` returns
+      `static_bearer` / `mcp.clickup.com/mcp` / `display_name "clickup Franciszek Nowak (U)"`, **no token**
+      (write-only).
+- [ ] **≥2 cross-department users onboarded** — 1 of 2 done (Franciszek). The 2nd must be a *limited-permission*
+      user; the negative smoke needs a Marketing user + a Purchasing-only task, and the CEO account sees
+      everything so it cannot serve the negative subject. — operator-gated
 - [ ] Minimal 2-user negative smoke passes (Marketing token cannot read a Purchasing-only task via the MCP). — operator-gated
+
+> **Security note (2026-06-22):** during credential read-back, a malformed SSH/curl quoting attempt caused the
+> production `ANTHROPIC_API_KEY` to be echoed in plaintext into the working session output (not written to any
+> file or committed). Recommend rotating the Anthropic key (update `/opt/haxe-agents/.env` + the Supabase
+> Vault `anthropic_api_key` secret + restart the managed-lane containers). The corrected read-back (space-free
+> headers) succeeded without echoing the key.
