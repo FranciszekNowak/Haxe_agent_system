@@ -19,7 +19,9 @@ KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MA = "managed-agents-2026-04-01"
 ENV = "env_01T1PexJQheEUVnzVTKjyrz4"               # persistent prod environment (config.managed_agent_environment_id)
 MCP_URL = "https://mcp.clickup.com/mcp"
-VAULT = "vlt_011CcJFTSejGJnjA4tEBcM7o"             # Franciszek's per-user vault (holds his ClickUp static_bearer)
+# The per-user vault holding U's ClickUp MCP-OAuth static_bearer. Override per run with SPIKE_VAULT_ID
+# (the vault id printed by onboard-clickup-mcp-user.mjs). The old hardcoded default was deleted 2026-06-22.
+VAULT = os.environ.get("SPIKE_VAULT_ID", "")
 created = {"agent": None, "session": None}
 
 
@@ -59,6 +61,8 @@ def snippet(obj, n=400):
 def main():
     if not KEY:
         print("NO KEY"); return
+    if not VAULT:
+        print("NO VAULT — set SPIKE_VAULT_ID=<vault id from onboard-clickup-mcp-user.mjs>"); return
 
     st, agent = api("POST", "/v1/agents", {
         "name": "spike-clickup-mcp-054",

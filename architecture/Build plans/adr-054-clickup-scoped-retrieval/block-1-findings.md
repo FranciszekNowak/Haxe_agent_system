@@ -320,3 +320,34 @@ confirm before trusting it.
 `clickup_rest_token_2521617` secret if any + his old Anthropic vault `vlt_011CcJFTSejGJnjA4tEBcM7o`, then
 re-onboard via the start link — the Already-Connected guard blocks re-onboard while a row exists), onboard 1
 Marketing + 1 Purchasing user, run the negative smoke, confirm the Anthropic key rotation.
+
+## NEW BLOCKER (2026-06-22) — ClickUp MCP allowlists HTTPS redirect URIs; loopback is the interim path
+
+Re-onboarding Franciszek through the new webhook **failed at the first MCP step (DCR)** with HTTP 400
+`invalid_request` "Your integration is not currently allowlisted. … fill out the ClickUp MCP Server Allowlist
+Request Form at https://forms.clickup-stg.com/333/f/ad-3426753/WF90UVNDA3H2GXA6TD". The classic half completed
+first (the alert handler worked, one CRITICAL fired, no half-written row), so Franciszek's **classic REST token
+is now stored in Supabase** (`clickup_rest_token_2521617`); no mapping row, no vault (the row/vault are written
+in the mcp callback, which never ran). State after: `fran_rows=0, fran_rest_secret=1, state_rows=0` — clean.
+
+**Reproduced directly (the gate is ClickUp-side and redirect-URI-specific):** `POST mcp.clickup.com/oauth/register`
+with `redirect_uris:["https://agents.haxe.ai/webhook/clickup-mcp-callback"]` → **400 not-allowlisted**; the
+identical body with `redirect_uris:["http://localhost:8731/callback"]` → **200** + a `client_id`. So ClickUp
+gates **real HTTPS** redirect registration behind an allowlist form, but still permits the **OAuth loopback
+developer path** (which is exactly what `ma-spike-clickup-mcp-oauth.mjs` used to mint a working, MCP-accepted
+~10y token). The probe succeeded earlier because it used loopback; the production webhook fails because it uses
+the HTTPS webhook redirect.
+
+**Decision (operator, 2026-06-22): submit the allowlist form AND build all of Option A now, testing via the
+loopback path.** A loopback-minted MCP-OAuth token is identical in nature to a webhook-minted one, so it works
+for real discovery and production — the allowlist only blocks the *self-serve webhook UX*, not the token
+mechanism. Interim onboarding therefore uses **`scripts/onboard-clickup-mcp-user.mjs`** (NEW): loopback DCR +
+PKCE → MCP token → per-user Anthropic Vault `static_bearer` + mapping row (identity passed via
+`--clickup-user-id`, since the MCP token is 401 on REST). The blocked webhook stays the production path for the
+day ClickUp allowlists `https://agents.haxe.ai/webhook/clickup-mcp-callback` — at which point the self-serve
+link works with no code change. `scripts/ma-spike-clickup-mcp.py` now takes the vault via `SPIKE_VAULT_ID` to
+confirm live discovery against a freshly-onboarded vault.
+
+**Still unconfirmed (the one load-bearing assumption for everything downstream):** that a loopback-minted token
+performs a real *discovery tool call* (the probe only proved the MCP `initialize` handshake). First operator
+onboarding + `ma-spike-clickup-mcp.py` against the new vault settles it before Blocks 2-5 are built on it.
