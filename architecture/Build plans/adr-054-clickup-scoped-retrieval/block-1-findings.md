@@ -348,6 +348,18 @@ day ClickUp allowlists `https://agents.haxe.ai/webhook/clickup-mcp-callback` —
 link works with no code change. `scripts/ma-spike-clickup-mcp.py` now takes the vault via `SPIKE_VAULT_ID` to
 confirm live discovery against a freshly-onboarded vault.
 
-**Still unconfirmed (the one load-bearing assumption for everything downstream):** that a loopback-minted token
-performs a real *discovery tool call* (the probe only proved the MCP `initialize` handshake). First operator
-onboarding + `ma-spike-clickup-mcp.py` against the new vault settles it before Blocks 2-5 are built on it.
+**CONFIRMED LIVE (2026-06-22) — the linchpin positive test PASSES.** Franciszek was onboarded via
+`onboard-clickup-mcp-user.mjs` (loopback) → vault `vlt_011CcJU6Q9MVqpds2D1VLmLH` + credential
+`vcrd_01JN1vAUks2vLnJBAgzRvJWb` + mapping row (status active); his classic REST token is already in Supabase.
+`SPIKE_VAULT_ID=vlt_011CcJU6Q9MVqpds2D1VLmLH python3 ma-spike-clickup-mcp.py` on the VPS: a throwaway agent
+with that vault attached called **`clickup_get_workspace_hierarchy`** in-harness and returned his **real Spaces**
+(Sprzedaż-PL, Marketing, Zakupy/Kosztowcy/Produkcja, Logistyka-Magazyn, CRM i HelpDesk, … 17 total) — no auth
+error, `evaluated_permission: allow`, session idle in 11s, clean teardown. So a loopback-minted MCP-OAuth token
+performs real per-user discovery, the rotated Anthropic key in `.env` works (all calls 200), and the entire
+Option A discovery mechanism is proven end to end. The original Block-1 reshape blocker (the MCP rejecting our
+classic token) is fully retired. **Blocks 2-5 can now be built on a proven foundation.**
+
+**Remaining for Block-1 DoD (operator-gated):** onboard 1 Marketing + 1 Purchasing user via
+`onboard-clickup-mcp-user.mjs` (each consents as themselves), then the cross-department negative smoke — the CEO
+account sees all 17 spaces (incl. Marketing AND Zakupy/Purchasing) so it cannot serve as the negative subject;
+a limited-permission user is required. Block 5 remains the exhaustive gate.
