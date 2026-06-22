@@ -53,3 +53,13 @@ Key observation that frames the design: holding per-user identity at retrieval i
 - Effort: roughly one to two focused weeks. The distribution: the ClickUp OAuth plumbing (app registration, per-user consent, Vault wiring) and the Google DWD tool (admin setup, impersonation handler) are a few days each; the session-to-user binding is about a day; scope-correctness testing is several days and is the acceptance gate.
 - Ongoing: new ClickUp users need a one-time OAuth consent; DWD covers new Google users automatically. ClickUp token refresh is handled by the Vault; revocation is handled by us.
 - The Google DWD tool is the one piece of genuinely custom code in the context layer; everything else composes the Vault, the stock ClickUp MCP, and existing n8n patterns.
+
+## Block 0 capability-gate outcome (2026-06-22)
+
+The ClickUp-only build (operator-scoped 2026-06-22; Google deferred) ran its capability-gate spike. Full spec: `architecture/Build plans/adr-054-clickup-scoped-retrieval/block-0-findings.md`. The core decision **holds** — ClickUp operates a registerable hosted MCP (`https://mcp.clickup.com/mcp`) and a per-user OAuth token in the Anthropic Vault scopes it to the triggering user via `vault_ids`. Three reshapes refine, but do not overturn, the design:
+
+1. **Credential type is `static_bearer`, not Vault auto-refresh.** ClickUp OAuth tokens do not expire, issue no refresh token, and carry no granular scopes — so there is nothing to auto-refresh. This simplifies the lifecycle (onboard + revoke only) and removes the refresh dead-man's-switch this ADR's "ClickUp token refresh is handled by the Vault" line anticipated; revocation remains ours.
+2. **The discovery MCP must be locked read-only in software.** With no read-only OAuth scope, the `mcp_toolset` allowlists read/discovery tools and disables every write tool.
+3. **The as-U extraction (decision detail §4) is load-bearing, not optional.** The hosted MCP returns descriptions, comments, custom-field values, and Doc-page text but **not** attachment metadata or extracted content — so reaching any attachment requires the as-U REST `GET task` (Option 2), re-validated as the user at fetch time.
+
+One sequencing consequence: the MCP rejects ClickUp personal (`pk_`) tokens, and the workspace is greenfield (no OAuth app yet), so the live cross-department scope-correctness test (the §6 acceptance gate) cannot run until the OAuth 2.1 + PKCE app exists. A minimal two-user negative smoke is pulled into the OAuth-app block's tail; the exhaustive gate remains.

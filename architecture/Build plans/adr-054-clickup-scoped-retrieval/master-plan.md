@@ -107,6 +107,30 @@ ADR-053 managed lane, the Vault/`vault_ids` seam, the read-input + workspace-sea
   self-hosted read-input MCP endpoint in a way the handler can use as U's ClickUp token (Variant A)? If not,
   fall back to Variant B (Supabase mirror + sync guard).
 
+> **Block 0 resolution (2026-06-22 — see `block-0-findings.md`):**
+> - **Hosted MCP:** ✅ `https://mcp.clickup.com/mcp` (ClickUp-operated, public beta) — registerable as a stock
+>   `mcp_servers` `{type:"url"}` entry.
+> - **Vault credential type:** use **`static_bearer`** (already proven, ADR-053), **not** `mcp_oauth`/auto-refresh.
+>   ClickUp OAuth tokens **do not expire, issue no refresh token, and have no granular scopes** → no refresh to
+>   wire. **Drop** the refresh dead-man's-switch (Blocks 1/4) and the "Vault oauth credential" assumption below.
+> - **Read-only:** no read-only scope exists → the `mcp_toolset` must **allowlist read/discovery tools and disable
+>   every write tool** in software (new Block 3 item).
+> - **Tool surface / extraction:** the MCP returns descriptions/comments/custom-fields/Doc-pages but **no
+>   attachment metadata and no extracted content** → the as-U **REST** `GET task` extraction (Block 4) is
+>   **required** (Option 2 confirmed), not optional. Hook: swap `read-input` `r-get-task`'s credential to U's
+>   OAuth bearer (`Authorization: Bearer <token>`) in as-U mode.
+> - **Token-sourcing (#8):** prefer **Variant A** — two `static_bearer` creds holding the *same* non-expiring
+>   token (one keyed to `mcp.clickup.com/mcp`, one to our read-input MCP), **no Supabase mirror, no sync**.
+>   The one open item: whether n8n's MCP Server Trigger can *expose* the injected per-user bearer to the workflow
+>   (vs. validate-against-fixed like the image MCP) — a ~1h probe in Block 1/4. **Variant B** is now a *light*
+>   fallback (non-expiring token → mirror changes only on onboard/revoke, no churn).
+> - **Negative test:** the MCP **rejects `pk_` tokens** and we are greenfield → the **live** scoping+negative
+>   test cannot run until Block 1's OAuth app exists. Pull a **minimal 2-user negative smoke into Block 1's tail**;
+>   Block 5 stays the exhaustive gate.
+> - **OAuth flow:** OAuth **2.1 + PKCE**; authorize at `app.clickup.com/api?client_id=…&redirect_uri=…`,
+>   exchange at `POST api.clickup.com/api/v2/oauth/token` (`client_id,client_secret,code`); whole-Workspace
+>   consent, owner/admin-only app creation.
+
 ## Target architecture (under ADR-054, ClickUp-only)
 
 - **Per-user ClickUp credentials.** A ClickUp OAuth app (or personal-token scheme, per Block 0); each team
@@ -166,7 +190,7 @@ ADR-053 managed lane, the Vault/`vault_ids` seam, the read-input + workspace-sea
 
 | # | Block | State |
 |---|---|---|
-| 0 | Capability gate: prove the stock ClickUp MCP is registerable + per-user OAuth token in the Anthropic Vault scopes it to U in-harness; prove the negative (A's token can't read B-only data); the MCP tool surface; the credential lifecycle; **and the read-input-as-U token-sourcing variant (A self-hosted MCP per-call injection vs B Supabase mirror)** — **or** a clear "reshape" finding | ⬜ not started |
+| 0 | Capability gate: prove the stock ClickUp MCP is registerable + per-user OAuth token in the Anthropic Vault scopes it to U in-harness; prove the negative (A's token can't read B-only data); the MCP tool surface; the credential lifecycle; **and the read-input-as-U token-sourcing variant (A self-hosted MCP per-call injection vs B Supabase mirror)** — **or** a clear "reshape" finding | ✅ done 2026-06-22 — `block-0-findings.md`. Core design **holds** (hosted MCP `mcp.clickup.com/mcp` is registerable; per-user token in Vault scopes it). **3 reshapes:** (1) credential = **static_bearer** not auto-refresh (ClickUp tokens don't expire / no refresh token / no scopes → drop the refresh dead-man's-switch); (2) lock the `mcp_toolset` **read-only** in software (no read-only scope exists); (3) the as-U **REST** extraction is **load-bearing** (MCP returns no attachment metadata + no extracted content). Token-sourcing: prefer **Variant A** (two static_bearer creds, same non-expiring token, no mirror); B is a light fallback. **Live ClickUp scoping+negative is gated on Block 1's OAuth app** (MCP rejects `pk_`; greenfield) — pull a 2-user negative smoke into Block 1's tail. |
 | 1 | ClickUp OAuth app + per-user token storage: app registration (secrets via Vault getter), consent/token-exchange/refresh flow, `user_clickup_credentials` table (migration), per-user Vault credential(s) per the Block-0 variant, onboard ≥2 test users in different departments | ⬜ not started |
 | 2 | Session-to-user binding: `Execute Agent Session (v1)` resolves `caller_user_id →` the user's vault credential(s) and adds them to `vault_ids`; degrade + WARN for un-onboarded users | ⬜ not started |
 | 3 | Register the scoped ClickUp MCP (discovery) on the 4 agents (`Sync Agent Definitions`) + steer the `system`; retire the open-ended search-as-bot + `Check Space Member` software filter from Stage A; ClickUp MCP health dead-man's-switch | ⬜ not started |
