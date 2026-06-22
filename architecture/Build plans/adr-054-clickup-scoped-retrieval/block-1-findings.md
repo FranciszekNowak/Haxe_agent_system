@@ -1,10 +1,16 @@
 # ADR-054 Block 1 — OAuth app + per-user token storage (findings + status)
 
-**Status: BUILT + ONBOARDING PROVEN, BUT BLOCKED ON A CONFIRMED RESHAPE (2026-06-22).** The credential
-store, getters, hosted onboarding webhook, and the end-to-end onboarding of the first user all work (see
-below). **However, the positive MCP-acceptance test failed and surfaced a token-type reshape that blocks the
-whole approach as currently designed** — see the next section. Do not proceed to Blocks 2–5 until the
-token-acquisition path is corrected.
+**Status: FINISH BUILT + LIVE-VERIFIED (2026-06-22); only operator-gated onboarding remains.** The reshape
+below (the hosted MCP needs its own MCP-OAuth token, and the REST token belongs in Supabase) has been fully
+absorbed into the build: migrations 042 (REST-token Supabase-Vault store/getter) + 043 (MCP-phase state
+columns) are applied and round-trip-verified, and the onboarding webhook now **chains both consents** end to
+end (classic REST → store REST token in Supabase → DCR + PKCE → hosted-MCP consent → mint the MCP-OAuth token
++ per-user Anthropic Vault `static_bearer` + upsert the mapping row). Non-token paths are verified live (start
+302 with the real seeded client_id; classic + mcp callback rejects 400); the happy path is operator-gated
+(real browser consent). See "Block-1 FINISH build (Option A) — 2026-06-22" near the foot of this file. The
+remaining DoD items are operator actions: re-key Franciszek, onboard 1 Marketing + 1 Purchasing user, run the
+negative smoke, and confirm the Anthropic key rotation. **Historical note:** the original status here was
+"BLOCKED ON A CONFIRMED RESHAPE" — that reshape is now resolved and built.
 
 ## ⚠️ RESHAPE (2026-06-22) — the hosted ClickUp MCP rejects our OAuth-app token
 
@@ -256,3 +262,61 @@ onboard/revoke, so there is no refresh cadence to drift (Block-0 already retired
 > file or committed). Recommend rotating the Anthropic key (update `/opt/haxe-agents/.env` + the Supabase
 > Vault `anthropic_api_key` secret + restart the managed-lane containers). The corrected read-back (space-free
 > headers) succeeded without echoing the key.
+
+## Block-1 FINISH build (Option A) — 2026-06-22
+
+This session absorbed all three probe reshapes into the build and verified everything provable without a real
+browser consent.
+
+**Migrations (applied to `hkeslnosxibeuesxndnz`, round-trip-verified):**
+- **042 `clickup_rest_token_store`** — `set_clickup_rest_token(user_id, token)` (create-or-update) +
+  `get_clickup_rest_token(user_id)` over Supabase Vault (secret `clickup_rest_token_<user_id>`). SECURITY
+  DEFINER, EXECUTE → `service_role` only (anon/authenticated denied — verified). Round-trip proven: create
+  returns v1, update-in-place returns v2; test secret deleted. This is the **classic REST** token store
+  (identity + Block-4 as-U extraction); it is deliberately separate from the Anthropic Vault because the REST
+  token is 401 on the MCP and n8n can't read a token back out of the Anthropic Vault.
+- **043 `clickup_oauth_state_mcp_phase`** — adds `phase` (default `classic`, check `in ('classic','mcp')`),
+  `code_verifier`, `mcp_client_id`, `clickup_user_id`, `clickup_username`, `clickup_email` to
+  `clickup_oauth_state`. Property change vs 041: an `mcp`-phase row carries transient identity (< 15 min,
+  single-use) so the mcp callback can place the token without re-identifying (MCP token is 401 on REST). Still
+  **no token** is ever stored in the state table.
+
+**Onboarding webhook `ClickUp OAuth Onboarding (v1)` (`FKfVEyB62swT2FFN`) — reworked to chain two consents
+(31 nodes, valid, re-exported drift-clean):**
+- **Classic phase (consent 1):** `OAuth Start` → mint state → 302 to `app.clickup.com/api`. Callback →
+  consume `phase='classic'` state → exchange code (REST token) → `GET /user` (identity) → existing-row guard →
+  **Store REST Token** (`set_clickup_rest_token`) → **DCR Register** (`mcp.clickup.com/oauth/register`, public
+  client) → **Gen Verifier** (Crypto, hex 64) → **Hash Challenge** (Crypto SHA256→base64) → **Mint MCP State**
+  (`phase='mcp'`, carries verifier + DCR client_id + identity) → **302 to `mcp.clickup.com/oauth/authorize`**
+  (PKCE S256; `code_challenge` base64url'd inline by `split/join`, since the Crypto node has no base64url and
+  Code-node crypto is sandbox-blocked).
+- **MCP phase (consent 2):** new webhook **`/webhook/clickup-mcp-callback`** → consume `phase='mcp'` state
+  (returns verifier/client_id/identity) → **Exchange MCP Code** (form-urlencoded, `code_verifier`, no secret)
+  → Get Anthropic Key → **Create Vault** (per-user) → **Create Credential** (`static_bearer`, the **MCP-OAuth**
+  token, keyed `mcp.clickup.com/mcp`) → **Upsert Mapping Row** → success page. Credential-create failure rolls
+  back the empty vault. Every external/DB call routes failure → `Post Alert (v1)` CRITICAL + a user-facing
+  failure page; `saveDataSuccessExecution:"none"` keeps the tokens out of success execution data.
+
+**Live verification (non-token paths — the same ceiling Block 1 set; happy path is operator-gated):**
+- `GET /webhook/clickup-oauth-start` → **302** to `app.clickup.com` with the **real seeded** `client_id`
+  (`079T0…`) + CSRF state → confirms the OAuth app is registered + secrets seeded.
+- `GET /webhook/clickup-oauth-callback?state=bogus&code=fake` → **400** (classic `phase` consume + invalid
+  branch).
+- `GET /webhook/clickup-mcp-callback?state=bogus&code=fake` → **400** (the NEW mcp webhook + `phase='mcp'`
+  consume + invalid branch).
+- Onboarding fired **0 alerts**. (Unrelated CRITICALs at 13:33 from `Assemble Context`/`Context Gather` —
+  "Authorization failed - please check your credentials" — are a different subsystem; flagged for the operator
+  to check alongside the key rotation, not caused by this work.)
+
+**Silent-failure modes covered this session:** every external/DB step in both phases has an error output →
+CRITICAL alert + failure page (a failed onboarding never silently leaves a user un-scoped); the credential
+rollback prevents an orphan vault on a half-create; the REST-token setter is idempotent (re-onboard overwrites,
+no duplicate secret); the mapping write is an upsert (re-key safe). **Knowingly unverified until operator
+onboarding:** the live PKCE/MCP token exchange (`code_challenge`/`code_verifier` round-trip) — it 400s if the
+Crypto-node base64 differs from the verifier's true SHA256; inspect the first real onboarding execution to
+confirm before trusting it.
+
+**Operator-gated remainder (unchanged in substance):** re-key Franciszek (clear his row +
+`clickup_rest_token_2521617` secret if any + his old Anthropic vault `vlt_011CcJFTSejGJnjA4tEBcM7o`, then
+re-onboard via the start link — the Already-Connected guard blocks re-onboard while a row exists), onboard 1
+Marketing + 1 Purchasing user, run the negative smoke, confirm the Anthropic key rotation.

@@ -9,7 +9,7 @@
       "typeVersion": 2,
       "position": [0, 80],
       "webhookId": "clickup-oauth-start",
-      "notes": "ADR-054 Block 1. The single self-serve onboarding link: hand this URL (https://agents.haxe.ai/webhook/clickup-oauth-start) to a team member. They open it while logged into ClickUp as themselves; it mints a CSRF state and 302-redirects them to ClickUp consent. The token minted belongs to whoever is logged in here.",
+      "notes": "ADR-054 Block 1. The single self-serve onboarding link: hand https://agents.haxe.ai/webhook/clickup-oauth-start to a team member. They open it logged into ClickUp as themselves; it mints CSRF state and 302s to ClickUp's CLASSIC consent (phase 1 of 2). The whole chain mints TWO tokens (classic REST -> Supabase Vault; MCP-OAuth -> Anthropic Vault) under whoever is logged in here.",
       "parameters": {
         "httpMethod": "GET",
         "path": "clickup-oauth-start",
@@ -24,7 +24,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [220, 80],
-      "notes": "Inserts a single-use CSRF state (migration 041) and reads client_id from the Vault getter (migration 040). A DB failure here throws -> errorWorkflow CRITICAL (reactive layer).",
+      "notes": "Inserts a single-use CSRF state (phase defaults to 'classic', migration 041/043) and reads the CLASSIC app client_id from the Vault getter (migration 040). DB failure -> errorWorkflow CRITICAL.",
       "parameters": {
         "operation": "executeQuery",
         "query": "with s as (insert into clickup_oauth_state default values returning state) select s.state, (public.get_clickup_oauth_app()->>'client_id') as client_id from s;",
@@ -46,7 +46,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
       "position": [440, 80],
-      "notes": "302 to ClickUp's in-app consent screen (Block-0: authorize at app.clickup.com/api). redirect_uri is URL-encoded and must match the registered app redirect exactly.",
+      "notes": "302 to ClickUp's in-app CLASSIC consent (Block-0: authorize at app.clickup.com/api). redirect_uri must match the registered app redirect exactly.",
       "parameters": {
         "respondWith": "redirect",
         "redirectURL": "=https://app.clickup.com/api?client_id={{ $json.client_id }}&redirect_uri=https%3A%2F%2Fagents.haxe.ai%2Fwebhook%2Fclickup-oauth-callback&state={{ $json.state }}",
@@ -62,7 +62,7 @@
       "typeVersion": 2,
       "position": [0, 320],
       "webhookId": "clickup-oauth-callback",
-      "notes": "ClickUp redirects the user's browser here with ?code=&state= after consent. This is the registered redirect_uri: https://agents.haxe.ai/webhook/clickup-oauth-callback.",
+      "notes": "CLASSIC callback. ClickUp redirects here with ?code=&state= after consent 1. Registered redirect_uri: https://agents.haxe.ai/webhook/clickup-oauth-callback. Ends by chaining a 302 to the MCP consent (phase 2), NOT a success page.",
       "parameters": {
         "httpMethod": "GET",
         "path": "clickup-oauth-callback",
@@ -77,10 +77,10 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [220, 320],
-      "notes": "Single-use CSRF check: atomically deletes the matching fresh (<15 min) state and returns valid=true/false. A reused/expired/forged state -> valid=false -> the user is told to restart (benign, no alert).",
+      "notes": "Single-use CSRF check for the classic phase: atomically deletes the matching fresh (<15min) phase='classic' state. Reused/expired/forged -> valid=false -> restart page (benign).",
       "parameters": {
         "operation": "executeQuery",
-        "query": "with del as (delete from clickup_oauth_state where state = $1 and created_at > now() - interval '15 minutes' returning state) select exists(select 1 from del) as valid;",
+        "query": "with del as (delete from clickup_oauth_state where state = $1 and phase = 'classic' and created_at > now() - interval '15 minutes' returning state) select exists(select 1 from del) as valid;",
         "options": {
           "queryReplacement": "={{ [ $('OAuth Callback').first().json.query.state ] }}"
         }
@@ -130,7 +130,8 @@
       "name": "Respond Link Expired",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
-      "position": [660, 500],
+      "position": [440, 540],
+      "notes": "Shared 400 page for an invalid/expired state in EITHER phase (classic or mcp callback). Responds to whichever webhook started this execution.",
       "parameters": {
         "respondWith": "text",
         "responseBody": "<!doctype html><html lang=\"pl\"><head><meta charset=\"utf-8\"><title>Link wygasł</title></head><body style=\"font-family:sans-serif;max-width:32rem;margin:4rem auto;text-align:center\"><h2>Link wygasł lub jest nieprawidłowy</h2><p>Otwórz ponownie link onboardingu i zatwierdź dostęp w ciągu 15 minut.</p></body></html>",
@@ -153,7 +154,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [660, 320],
-      "notes": "Reads {client_id, client_secret} from the Vault getter (migration 040) for the token exchange. Throws if DB down -> errorWorkflow CRITICAL.",
+      "notes": "Reads {client_id, client_secret} (migration 040) for the CLASSIC token exchange. Throws if DB down -> errorWorkflow CRITICAL.",
       "parameters": {
         "operation": "executeQuery",
         "query": "select public.get_clickup_oauth_app() as app;",
@@ -175,7 +176,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [880, 320],
-      "notes": "Block-0 exchange: POST oauth/token with client_id+client_secret+code (query params; ClickUp's canonical form). Single-use code -> NO retry. Returns {access_token}. Failure -> user-facing failure page + CRITICAL alert.",
+      "notes": "CLASSIC exchange: POST oauth/token with client_id+client_secret+code (query params; ClickUp's canonical form). Single-use code -> NO retry. Returns {access_token} = the REST token. Failure -> failure page + CRITICAL.",
       "parameters": {
         "method": "POST",
         "url": "=https://api.clickup.com/api/v2/oauth/token?client_id={{ $json.app.client_id }}&client_secret={{ $json.app.client_secret }}&code={{ $('OAuth Callback').first().json.query.code }}",
@@ -191,7 +192,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1100, 320],
-      "notes": "Identifies the consenting user (id/username/email) so the mapping row is keyed correctly. ClickUp REST takes the raw token in Authorization (no 'Bearer ' prefix); the MCP uses Bearer separately.",
+      "notes": "Identifies the consenting user (id/username/email) with the REST token so the mapping row + carried mcp-phase identity are keyed correctly. ClickUp REST takes the raw token in Authorization (no 'Bearer ').",
       "parameters": {
         "method": "GET",
         "url": "https://api.clickup.com/api/v2/user",
@@ -217,7 +218,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [1320, 320],
-      "notes": "Orphan-vault guard: if a row already exists for this user, stop before creating a second per-user vault. alwaysOutputData so a no-row result still flows (empty item).",
+      "notes": "Re-onboard guard: if an active mapping row already exists, stop before re-running the consent chain. alwaysOutputData so a no-row result still flows (empty item). To RE-KEY a user, delete their row first.",
       "parameters": {
         "operation": "executeQuery",
         "query": "select clickup_user_id, status from user_clickup_credentials where clickup_user_id = $1;",
@@ -271,7 +272,7 @@
       "name": "Respond Already Connected",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
-      "position": [1760, 500],
+      "position": [1540, 540],
       "parameters": {
         "respondWith": "text",
         "responseBody": "<!doctype html><html lang=\"pl\"><head><meta charset=\"utf-8\"><title>Już połączono</title></head><body style=\"font-family:sans-serif;max-width:32rem;margin:4rem auto;text-align:center\"><h2>Twoje konto ClickUp jest już połączone ✓</h2><p>Nie musisz nic robić. Możesz zamknąć tę kartę.</p></body></html>",
@@ -289,12 +290,239 @@
       }
     },
     {
+      "id": "store-rest-token",
+      "name": "Store REST Token",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1760, 320],
+      "notes": "Option A: persist the CLASSIC REST token in Supabase Vault (migration 042 set_clickup_rest_token) for Block-4 as-U extraction. The REST token is 401 on the MCP, so it does NOT belong in the Anthropic Vault. Idempotent. Failure -> failure page + CRITICAL.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.set_clickup_rest_token($1, $2) as stored;",
+        "options": {
+          "queryReplacement": "={{ [ String($('Get ClickUp User').first().json.user.id), $('Exchange Code').first().json.access_token ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "dcr-register",
+      "name": "DCR Register",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 320],
+      "notes": "MCP phase: Dynamic Client Registration against the hosted MCP's OWN OAuth server (mcp.clickup.com/oauth/register). Public client; minimal RFC-7591 body (extra fields 400 - probe). Returns {client_id}. Failure -> failure page + CRITICAL.",
+      "parameters": {
+        "method": "POST",
+        "url": "https://mcp.clickup.com/oauth/register",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ redirect_uris: ['https://agents.haxe.ai/webhook/clickup-mcp-callback'], token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'] }) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "gen-verifier",
+      "name": "Gen Verifier",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [2200, 320],
+      "notes": "PKCE: generate a 64-char hex code_verifier (unreserved chars, valid 43-128 length). Code-node crypto is blocked on this CE (CLAUDE.md) -> use the native Crypto node.",
+      "parameters": {
+        "action": "generate",
+        "encodingType": "hex",
+        "stringLength": 64,
+        "dataPropertyName": "verifier"
+      }
+    },
+    {
+      "id": "hash-challenge",
+      "name": "Hash Challenge",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [2420, 320],
+      "notes": "PKCE: code_challenge = SHA256(verifier) as base64; the Redirect node converts base64 -> base64url with plain string ops (split/join), which the sandbox allows. S256 per the MCP metadata.",
+      "parameters": {
+        "action": "hash",
+        "type": "SHA256",
+        "value": "={{ $json.verifier }}",
+        "dataPropertyName": "challenge_b64",
+        "encoding": "base64",
+        "binaryData": false
+      }
+    },
+    {
+      "id": "mint-mcp-state",
+      "name": "Mint MCP State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [2640, 320],
+      "notes": "Persist the PKCE verifier + DCR client_id + the consenting user's identity on a phase='mcp' state row (migration 043), so the mcp callback can finish without re-identifying (MCP token is 401 on REST). Returns the new state. Failure -> failure page + CRITICAL.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into clickup_oauth_state (phase, code_verifier, mcp_client_id, clickup_user_id, clickup_username, clickup_email) values ('mcp', $1, $2, $3, $4, $5) returning state;",
+        "options": {
+          "queryReplacement": "={{ [ $('Gen Verifier').first().json.verifier, $('DCR Register').first().json.client_id, String($('Get ClickUp User').first().json.user.id), ($('Get ClickUp User').first().json.user.username || ''), ($('Get ClickUp User').first().json.user.email || '') ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "redirect-mcp",
+      "name": "Redirect to MCP",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [2860, 320],
+      "notes": "302 to the hosted MCP's consent (mcp.clickup.com/oauth/authorize), PKCE S256. challenge is base64url-encoded inline (split/join, no regex/crypto). resource indicator + scope=read (ClickUp grants read+write regardless; read-only is enforced by the Block-3 toolset allowlist). Ends the CLASSIC callback execution.",
+      "parameters": {
+        "respondWith": "redirect",
+        "redirectURL": "=https://mcp.clickup.com/oauth/authorize?response_type=code&client_id={{ $('DCR Register').first().json.client_id }}&redirect_uri=https%3A%2F%2Fagents.haxe.ai%2Fwebhook%2Fclickup-mcp-callback&code_challenge={{ $('Hash Challenge').first().json.challenge_b64.split('+').join('-').split('/').join('_').split('=').join('') }}&code_challenge_method=S256&scope=read&resource=https%3A%2F%2Fmcp.clickup.com&state={{ $json.state }}",
+        "options": {
+          "responseCode": 302
+        }
+      }
+    },
+    {
+      "id": "mcp-callback",
+      "name": "MCP Callback",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 760],
+      "webhookId": "clickup-mcp-callback",
+      "notes": "MCP phase callback. The hosted MCP redirects here with ?code=&state= after consent 2. This is the DCR-registered redirect_uri: https://agents.haxe.ai/webhook/clickup-mcp-callback.",
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "clickup-mcp-callback",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "consume-mcp-state",
+      "name": "Consume MCP State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [220, 760],
+      "notes": "Single-use CSRF check for the mcp phase: atomically deletes the matching fresh phase='mcp' state and RETURNS the carried verifier + client_id + identity for the exchange and the mapping row.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with del as (delete from clickup_oauth_state where state = $1 and phase = 'mcp' and created_at > now() - interval '15 minutes' returning code_verifier, mcp_client_id, clickup_user_id, clickup_username, clickup_email) select exists(select 1 from del) as valid, (select code_verifier from del) as code_verifier, (select mcp_client_id from del) as mcp_client_id, (select clickup_user_id from del) as clickup_user_id, (select clickup_username from del) as clickup_username, (select clickup_email from del) as clickup_email;",
+        "options": {
+          "queryReplacement": "={{ [ $('MCP Callback').first().json.query.state ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "mcp-state-valid",
+      "name": "MCP State Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [440, 760],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "m1",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "exchange-mcp-code",
+      "name": "Exchange MCP Code",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 760],
+      "notes": "MCP token exchange: POST mcp.clickup.com/oauth/token, form-urlencoded, public client (code_verifier, no secret). Single-use code -> NO retry. Returns {access_token} (~10y, store as static_bearer). Failure -> failure page + CRITICAL.",
+      "parameters": {
+        "method": "POST",
+        "url": "https://mcp.clickup.com/oauth/token",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "authorization_code"
+            },
+            {
+              "name": "code",
+              "value": "={{ $('MCP Callback').first().json.query.code }}"
+            },
+            {
+              "name": "redirect_uri",
+              "value": "https://agents.haxe.ai/webhook/clickup-mcp-callback"
+            },
+            {
+              "name": "client_id",
+              "value": "={{ $('Consume MCP State').first().json.mcp_client_id }}"
+            },
+            {
+              "name": "code_verifier",
+              "value": "={{ $('Consume MCP State').first().json.code_verifier }}"
+            },
+            {
+              "name": "resource",
+              "value": "https://mcp.clickup.com"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
       "id": "get-anthropic-key",
       "name": "Get Anthropic Key",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
-      "position": [1760, 320],
-      "notes": "Reads the Anthropic API key (migration 034) to create the per-user Vault + credential.",
+      "position": [880, 760],
+      "notes": "Reads the Anthropic API key (migration 034) to create the per-user Vault + credential for the MCP token.",
       "parameters": {
         "operation": "executeQuery",
         "query": "select public.get_anthropic_key() as key;",
@@ -315,8 +543,8 @@
       "name": "Create Vault",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1980, 320],
-      "notes": "One Anthropic Vault PER USER (Vault creds are keyed by mcp_server_url; same-URL creds 409 in one vault). Returns {id}. Failure -> failure page + CRITICAL alert.",
+      "position": [1100, 760],
+      "notes": "One Anthropic Vault PER USER (Vault creds are keyed by mcp_server_url; same-URL creds 409 in one vault). Identity comes from the carried mcp-state (Get ClickUp User did not run in this execution). Failure -> failure page + CRITICAL.",
       "parameters": {
         "method": "POST",
         "url": "https://api.anthropic.com/v1/vaults",
@@ -340,7 +568,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ display_name: 'clickup ' + ($('Get ClickUp User').first().json.user.username || $('Get ClickUp User').first().json.user.id) + ' (ADR-054)' }) }}",
+        "jsonBody": "={{ JSON.stringify({ display_name: 'clickup ' + ($('Consume MCP State').first().json.clickup_username || $('Consume MCP State').first().json.clickup_user_id) + ' (ADR-054)' }) }}",
         "options": {
           "timeout": 20000
         }
@@ -352,8 +580,8 @@
       "name": "Create Credential",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2200, 320],
-      "notes": "static_bearer credential holding U's ClickUp OAuth token, keyed to the hosted ClickUp MCP. This is the scope-enforcing credential. Returns {id}. Failure -> Rollback Vault (delete the empty vault) then CRITICAL alert.",
+      "position": [1320, 760],
+      "notes": "static_bearer credential holding U's MCP-OAuth token (NOT the REST token), keyed to the hosted ClickUp MCP. This is the discovery scope-enforcing credential. Failure -> Rollback Vault then CRITICAL.",
       "parameters": {
         "method": "POST",
         "url": "=https://api.anthropic.com/v1/vaults/{{ $json.id }}/credentials",
@@ -377,7 +605,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ display_name: 'clickup ' + ($('Get ClickUp User').first().json.user.username || $('Get ClickUp User').first().json.user.id), auth: { type: 'static_bearer', mcp_server_url: 'https://mcp.clickup.com/mcp', token: $('Exchange Code').first().json.access_token } }) }}",
+        "jsonBody": "={{ JSON.stringify({ display_name: 'clickup ' + ($('Consume MCP State').first().json.clickup_username || $('Consume MCP State').first().json.clickup_user_id) + ' (U)', auth: { type: 'static_bearer', mcp_server_url: 'https://mcp.clickup.com/mcp', token: $('Exchange MCP Code').first().json.access_token } }) }}",
         "options": {
           "timeout": 20000
         }
@@ -389,7 +617,7 @@
       "name": "Rollback Vault",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2200, 500],
+      "position": [1320, 960],
       "notes": "Best-effort rollback so a failed credential create does not leak an orphan vault. Proceeds to the alert regardless of delete success.",
       "parameters": {
         "method": "DELETE",
@@ -419,17 +647,17 @@
       "onError": "continueRegularOutput"
     },
     {
-      "id": "insert-row",
-      "name": "Insert Mapping Row",
+      "id": "upsert-row",
+      "name": "Upsert Mapping Row",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
-      "position": [2420, 320],
-      "notes": "Records the durable mapping (migration 039). The token is NOT stored here (write-only in the Vault). Failure -> failure page + CRITICAL alert (and a now-orphaned vault id is in the alert).",
+      "position": [1540, 760],
+      "notes": "Records the durable mapping (migration 039), vault_id + credential id keyed by mcp URL. Upsert so re-key/re-consent updates in place. No token stored here (write-only in the Vault). Failure -> failure page + CRITICAL (orphaned vault id in the alert).",
       "parameters": {
         "operation": "executeQuery",
-        "query": "insert into user_clickup_credentials (clickup_user_id, clickup_username, clickup_email, vault_id, vault_credential_ids) values ($1, $2, $3, $4, $5::jsonb);",
+        "query": "insert into user_clickup_credentials (clickup_user_id, clickup_username, clickup_email, vault_id, vault_credential_ids, status) values ($1, $2, $3, $4, $5::jsonb, 'active') on conflict (clickup_user_id) do update set clickup_username = excluded.clickup_username, clickup_email = excluded.clickup_email, vault_id = excluded.vault_id, vault_credential_ids = excluded.vault_credential_ids, status = 'active', updated_at = now(), revoked_at = null;",
         "options": {
-          "queryReplacement": "={{ [ String($('Get ClickUp User').first().json.user.id), ($('Get ClickUp User').first().json.user.username || ''), ($('Get ClickUp User').first().json.user.email || ''), $('Create Vault').first().json.id, JSON.stringify({ 'https://mcp.clickup.com/mcp': $('Create Credential').first().json.id }) ] }}"
+          "queryReplacement": "={{ [ String($('Consume MCP State').first().json.clickup_user_id), ($('Consume MCP State').first().json.clickup_username || ''), ($('Consume MCP State').first().json.clickup_email || ''), $('Create Vault').first().json.id, JSON.stringify({ 'https://mcp.clickup.com/mcp': $('Create Credential').first().json.id }) ] }}"
         }
       },
       "credentials": {
@@ -445,7 +673,7 @@
       "name": "Respond Success",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
-      "position": [2640, 320],
+      "position": [1760, 760],
       "parameters": {
         "respondWith": "text",
         "responseBody": "<!doctype html><html lang=\"pl\"><head><meta charset=\"utf-8\"><title>Połączono</title></head><body style=\"font-family:sans-serif;max-width:32rem;margin:4rem auto;text-align:center\"><h2>Połączono z ClickUp ✓</h2><p>Twoje konto jest teraz podłączone do asystenta. Możesz zamknąć tę kartę.</p></body></html>",
@@ -467,8 +695,8 @@
       "name": "Alert Onboarding Failed",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1320, 640],
-      "notes": "Centralized alert seam (ADR-025). Fed by the error outputs of every external call (exchange, user, vault, credential->rollback, insert). CRITICAL because a failed onboarding leaves a user un-scoped.",
+      "position": [1100, 1160],
+      "notes": "Centralized alert seam (ADR-025). Fed by the error outputs of every external/DB call in BOTH phases (classic: exchange/user/store-rest/dcr/mint-mcp; mcp: exchange-mcp/vault/credential->rollback/upsert). CRITICAL because a failed onboarding leaves a user un-scoped.",
       "parameters": {
         "source": "database",
         "workflowId": {
@@ -495,7 +723,7 @@
       "name": "Respond Failure",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
-      "position": [1540, 640],
+      "position": [1320, 1160],
       "parameters": {
         "respondWith": "text",
         "responseBody": "<!doctype html><html lang=\"pl\"><head><meta charset=\"utf-8\"><title>Błąd</title></head><body style=\"font-family:sans-serif;max-width:32rem;margin:4rem auto;text-align:center\"><h2>Wystąpił błąd podczas łączenia</h2><p>Operator został automatycznie powiadomiony. Spróbuj ponownie później lub zgłoś się do administratora.</p></body></html>",
@@ -645,7 +873,141 @@
         ],
         [
           {
+            "node": "Store REST Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store REST Token": {
+      "main": [
+        [
+          {
+            "node": "DCR Register",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Onboarding Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DCR Register": {
+      "main": [
+        [
+          {
+            "node": "Gen Verifier",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Onboarding Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gen Verifier": {
+      "main": [
+        [
+          {
+            "node": "Hash Challenge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash Challenge": {
+      "main": [
+        [
+          {
+            "node": "Mint MCP State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mint MCP State": {
+      "main": [
+        [
+          {
+            "node": "Redirect to MCP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Onboarding Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MCP Callback": {
+      "main": [
+        [
+          {
+            "node": "Consume MCP State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consume MCP State": {
+      "main": [
+        [
+          {
+            "node": "MCP State Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MCP State Valid?": {
+      "main": [
+        [
+          {
+            "node": "Exchange MCP Code",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Link Expired",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exchange MCP Code": {
+      "main": [
+        [
+          {
             "node": "Get Anthropic Key",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Onboarding Failed",
             "type": "main",
             "index": 0
           }
@@ -685,7 +1047,7 @@
       "main": [
         [
           {
-            "node": "Insert Mapping Row",
+            "node": "Upsert Mapping Row",
             "type": "main",
             "index": 0
           }
@@ -710,7 +1072,7 @@
         ]
       ]
     },
-    "Insert Mapping Row": {
+    "Upsert Mapping Row": {
       "main": [
         [
           {
@@ -745,6 +1107,7 @@
     "saveDataErrorExecution": "all",
     "saveDataSuccessExecution": "none",
     "saveManualExecutions": true,
-    "errorWorkflow": "81eplXMD1v5ONhzs"
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "binaryMode": "separate"
   }
 }

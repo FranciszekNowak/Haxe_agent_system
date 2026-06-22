@@ -50,8 +50,9 @@ senior-management intervention.
    is **retained as the dormant outage failover** (text + image; web research retired), selected by the
    `config.agent_lane` flag (`managed` | `bare`, default `managed`; an unreadable flag fails safe to
    `bare` + WARN). ADR-054 (per-user permission-scoped ClickUp retrieval within the lane) is accepted and
-   in progress — Block 1 scaffold (per-user credential store + onboarding) landed, not yet wired into
-   sessions. See ADR-053/054/055, and the live summary after §3.
+   in progress — locked to Option A (two-token per-user model: MCP-OAuth for discovery in the Anthropic
+   Vault, classic REST for extraction in Supabase Vault); Block 1 (store + chained two-consent onboarding)
+   landed, not yet wired into sessions. See ADR-053/054/055, and the live summary after §3.
 
 4. **Supabase (eu-west-1, Ireland)** — application database. Operational logs, threaded
    human feedback, process-change proposals, conversation session cache, email
@@ -244,16 +245,25 @@ image-MCP health monitor (`Image MCP Health Monitor (v1)`), all every 6h via `Po
 landed).** The direction: the managed agent gathers context **under the triggering user's identity, enforced
 by n8n at the executor** (scope lives in the credential, never trusted to the agent). This build is **scoped
 to ClickUp only** (operator decision 2026-06-22); Google (Drive + Gmail) is deferred to a follow-up ADR.
-Each member's own ClickUp OAuth access token is held as a `static_bearer` credential in a **per-user**
-Anthropic Vault (one vault per user — credentials are keyed by `mcp_server_url`, so same-URL creds can't
-share a vault), and a session attaches only the triggering user's vault, scoping every ClickUp MCP call to
-what that human can see. **Built so far (Block 1, not yet wired into sessions):** the credential store —
-`user_clickup_credentials` (migration 039, RLS-enabled), the OAuth app-secret getter `get_clickup_oauth_app()`
-(migration 040), a CSRF-state table (migration 041), and a **self-serve hosted consent flow** — the n8n
-workflow `ClickUp OAuth Onboarding (v1)` (`/webhook/clickup-oauth-start` → ClickUp consent →
-`/webhook/clickup-oauth-callback` exchanges the code, creates the per-user Vault credential, and records the
-mapping row). A local-loopback script (`scripts/onboard-clickup-user.mjs`) is retained as a dev fallback.
-ClickUp OAuth tokens don't expire (no refresh machinery). **Still bot-token-only in production** until session binding (Block 2),
+**Architecture locked to Option A** after three live probes proved the tokens are not interchangeable: ClickUp's
+hosted MCP is its *own* OAuth 2.1 server and rejects classic-app tokens; the MCP-issued token is in turn 401 on
+ClickUp REST; and n8n cannot read a harness-injected bearer. So each user holds **two** non-expiring ClickUp
+tokens from two OAuth servers: (1) an **MCP-OAuth token** for *discovery* (held as a `static_bearer` in a
+**per-user** Anthropic Vault — one vault per user, since credentials are keyed by `mcp_server_url`; a session
+attaches only the triggering user's vault, scoping every hosted-MCP call to what that human can see), and (2) a
+**classic REST token** for *identity + Block-4 as-U extraction* (the hosted MCP returns no attachment content),
+held in **Supabase Vault** and read back by `caller_user_id`. **Built (Block 1):** the credential store —
+`user_clickup_credentials` (migration 039, RLS-enabled); the OAuth app-secret getter `get_clickup_oauth_app()`
+(migration 040); a CSRF-state table extended for the second consent (migrations 041 + 043, the latter adding the
+PKCE verifier / DCR client_id / carried identity for the MCP phase); the REST-token store + getter
+`set_clickup_rest_token()` / `get_clickup_rest_token()` (migration 042, Supabase Vault); and a **self-serve
+hosted consent flow** — the n8n workflow `ClickUp OAuth Onboarding (v1)` (`FKfVEyB62swT2FFN`), which **chains
+both consents in one link**: `/webhook/clickup-oauth-start` → classic consent → `/webhook/clickup-oauth-callback`
+(exchange code, identify user via REST `GET /user`, store the REST token in Supabase Vault) → DCR + PKCE →
+hosted-MCP consent → `/webhook/clickup-mcp-callback` (exchange, create the per-user Anthropic Vault +
+`static_bearer` MCP credential, upsert the mapping row). A local-loopback script
+(`scripts/onboard-clickup-user.mjs`) is retained as a dev fallback. ClickUp OAuth tokens don't expire (no refresh
+machinery). **Still bot-token-only in production** until session binding (Block 2),
 scoped MCP discovery + retiring the `Check Space Member` software filter (Block 3), and the as-U REST
 extraction tool (Block 4) land. Scope-correctness testing (Block 5) is its mandatory acceptance gate.
 

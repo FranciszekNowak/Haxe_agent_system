@@ -12,12 +12,19 @@ Beta surface: Anthropic Managed Agents Vault (OAuth auto-refresh, `vault_ids` pe
 > token**, so the per-user credential is a **`static_bearer`** holding the access token — **not** the
 > "OAuth auto-refresh" credential the Beta-surface line and §2 describe, and there is no refresh machinery;
 > (2) the as-U **REST `GET task` extraction is load-bearing**, not optional, because the hosted ClickUp MCP
-> returns no attachment metadata/content. **Block 1 landed (scaffold, not yet wired into sessions):** the
+> returns no attachment metadata/content. **Block 1 BUILT + live-verified (not yet wired into sessions):** the
 > per-user credential store (`user_clickup_credentials`, migration 039; one Anthropic Vault per user), the
-> OAuth app-secret getter (`get_clickup_oauth_app()`, migration 040), a CSRF-state table (migration 041), and
-> a self-serve hosted consent flow (n8n `ClickUp OAuth Onboarding (v1)`: `/webhook/clickup-oauth-start` →
-> ClickUp consent → `/webhook/clickup-oauth-callback` mints the per-user Vault credential + mapping row); a
-> local-loopback script (`scripts/onboard-clickup-user.mjs`) is a dev fallback. **Reshape (2026-06-22):** the
+> OAuth app-secret getter (`get_clickup_oauth_app()`, migration 040), a CSRF-state table extended for the
+> second consent (migrations 041 + 043: PKCE verifier / DCR client_id / carried identity for the MCP phase),
+> the classic-REST-token store + getter in Supabase Vault (`set_clickup_rest_token()` /
+> `get_clickup_rest_token()`, migration 042), and a self-serve hosted consent flow that **chains both consents
+> in one link** (n8n `ClickUp OAuth Onboarding (v1)`, `FKfVEyB62swT2FFN`: `/webhook/clickup-oauth-start` →
+> classic consent → `/webhook/clickup-oauth-callback` exchanges the code, identifies the user via REST
+> `GET /user`, stores the REST token in Supabase Vault, then runs DCR + PKCE and 302s to the hosted-MCP
+> consent → `/webhook/clickup-mcp-callback` mints the MCP-OAuth token, creates the per-user Anthropic Vault +
+> `static_bearer` credential, and upserts the mapping row); a local-loopback script
+> (`scripts/onboard-clickup-user.mjs`) is a dev fallback. **Operator-gated remainder:** re-key Franciszek
+> through the new flow, onboard 1 Marketing + 1 Purchasing user, run the cross-department negative smoke. **Reshape (2026-06-22):** the
 > hosted ClickUp MCP authenticates only with tokens from its OWN OAuth server (MCP Authorization spec,
 > `mcp.clickup.com/oauth/*`, DCR + PKCE, public client), **not** our classic OAuth-app token — proven by
 > probe. **Option A (locked 2026-06-22):** discovery rides the hosted MCP, scoped per user by a **MCP-OAuth** token
@@ -87,3 +94,13 @@ The ClickUp-only build (operator-scoped 2026-06-22; Google deferred) ran its cap
 3. **The as-U extraction (decision detail §4) is load-bearing, not optional.** The hosted MCP returns descriptions, comments, custom-field values, and Doc-page text but **not** attachment metadata or extracted content — so reaching any attachment requires the as-U REST `GET task` (Option 2), re-validated as the user at fetch time.
 
 One sequencing consequence: the MCP rejects ClickUp personal (`pk_`) tokens, and the workspace is greenfield (no OAuth app yet), so the live cross-department scope-correctness test (the §6 acceptance gate) cannot run until the OAuth 2.1 + PKCE app exists. A minimal two-user negative smoke is pulled into the OAuth-app block's tail; the exhaustive gate remains.
+
+## Block 1 build outcome (2026-06-22) — two-token chained onboarding, live-verified
+
+Three live probes during Block 1 forced the locked Option A two-token model and reshaped the onboarding flow (scripts under `scripts/ma-spike-*`; full record in `block-1-findings.md`):
+
+1. The hosted MCP **rejects our classic OAuth-app token** — it is its own OAuth 2.1 server (`mcp.clickup.com/oauth/*`, DCR + PKCE, public client).
+2. A token minted via that MCP-OAuth flow **is accepted** by the MCP and lives ~10 years (store as `static_bearer`, no refresh) — but is **HTTP 401 on ClickUp REST**.
+3. n8n's MCP Server Trigger **cannot read** a harness-injected per-user bearer (validate-and-discard), so a self-hosted n8n MCP cannot act as the user.
+
+Net: **two tokens, two consents per user.** Discovery rides the hosted MCP via the **MCP-OAuth token** in the per-user Anthropic Vault (harness-injected per session). Extraction (Block 4) is a **client-side tool on the retained loop** reading the user's **classic REST token from Supabase Vault** by `caller_user_id` — *not* a self-hosted MCP. The onboarding webhook now **chains both consents in one link** (classic → store REST token in Supabase → DCR + PKCE → hosted-MCP consent → mint + place the discovery token). PKCE `code_challenge` is computed with the native **Crypto node** (Code-node crypto is sandbox-blocked on this instance): SHA256→base64, converted to base64url by plain string ops. Migrations 042 (REST-token store/getter) and 043 (MCP-phase state columns) added; non-token paths (start 302, both callback rejects) live-verified; the happy path is operator-gated (real browser consent). Reshape 2 (read-only by the `mcp_toolset` allowlist) **stands** — the MCP-OAuth flow ignores `scope=read` and grants `read write`.
