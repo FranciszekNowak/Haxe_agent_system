@@ -204,17 +204,18 @@ Re-key during the Block-1 finish. ⚠️ The Anthropic API key was exposed in-se
 > locked: discovery via ClickUp's hosted MCP (per-user MCP-OAuth token in the Anthropic Vault), extraction via
 > a client-side tool on the retained loop (per-user classic REST token in Supabase Vault). **Block 1 code is
 > BUILT + live-verified** (migrations 042/043; the onboarding webhook `ClickUp OAuth Onboarding (v1)` now chains
-> both consents). **Two things gate Block-1 DoD, both operator actions:** (1) **onboarding** — re-key Franciszek
-> (clear his `user_clickup_credentials` row + his REST secret + his old Anthropic vault `vlt_011CcJFTSejGJnjA4tEBcM7o`,
-> then re-onboard via `https://agents.haxe.ai/webhook/clickup-oauth-start`), then onboard 1 Marketing + 1
-> Purchasing user via the same link; (2) **Anthropic key rotation** confirmed. After the first real onboarding,
-> **inspect that execution** (`node scripts/inspect-execution.mjs <execId>`) to confirm the PKCE/MCP token
-> exchange succeeded (it 400s if the `code_challenge`/`code_verifier` mismatch — the one unproven path), then run
-> the **cross-department negative smoke** (reuse `scripts/ma-spike-clickup-mcp.py` with the Marketing user's real
-> MCP-OAuth token + a Purchasing-only task) to close Block 1. **Then start Block 2** (session-to-user binding in
-> `Execute Agent Session (v1)`: resolve `caller_user_id` → the user's MCP-OAuth Vault id, add it to `vault_ids`,
-> degrade + WARN if un-onboarded). Write back per block, commit, verify live per Definition of Done, route alerts
-> through `Post Alert (v1)`.
+> both consents). **The hosted-MCP self-serve webhook is allowlist-blocked** (ClickUp gates HTTPS redirect URIs;
+> form submitted, switches on once approved), so onboarding runs via the **loopback** interim tool
+> `scripts/onboard-clickup-mcp-user.mjs`. **Franciszek is onboarded and discovery is PROVEN LIVE** (his vault
+> `vlt_011CcJU6Q9MVqpds2D1VLmLH`; a throwaway agent returned his real 17 Spaces); the Anthropic key is rotated and
+> working. **Block-1 DoD remaining (operator, loopback consents):** onboard 1 Marketing + 1 Purchasing user via
+> `node scripts/onboard-clickup-mcp-user.mjs --clickup-user-id <id> --username <u> --email <e>` (each as
+> themselves), write their mapping rows, then run the **cross-department negative smoke**
+> (`SPIKE_VAULT_ID=<marketing vault> python3 scripts/ma-spike-clickup-mcp.py` on the VPS, then verify it CANNOT
+> reach a Purchasing-only task). **Then build Block 2** (session-to-user binding in `Execute Agent Session (v1)`:
+> resolve `caller_user_id` → the user's vault_id from `user_clickup_credentials`, add it to `vault_ids` alongside
+> `image_mcp_vault_id` in `Build Setup`; degrade + WARN if un-onboarded). Write back per block, commit, verify live
+> per Definition of Done, route alerts through `Post Alert (v1)`.
 
 ## Target architecture (under ADR-054, ClickUp-only) — ⚠️ superseded above (extraction is client-side, not a self-hosted MCP; discovery needs a separate MCP-OAuth token)
 
