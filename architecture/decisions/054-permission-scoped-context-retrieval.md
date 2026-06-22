@@ -14,8 +14,11 @@ Beta surface: Anthropic Managed Agents Vault (OAuth auto-refresh, `vault_ids` pe
 > (2) the as-U **REST `GET task` extraction is load-bearing**, not optional, because the hosted ClickUp MCP
 > returns no attachment metadata/content. **Block 1 landed (scaffold, not yet wired into sessions):** the
 > per-user credential store (`user_clickup_credentials`, migration 039; one Anthropic Vault per user), the
-> OAuth app-secret getter (`get_clickup_oauth_app()`, migration 040), and the consent/onboarding tool
-> (`scripts/onboard-clickup-user.mjs`). See `architecture/Build plans/adr-054-clickup-scoped-retrieval/`
+> OAuth app-secret getter (`get_clickup_oauth_app()`, migration 040), a CSRF-state table (migration 041), and
+> a self-serve hosted consent flow (n8n `ClickUp OAuth Onboarding (v1)`: `/webhook/clickup-oauth-start` →
+> ClickUp consent → `/webhook/clickup-oauth-callback` mints the per-user Vault credential + mapping row); a
+> local-loopback script (`scripts/onboard-clickup-user.mjs`) is a dev fallback. See
+> `architecture/Build plans/adr-054-clickup-scoped-retrieval/`
 > (`master-plan.md`, `block-0-findings.md`, `block-1-findings.md`).
 
 ## Decision (verdict first)

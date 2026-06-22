@@ -249,8 +249,11 @@ Anthropic Vault (one vault per user — credentials are keyed by `mcp_server_url
 share a vault), and a session attaches only the triggering user's vault, scoping every ClickUp MCP call to
 what that human can see. **Built so far (Block 1, not yet wired into sessions):** the credential store —
 `user_clickup_credentials` (migration 039, RLS-enabled), the OAuth app-secret getter `get_clickup_oauth_app()`
-(migration 040), and the consent/onboarding tool `scripts/onboard-clickup-user.mjs`. ClickUp OAuth tokens
-don't expire (no refresh machinery). **Still bot-token-only in production** until session binding (Block 2),
+(migration 040), a CSRF-state table (migration 041), and a **self-serve hosted consent flow** — the n8n
+workflow `ClickUp OAuth Onboarding (v1)` (`/webhook/clickup-oauth-start` → ClickUp consent →
+`/webhook/clickup-oauth-callback` exchanges the code, creates the per-user Vault credential, and records the
+mapping row). A local-loopback script (`scripts/onboard-clickup-user.mjs`) is retained as a dev fallback.
+ClickUp OAuth tokens don't expire (no refresh machinery). **Still bot-token-only in production** until session binding (Block 2),
 scoped MCP discovery + retiring the `Check Space Member` software filter (Block 3), and the as-U REST
 extraction tool (Block 4) land. Scope-correctness testing (Block 5) is its mandatory acceptance gate.
 

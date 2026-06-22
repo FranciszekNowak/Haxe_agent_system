@@ -1,0 +1,750 @@
+{
+  "name": "ClickUp OAuth Onboarding (v1)",
+  "active": false,
+  "nodes": [
+    {
+      "id": "oauth-start",
+      "name": "OAuth Start",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 80],
+      "webhookId": "clickup-oauth-start",
+      "notes": "ADR-054 Block 1. The single self-serve onboarding link: hand this URL (https://agents.haxe.ai/webhook/clickup-oauth-start) to a team member. They open it while logged into ClickUp as themselves; it mints a CSRF state and 302-redirects them to ClickUp consent. The token minted belongs to whoever is logged in here.",
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "clickup-oauth-start",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "mint-state",
+      "name": "Mint State + Client ID",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [220, 80],
+      "notes": "Inserts a single-use CSRF state (migration 041) and reads client_id from the Vault getter (migration 040). A DB failure here throws -> errorWorkflow CRITICAL (reactive layer).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with s as (insert into clickup_oauth_state default values returning state) select s.state, (public.get_clickup_oauth_app()->>'client_id') as client_id from s;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "redirect-clickup",
+      "name": "Redirect to ClickUp",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [440, 80],
+      "notes": "302 to ClickUp's in-app consent screen (Block-0: authorize at app.clickup.com/api). redirect_uri is URL-encoded and must match the registered app redirect exactly.",
+      "parameters": {
+        "respondWith": "redirect",
+        "redirectURL": "=https://app.clickup.com/api?client_id={{ $json.client_id }}&redirect_uri=https%3A%2F%2Fagents.haxe.ai%2Fwebhook%2Fclickup-oauth-callback&state={{ $json.state }}",
+        "options": {
+          "responseCode": 302
+        }
+      }
+    },
+    {
+      "id": "oauth-callback",
+      "name": "OAuth Callback",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 320],
+      "webhookId": "clickup-oauth-callback",
+      "notes": "ClickUp redirects the user's browser here with ?code=&state= after consent. This is the registered redirect_uri: https://agents.haxe.ai/webhook/clickup-oauth-callback.",
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "clickup-oauth-callback",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "consume-state",
+      "name": "Consume State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [220, 320],
+      "notes": "Single-use CSRF check: atomically deletes the matching fresh (<15 min) state and returns valid=true/false. A reused/expired/forged state -> valid=false -> the user is told to restart (benign, no alert).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with del as (delete from clickup_oauth_state where state = $1 and created_at > now() - interval '15 minutes' returning state) select exists(select 1 from del) as valid;",
+        "options": {
+          "queryReplacement": "={{ [ $('OAuth Callback').first().json.query.state ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "state-valid",
+      "name": "State Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [440, 320],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "v1",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "respond-expired",
+      "name": "Respond Link Expired",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [660, 500],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "<!doctype html><html lang=\"pl\"><head><meta charset=\"utf-8\"><title>Link wygasł</title></head><body style=\"font-family:sans-serif;max-width:32rem;margin:4rem auto;text-align:center\"><h2>Link wygasł lub jest nieprawidłowy</h2><p>Otwórz ponownie link onboardingu i zatwierdź dostęp w ciągu 15 minut.</p></body></html>",
+        "options": {
+          "responseCode": 400,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "get-app-creds",
+      "name": "Get App Creds",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [660, 320],
+      "notes": "Reads {client_id, client_secret} from the Vault getter (migration 040) for the token exchange. Throws if DB down -> errorWorkflow CRITICAL.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_clickup_oauth_app() as app;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "exchange-code",
+      "name": "Exchange Code",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 320],
+      "notes": "Block-0 exchange: POST oauth/token with client_id+client_secret+code (query params; ClickUp's canonical form). Single-use code -> NO retry. Returns {access_token}. Failure -> user-facing failure page + CRITICAL alert.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/oauth/token?client_id={{ $json.app.client_id }}&client_secret={{ $json.app.client_secret }}&code={{ $('OAuth Callback').first().json.query.code }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "get-user",
+      "name": "Get ClickUp User",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 320],
+      "notes": "Identifies the consenting user (id/username/email) so the mapping row is keyed correctly. ClickUp REST takes the raw token in Authorization (no 'Bearer ' prefix); the MCP uses Bearer separately.",
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.clickup.com/api/v2/user",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $json.access_token }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "existing-row",
+      "name": "Existing Row?",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1320, 320],
+      "notes": "Orphan-vault guard: if a row already exists for this user, stop before creating a second per-user vault. alwaysOutputData so a no-row result still flows (empty item).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select clickup_user_id, status from user_clickup_credentials where clickup_user_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [ String($('Get ClickUp User').first().json.user.id) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "already-connected",
+      "name": "Already Connected?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1540, 320],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "a1",
+              "leftValue": "={{ !!$json.clickup_user_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "respond-already",
+      "name": "Respond Already Connected",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [1760, 500],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "<!doctype html><html lang=\"pl\"><head><meta charset=\"utf-8\"><title>Już połączono</title></head><body style=\"font-family:sans-serif;max-width:32rem;margin:4rem auto;text-align:center\"><h2>Twoje konto ClickUp jest już połączone ✓</h2><p>Nie musisz nic robić. Możesz zamknąć tę kartę.</p></body></html>",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "get-anthropic-key",
+      "name": "Get Anthropic Key",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1760, 320],
+      "notes": "Reads the Anthropic API key (migration 034) to create the per-user Vault + credential.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_anthropic_key() as key;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "create-vault",
+      "name": "Create Vault",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1980, 320],
+      "notes": "One Anthropic Vault PER USER (Vault creds are keyed by mcp_server_url; same-URL creds 409 in one vault). Returns {id}. Failure -> failure page + CRITICAL alert.",
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/vaults",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $json.key }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "managed-agents-2026-04-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ display_name: 'clickup ' + ($('Get ClickUp User').first().json.user.username || $('Get ClickUp User').first().json.user.id) + ' (ADR-054)' }) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "create-credential",
+      "name": "Create Credential",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2200, 320],
+      "notes": "static_bearer credential holding U's ClickUp OAuth token, keyed to the hosted ClickUp MCP. This is the scope-enforcing credential. Returns {id}. Failure -> Rollback Vault (delete the empty vault) then CRITICAL alert.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.anthropic.com/v1/vaults/{{ $json.id }}/credentials",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $('Get Anthropic Key').first().json.key }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "managed-agents-2026-04-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ display_name: 'clickup ' + ($('Get ClickUp User').first().json.user.username || $('Get ClickUp User').first().json.user.id) + ' (U)', auth: { type: 'static_bearer', mcp_server_url: 'https://mcp.clickup.com/mcp', token: $('Exchange Code').first().json.access_token } }) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "rollback-vault",
+      "name": "Rollback Vault",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2200, 500],
+      "notes": "Best-effort rollback so a failed credential create does not leak an orphan vault. Proceeds to the alert regardless of delete success.",
+      "parameters": {
+        "method": "DELETE",
+        "url": "=https://api.anthropic.com/v1/vaults/{{ $('Create Vault').first().json.id }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $('Get Anthropic Key').first().json.key }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "managed-agents-2026-04-01"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "insert-row",
+      "name": "Insert Mapping Row",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [2420, 320],
+      "notes": "Records the durable mapping (migration 039). The token is NOT stored here (write-only in the Vault). Failure -> failure page + CRITICAL alert (and a now-orphaned vault id is in the alert).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into user_clickup_credentials (clickup_user_id, clickup_username, clickup_email, vault_id, vault_credential_ids) values ($1, $2, $3, $4, $5::jsonb);",
+        "options": {
+          "queryReplacement": "={{ [ String($('Get ClickUp User').first().json.user.id), ($('Get ClickUp User').first().json.user.username || ''), ($('Get ClickUp User').first().json.user.email || ''), $('Create Vault').first().json.id, JSON.stringify({ 'https://mcp.clickup.com/mcp': $('Create Credential').first().json.id }) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [2640, 320],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "<!doctype html><html lang=\"pl\"><head><meta charset=\"utf-8\"><title>Połączono</title></head><body style=\"font-family:sans-serif;max-width:32rem;margin:4rem auto;text-align:center\"><h2>Połączono z ClickUp ✓</h2><p>Twoje konto jest teraz podłączone do asystenta. Możesz zamknąć tę kartę.</p></body></html>",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "alert-failed",
+      "name": "Alert Onboarding Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1320, 640],
+      "notes": "Centralized alert seam (ADR-025). Fed by the error outputs of every external call (exchange, user, vault, credential->rollback, insert). CRITICAL because a failed onboarding leaves a user un-scoped.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "clickup-onboarding",
+            "message": "Onboarding ClickUp nie powiódł się dla użytkownika.",
+            "details": "=Etap onboardingu zwrócił błąd. Sprawdź ostatnią nieudaną egzekucję 'ClickUp OAuth Onboarding (v1)' w n8n. Błąd: {{ (($json.error && ($json.error.message || $json.error.description)) || 'patrz egzekucja') }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "respond-failure",
+      "name": "Respond Failure",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [1540, 640],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "<!doctype html><html lang=\"pl\"><head><meta charset=\"utf-8\"><title>Błąd</title></head><body style=\"font-family:sans-serif;max-width:32rem;margin:4rem auto;text-align:center\"><h2>Wystąpił błąd podczas łączenia</h2><p>Operator został automatycznie powiadomiony. Spróbuj ponownie później lub zgłoś się do administratora.</p></body></html>",
+        "options": {
+          "responseCode": 500,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "OAuth Start": {
+      "main": [
+        [
+          {
+            "node": "Mint State + Client ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mint State + Client ID": {
+      "main": [
+        [
+          {
+            "node": "Redirect to ClickUp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OAuth Callback": {
+      "main": [
+        [
+          {
+            "node": "Consume State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consume State": {
+      "main": [
+        [
+          {
+            "node": "State Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "State Valid?": {
+      "main": [
+        [
+          {
+            "node": "Get App Creds",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Link Expired",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get App Creds": {
+      "main": [
+        [
+          {
+            "node": "Exchange Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exchange Code": {
+      "main": [
+        [
+          {
+            "node": "Get ClickUp User",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Onboarding Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get ClickUp User": {
+      "main": [
+        [
+          {
+            "node": "Existing Row?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Onboarding Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Existing Row?": {
+      "main": [
+        [
+          {
+            "node": "Already Connected?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Connected?": {
+      "main": [
+        [
+          {
+            "node": "Respond Already Connected",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Anthropic Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Anthropic Key": {
+      "main": [
+        [
+          {
+            "node": "Create Vault",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Vault": {
+      "main": [
+        [
+          {
+            "node": "Create Credential",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Onboarding Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Credential": {
+      "main": [
+        [
+          {
+            "node": "Insert Mapping Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rollback Vault",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rollback Vault": {
+      "main": [
+        [
+          {
+            "node": "Alert Onboarding Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Mapping Row": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Onboarding Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Onboarding Failed": {
+      "main": [
+        [
+          {
+            "node": "Respond Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true,
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}

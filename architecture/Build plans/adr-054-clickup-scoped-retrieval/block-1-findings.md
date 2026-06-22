@@ -19,12 +19,35 @@ written up under "Operator-gated remainder" below.
   `{client_id:null, client_secret:null}` today because the secrets are not seeded yet). `SECURITY DEFINER`,
   `EXECUTE` granted only to `service_role`. Returns both app credentials as one jsonb (the token exchange
   needs both together). Exact mirror of `get_anthropic_key()` (034).
-- **`scripts/onboard-clickup-user.mjs`** (Node, syntax-checked). The consent path: localhost-callback
-  authorization-code flow → ClickUp token exchange → `GET /user` → create a per-user Anthropic Vault +
-  `static_bearer` credential keyed to `https://mcp.clickup.com/mcp` → record the `user_clickup_credentials`
-  row (via Supabase REST if `SUPABASE_*` set, else it prints the INSERT SQL). The access token is **never
-  printed or written to disk** (write-only in the Vault). Guards against re-onboarding an existing user
-  (would orphan a vault) and rolls back the vault if credential creation fails.
+- **Migration 041 — `clickup_oauth_state`** (applied + verified). Single-use, short-lived CSRF state for the
+  hosted consent flow; INSERTed at start, deleted at callback within a 15-minute window. No PII, no token;
+  prunable; RLS enabled, no policy.
+- **`ClickUp OAuth Onboarding (v1)`** — the **primary, self-serve consent flow** (live n8n workflow
+  `FKfVEyB62swT2FFN`, exported to `n8n/workflows/clickup-onboarding.json`, drift-clean). Two GET webhooks in
+  one workflow: **`/webhook/clickup-oauth-start`** (mint CSRF state + read `client_id` → 302 to ClickUp
+  consent) and **`/webhook/clickup-oauth-callback`** (consume+verify state → exchange code→token → `GET
+  /user` → create a per-user Anthropic Vault + `static_bearer` credential keyed to `mcp.clickup.com/mcp` →
+  insert the `user_clickup_credentials` row → show a "Połączono ✓" page). Onboarding is then "send the person
+  the start link; they approve as themselves; done" — no script, no Node, no key on their machine, and the
+  identity is correct by construction (each person consents in their own browser). Built with normal nodes
+  (no Code nodes); every external call (exchange, user, vault, credential→rollback, insert) routes failures
+  to **`Post Alert (v1)`** (CRITICAL) + a user-facing failure page; `errorWorkflow` set for throws;
+  `saveDataSuccessExecution:"none"` so the OAuth token is **not** persisted in execution data on success.
+- **`scripts/onboard-clickup-user.mjs`** — retained as a **dev/CLI fallback** (localhost-loopback variant of
+  the same logic) for debugging or onboarding without the webhook; not the primary path.
+
+### Live wiring verification (what was provable without the OAuth app)
+
+The OAuth happy path (exchange → vault → credential → success) needs the registered app + seeded secrets, so
+it is operator-gated. Everything around it was exercised live against the deployed workflow:
+- **`GET /webhook/clickup-oauth-start`** → `HTTP 302` with
+  `Location: https://app.clickup.com/api?client_id=&redirect_uri=…clickup-oauth-callback&state=<uuid>` —
+  confirms the start webhook, the Vault-getter read (`client_id` empty as expected pre-seed), the CSRF-state
+  mint, and the redirect construction.
+- **`GET /webhook/clickup-oauth-callback?state=bogus&code=fake`** → `HTTP 400` + the Polish "link expired"
+  HTML page — confirms the callback webhook query parsing, the consume-state query (unknown state →
+  `valid=false`), the `State Valid?` false branch, and the HTML responder.
+- Test state rows cleaned up afterward; workflow validates (`valid:true`, 0 errors) and is drift-clean.
 
 ### Design decisions locked here (with rationale)
 
@@ -87,12 +110,13 @@ onboard/revoke, so there is no refresh cadence to drift (Block-0 already retired
 
 ## Operator-gated remainder (PENDING — blocks Block-1 completion)
 
-1. **Register the ClickUp OAuth app** (Franciszek, Workspace owner/admin). See the handoff for the exact
-   field values. Output needed: `client_id`, `client_secret`. Redirect URL: `http://localhost:8723/callback`.
+1. **Register the ClickUp OAuth app** (Franciszek, Workspace owner/admin). Redirect URL (must match exactly):
+   **`https://agents.haxe.ai/webhook/clickup-oauth-callback`**. Output needed: `client_id`, `client_secret`.
 2. **Seed the secrets** into the Vault (one-time), then `get_clickup_oauth_app()` returns them:
    `select vault.create_secret('<id>','clickup_oauth_client_id',...);` and `...'<secret>','clickup_oauth_client_secret',...`.
-3. **Onboard two cross-department users** (one Marketing, one Purchasing) via `onboard-clickup-user.mjs` →
-   each gets a live per-user Vault + credential + a `user_clickup_credentials` row.
+3. **Onboard two cross-department users** (one Marketing, one Purchasing): each opens the self-serve link
+   **`https://agents.haxe.ai/webhook/clickup-oauth-start`** in their own browser (logged in as themselves) and
+   approves → each gets a live per-user Vault + credential + a `user_clickup_credentials` row.
 4. **Minimal negative smoke** (pulled forward per Block-0): the Marketing user's token **cannot** retrieve a
    Purchasing-only task via the scoped MCP (de-risks the *inferred* per-user MCP guarantee before Block 5's
    exhaustive gate).
@@ -101,7 +125,9 @@ onboard/revoke, so there is no refresh cadence to drift (Block-0 already retired
 
 - [x] `user_clickup_credentials` migration applied (table live, RLS enabled).
 - [x] App-secret getter applied (callable; returns nulls until seeded).
-- [x] Onboarding consent/exchange script built + syntax-checked.
+- [x] CSRF-state table (migration 041) applied.
+- [x] Hosted onboarding workflow built, validated, deployed, drift-clean; start (302) + callback-reject (400)
+      paths verified live; local-loopback script retained as a fallback.
 - [ ] OAuth app registered; secrets seeded (`get_clickup_oauth_app()` returns real values). — operator-gated
 - [ ] ≥2 cross-department users onboarded (live Vault credential + mapping row each). — operator-gated
 - [ ] Reading back a credential proves it is the right user's. — operator-gated
