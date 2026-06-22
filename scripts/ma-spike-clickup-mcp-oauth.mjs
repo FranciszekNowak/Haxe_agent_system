@@ -29,7 +29,7 @@
 
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { exec } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
 const argv = process.argv.slice(2);
 const flag = (n) => argv.includes(n);
@@ -57,8 +57,16 @@ async function jf(label, url, init) {
 const aHdr = { 'x-api-key': KEY, 'anthropic-version': '2023-06-01', 'anthropic-beta': MA, 'content-type': 'application/json' };
 function openBrowser(url) {
   if (flag('--no-open')) return;
-  const c = process.platform === 'win32' ? `start "" "${url}"` : process.platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`;
-  exec(c, () => {});
+  // Open WITHOUT cmd.exe so the URL's '&' chars don't trip cmd's `start` parser
+  // ("The filename, directory name, or volume label syntax is incorrect"). rundll32 / open /
+  // xdg-open each take the URL as a single argv element — no shell parsing. Best-effort only;
+  // the URL is also printed for manual paste.
+  try {
+    const [cmd, args] = process.platform === 'win32'
+      ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
+      : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+    spawn(cmd, args, { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
+  } catch { /* ignore — paste the printed URL manually */ }
 }
 
 function getCode(authUrl, state) {
