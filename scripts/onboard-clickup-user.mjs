@@ -179,7 +179,7 @@ function getAuthCode() {
     const cred = await jsonFetch('create credential', `${ANTHROPIC}/v1/vaults/${vaultId}/credentials`, {
       method: 'POST', headers: aHdr,
       body: JSON.stringify({
-        display_name: `clickup ${username || clickupUserId} (U)`,
+        display_name: `clickup ${username || clickupUserId}`,
         auth: { type: 'static_bearer', mcp_server_url: MCP_URL, token: accessToken },
       }),
     });
