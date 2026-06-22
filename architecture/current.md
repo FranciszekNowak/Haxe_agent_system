@@ -229,11 +229,11 @@ Images Parallel (v1)`); the client-side `generate_image` custom tool is the docu
 image generation (MCP → carrier → inline ClickUp image), image input / vision (Files API), and
 office-document output (xlsx via a Skill → ClickUp attachment, attachment id recorded on `agent_runs`). One
 session `agent_runs` cost row per run (plus per-image rows); `Log Model Run (v1)` keeps sole FX/PLN
-ownership. The output adapter repairs models' common JSON defect (unescaped control characters inside the
-block-array's string values) before any plain-text fallback. **Known limitation (fast-follow):**
-`embed_input` — re-displaying an image already attached to the task — is unsupported on the managed lane
-(the agent references a ClickUp filename, not a Files-API `file_id`) → it renders "[Obraz niedostępny]" +
-a WARN; the vision *description* path works.
+ownership. The output adapter repairs models' common JSON defects (unescaped control characters **and**
+unescaped double-quotes inside the block-array's string values — the latter via a structural lookahead)
+before any plain-text fallback, and supports `embed_input` (re-embedding an image already attached to the
+task) by resolving the agent's attachment ref against the input image refs into a `{type:attachment}` op
+inline — no re-upload, mirroring the bare lane's `Image Resolver`.
 
 **Reliability:** an auth dead-man's-switch (`Managed Agents Auth Monitor (v1)`), the CU-rules sync +
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the

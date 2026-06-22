@@ -548,7 +548,8 @@
           "mappingMode": "defineBelow",
           "value": {
             "output_message": "={{ $('Call Execute Agent Session').first().json.output_message }}",
-            "clickup_task_id": "={{ $('Call Execute Agent Session').first().json.clickup_task_id }}"
+            "clickup_task_id": "={{ $('Call Execute Agent Session').first().json.clickup_task_id }}",
+            "input_image_refs_json": "={{ $('Call Assemble Context').first().json.image_blocks_json || '[]' }}"
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,

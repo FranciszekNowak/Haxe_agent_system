@@ -47,15 +47,30 @@ The repair only runs on the already-failing path, so payloads that parse strictl
 (exec 3100): the vision response now renders as **structured ClickUp ops** (header, bold, bullets) instead of
 a raw-JSON dump. Pushed live via `import-workflow.mjs`, re-exported, drift clean.
 
-## Known limitation carried forward (fast-follow, not a blocker)
+## embed_input — fixed (follow-up the same day, 2026-06-22)
 
-`embed_input` — re-embedding an image **already attached to the task** back into the reply — is **not
-supported on the managed lane.** The agent emits `{type:image, mode:embed_input, ref:"<clickup-filename>.png"}`
-(a ClickUp attachment filename, not a Files-API `file_id`), so the adapter cannot fetch the bytes → it renders
-`[Obraz niedostępny]` and fires an `output-adapter/image-ref-unrecognized` WARN. The vision **description**
-works fully (the agent sees and describes the input image); only re-displaying the already-attached image is
-unsupported. A future fix would resolve the input image's bytes via `agent_input_file_map` (the signed URL we
-already store) and deliver it like a generated image. Documented; left for a follow-up.
+The first cut of Block 9 left `embed_input` (re-embedding an image **already attached to the task**) as a
+known limitation: the agent emits `{type:image, mode:embed_input, ref:"<clickup-attachment-id>"}` (the
+existing attachment, not a Files-API `file_id`), and `Render Agent Output (v1)` only handled the produced-image
+(`file_` → carrier) path, so it rendered `[Obraz niedostępny]` + a WARN. **Now fixed** by porting the bare
+lane's embed branch (`Image Resolver (v1)`) into the managed adapter:
+
+- `Render Agent Output (v1)` gains an `input_image_refs_json` input (the Read Input image refs, carrying
+  `source_ref` = attachment id and `ref` = url). The orchestrator's `Call Render Agent Output` passes
+  `image_blocks_json` (Stage A) into it.
+- `Parse Blocks` builds a lookup map keyed by `source_ref` + `ref`; an image block whose ref is **not** a
+  `file_` id is resolved against it → an `embed` assembly entry `{att_id, att_url}`; a miss → `embed_failed`
+  + a WARN. `Assemble` renders an `embed` as a `{type:attachment, attachment:{id, url}}` op inline — the
+  **existing** ClickUp attachment, **no re-upload** — exactly as the bare lane does.
+
+While testing this, a **second, more common JSON defect** surfaced that the Block-9 control-char repair did
+not cover: the agent wrote **unescaped double-quotes inside string values** (Polish `„X"` mixing a curly
+opener with an ASCII closer), so `JSON.parse` failed and the embed path was never reached. The adapter's
+repair was upgraded to also escape unescaped inner quotes via a structural lookahead (a `"` inside a string
+is the real closer only if the next non-whitespace char is `,`/`}`/`]`/`:`/end; otherwise it is literal prose
+→ escaped). A misfire (a literal quote right before a comma) merely falls through to the plain-text fallback,
+so it never regresses. **Verified live (exec 3152):** the agent's vision answer parsed cleanly and the
+existing product image rendered **inline** via `{type:attachment}` (caption included), zero warnings.
 
 ## Live DoD matrix (all delivered to ClickUp; 0 CRITICAL; every WARN explained)
 

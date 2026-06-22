@@ -106,7 +106,13 @@ control characters inside the JSON string values**, which makes `JSON.parse` thr
 fallback then dumped the *entire raw payload* (fence and all) into the ClickUp comment — the user saw raw
 JSON instead of a rendered answer. `Render Agent Output (v1)` now repairs unescaped control characters inside
 JSON string literals and re-parses before falling back; only a genuinely non-JSON payload (e.g. the agent
-answered in plain prose) falls through to plain-text rendering. **Known limitation (fast-follow):**
-`embed_input` (re-embedding an image already attached to the task) is unsupported on the managed lane — the
-agent references a ClickUp attachment filename rather than a Files-API `file_id`, so the adapter renders
-"[Obraz niedostępny]" + a WARN; the vision *description* path is unaffected.
+answered in plain prose) falls through to plain-text rendering. The repair was extended the same day to also
+escape **unescaped double-quotes** inside string values (common Polish `„X"` mixing), via a structural
+lookahead, after that defect was found to break parsing in the same way.
+
+`embed_input` (re-embedding an image already attached to the task) is now **supported** on the managed lane
+(initially deferred, fixed the same day): `Render Agent Output (v1)` takes the input image refs
+(`input_image_refs_json`, from Stage A), resolves the agent's attachment ref against them, and emits a
+`{type:attachment, attachment:{id, url}}` op referencing the **existing** attachment inline — no re-upload —
+porting the bare lane's `Image Resolver` embed branch. Verified live (the existing product image rendered
+inline in the ClickUp comment).
