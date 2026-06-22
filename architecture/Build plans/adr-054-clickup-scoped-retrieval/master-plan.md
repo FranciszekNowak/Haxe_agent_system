@@ -131,7 +131,84 @@ ADR-053 managed lane, the Vault/`vault_ids` seam, the read-input + workspace-sea
 >   exchange at `POST api.clickup.com/api/v2/oauth/token` (`client_id,client_secret,code`); whole-Workspace
 >   consent, owner/admin-only app creation.
 
-## Target architecture (under ADR-054, ClickUp-only)
+## ⭐ ARCHITECTURE LOCKED — Option A (2026-06-22) — READ THIS FIRST; supersedes "Target architecture" + "The blocks" below where they conflict
+
+Three live probes during Block 1 reshaped the design. This section is **authoritative**.
+
+**What the probes settled (scripts preserved under `scripts/`):**
+1. `ma-spike-clickup-mcp.py` — the hosted ClickUp MCP (`mcp.clickup.com/mcp`) **rejects** our classic OAuth-app
+   token. It is its OWN OAuth 2.1 server (MCP Authorization spec 2025-06-18; `mcp.clickup.com/oauth/{authorize,token,register}`, DCR + PKCE, public client).
+2. `ma-spike-clickup-mcp-oauth.mjs` — a token minted via that MCP OAuth flow **is accepted** by the MCP
+   (`mcp_oauth_validate` → valid) and lives **~10 years** (`expires_in 315360000` → store as `static_bearer`,
+   no refresh). BUT it is **HTTP 401 on ClickUp REST**, and `scope=read` is ignored (returns `read write`).
+3. `ma-spike-bearer-forward.py` — n8n's MCP Server Trigger **cannot read** an injected per-user bearer
+   (validate-and-discard), so a self-hosted **n8n** MCP cannot act as the user.
+
+**Final design (Option A — buy commodity discovery, build only the custom extraction):**
+- **Discovery = ClickUp's hosted MCP**, in-harness, scoped per user by a **MCP-OAuth token** (one per user, in
+  the **Anthropic Vault**, harness-injected). Zero discovery-tool maintenance; grows with ClickUp. Read-only
+  enforced by the `mcp_toolset` allowlist (no read-only OAuth scope exists).
+- **Extraction = a client-side tool on the RETAINED agent loop** (NOT a self-hosted MCP). When the agent calls
+  it, the session pauses to `Execute Agent Session`, which knows `caller_user_id`, reads that user's **classic
+  REST OAuth token** from **Supabase Vault**, and runs the existing `read-input` pipeline (attachment fetch +
+  Docling + vision) **as U**. This is the only place that can act as U for REST (n8n can't read the injected
+  bearer; the hosted MCP returns no attachment content). "Extraction" = turning a task's file attachments into
+  text/vision; "discovery" = finding/reading task text — different problems.
+- **Two tokens per user (irreducible):** (1) MCP-OAuth token → Anthropic Vault (discovery); (2) classic REST
+  OAuth token → Supabase Vault (identity at onboarding + extraction). Two different ClickUp OAuth servers, each
+  rejects the other's endpoint → **two consents** at onboarding (one-time, chained in one onboarding flow).
+  Both tokens are effectively non-expiring → no refresh machinery.
+- **Session binding:** at `sessions.create`, attach the user's MCP-OAuth Vault credential via `vault_ids`
+  (discovery scope). The REST token is looked up by the session loop from Supabase by `caller_user_id` (NOT via
+  `vault_ids`).
+
+**Already done in Block 1 (keep):** migrations 039/040/041 (applied); the hosted onboarding webhook
+`ClickUp OAuth Onboarding (v1)` (`FKfVEyB62swT2FFN`) does the **classic REST flow** and is verified end-to-end
+(Franciszek onboarded; alerts clean). ⚠️ His existing Vault credential `vcrd_01JmuSP6peYBrnUuvvhvd1Vv` (vault
+`vlt_011CcJFTSejGJnjA4tEBcM7o`) holds the REST token keyed to `mcp.clickup.com/mcp` — **wrong placement**: the
+REST token belongs in Supabase (extraction), and his Vault should instead hold a freshly-minted MCP-OAuth token.
+Re-key during the Block-1 finish. ⚠️ The Anthropic API key was exposed in-session twice — **rotate it** (Console
++ Supabase Vault `anthropic_api_key` + VPS `.env`) if not already done.
+
+**Revised block sequence (supersedes the table + "The blocks" below):**
+- **Block 1 (FINISH):** (a) add a second, chained **MCP-OAuth flow** to the onboarding webhook (DCR + PKCE vs
+  `mcp.clickup.com/oauth/*`, public client; minimal RFC-7591 register body — extra fields 400) → store the
+  MCP token as a `static_bearer` in the user's Anthropic Vault keyed to `mcp.clickup.com/mcp`; (b) store the
+  REST token in **Supabase Vault** + a `SECURITY DEFINER` getter `get_clickup_rest_token(clickup_user_id)`
+  (new append-only migration); (c) re-key Franciszek's existing credential accordingly; (d) onboard **1
+  Marketing + 1 Purchasing** user (both tokens each); (e) **minimal negative smoke** — the Marketing user's
+  **MCP-OAuth** token cannot see a Purchasing-only task via the hosted MCP (reuse `ma-spike-clickup-mcp.py`
+  with a real MCP token + that user's vault). **DoD:** 2 cross-dept users with both tokens stored; negative
+  smoke passes; alerts clean.
+- **Block 2:** session-to-user binding — `Execute Agent Session` resolves `caller_user_id` → the user's
+  MCP-OAuth Vault id, adds it to `vault_ids` (alongside `image_mcp_vault_id`); degrade + WARN if un-onboarded.
+- **Block 3:** register the hosted ClickUp MCP on the 4 tier agents via `Sync Agent Definitions` + a **read-only
+  `mcp_toolset` allowlist** (disable every write tool) + steer the shared `system` for open-ended discovery;
+  retire the `Check Space Member` software filter in `workspace-search`; add a ClickUp MCP health dead-man's-switch.
+- **Block 4:** client-side **extraction** tool on the retained loop — reads the REST token from Supabase by
+  `caller_user_id`, runs `read-input` as U on a task id (out-of-scope id → access-denied); steer inspect-then-
+  extract; a token-presence guard (WARN if a user has one token but not the other).
+- **Block 5:** scope-correctness gate — cross-department negative matrix across discovery (hosted MCP) **and**
+  extraction (client-side); mis-mapped credential fails loud. Gates cutover.
+- **Block 6:** cutover, onboard the team, revoke/refresh ops (revoke = delete both tokens + flip row), rollback
+  flag, write-backs (`current.md` + ADR-054 → landed), GDPR record (per-user OAuth; MCP token in Anthropic
+  Vault, REST token in Supabase Vault).
+
+**HANDOFF PROMPT for the next session (after `/clear`):**
+> Read `architecture/Build plans/adr-054-clickup-scoped-retrieval/master-plan.md` in full (especially the
+> "ARCHITECTURE LOCKED — Option A" section), then `block-0-findings.md` and `block-1-findings.md`. Option A is
+> locked: discovery via ClickUp's hosted MCP (per-user MCP-OAuth token in the Anthropic Vault), extraction via
+> a client-side tool on the retained loop (per-user classic REST token in Supabase Vault). **Finish Block 1:**
+> (a) extend the onboarding webhook `ClickUp OAuth Onboarding (v1)` to also run the MCP-OAuth flow
+> (`mcp.clickup.com/oauth/*`, DCR + PKCE) and store that token as a per-user Anthropic Vault `static_bearer`;
+> (b) add a Supabase-Vault store + `get_clickup_rest_token(clickup_user_id)` getter for the REST token (new
+> migration) and write the REST token there during onboarding; (c) re-key Franciszek's existing credential
+> (REST token → Supabase; mint his MCP-OAuth token → Vault); (d) onboard one Marketing + one Purchasing user;
+> (e) run the minimal cross-department negative smoke via the hosted MCP. Then write back (current.md + ADR-054
+> + this plan's status table), commit, and emit the Block-2 handoff. Verify live per Definition of Done; route
+> alerts through `Post Alert (v1)`; confirm the Anthropic key was rotated after its in-session exposure.
+
+## Target architecture (under ADR-054, ClickUp-only) — ⚠️ superseded above (extraction is client-side, not a self-hosted MCP; discovery needs a separate MCP-OAuth token)
 
 - **Per-user ClickUp credentials.** A ClickUp OAuth app (or personal-token scheme, per Block 0); each team
   member's token stored as an Anthropic **Vault credential**; a new Supabase table maps
@@ -188,10 +265,15 @@ ADR-053 managed lane, the Vault/`vault_ids` seam, the read-input + workspace-sea
 
 ## Block status
 
+> ⚠️ **Rows 2–6 below predate the Option-A lock** — their wording (single token, as-U self-hosted read-input
+> MCP, Variant A/B) is superseded by the revised block sequence in "ARCHITECTURE LOCKED — Option A" above.
+> Net for the next session: discovery = hosted MCP (MCP-OAuth token, Vault); extraction = client-side tool
+> (REST token, Supabase). Use the ARCHITECTURE LOCKED block list as the plan of record.
+
 | # | Block | State |
 |---|---|---|
 | 0 | Capability gate: prove the stock ClickUp MCP is registerable + per-user OAuth token in the Anthropic Vault scopes it to U in-harness; prove the negative (A's token can't read B-only data); the MCP tool surface; the credential lifecycle; **and the read-input-as-U token-sourcing variant (A self-hosted MCP per-call injection vs B Supabase mirror)** — **or** a clear "reshape" finding | ✅ done 2026-06-22 — `block-0-findings.md`. Core design **holds** (hosted MCP `mcp.clickup.com/mcp` is registerable; per-user token in Vault scopes it). **3 reshapes:** (1) credential = **static_bearer** not auto-refresh (ClickUp tokens don't expire / no refresh token / no scopes → drop the refresh dead-man's-switch); (2) lock the `mcp_toolset` **read-only** in software (no read-only scope exists); (3) the as-U **REST** extraction is **load-bearing** (MCP returns no attachment metadata + no extracted content). Token-sourcing: prefer **Variant A** (two static_bearer creds, same non-expiring token, no mirror); B is a light fallback. **Live ClickUp scoping+negative is gated on Block 1's OAuth app** (MCP rejects `pk_`; greenfield) — pull a 2-user negative smoke into Block 1's tail. |
-| 1 | ClickUp OAuth app + per-user token storage: app registration (secrets via Vault getter), consent/token-exchange/refresh flow, `user_clickup_credentials` table (migration), per-user Vault credential(s) per the Block-0 variant, onboard ≥2 test users in different departments | 🟧 **Reshape RESOLVED — Option 1 chosen; onboarding rework pending (2026-06-22)** — `block-1-findings.md`. The hosted ClickUp MCP rejected our classic-OAuth-app token (it is its OWN OAuth server, MCP Auth spec 2025-06-18). Probe `ma-spike-clickup-mcp-oauth.mjs` confirmed the fix: driving `mcp.clickup.com/oauth/*` (DCR+PKCE, public client) mints a token the MCP **accepts** (`mcp_oauth_validate` → valid), lifetime **10 years** (→ static_bearer, no refresh); `scope=read` returns `read write` so read-only stays a Block-3 toolset allowlist. Option 2 (harness-driven consent) ruled out by the vault docs. **Decision: rework onboarding to the MCP OAuth endpoints.** Open sub-question (next probe run): does the MCP token also serve ClickUp REST → one-token (identity + Block-4 extraction) vs two-token. Vault/`vault_ids` injection + first-user onboarding mechanics all proven. **Built + live:** migration 039 `user_clickup_credentials` (RLS-enabled, no-policy; one `vault_id` per user — the plan's two vault columns collapse to one because both per-user creds share a vault, no 409); migration 040 `get_clickup_oauth_app()` getter (callable, nulls until seeded); migration 041 `clickup_oauth_state` (CSRF). **Consent flow = a self-serve hosted n8n webhook** `ClickUp OAuth Onboarding (v1)` (`/webhook/clickup-oauth-start` → ClickUp consent → `/webhook/clickup-oauth-callback` exchanges code → per-user Vault + `static_bearer` cred keyed to `mcp.clickup.com/mcp` → mapping row; alerts via Post Alert; token not persisted on success), deployed + drift-clean; start (302) and callback-reject (400) paths verified live. `scripts/onboard-clickup-user.mjs` kept as a dev fallback. **No refresh machinery** (Block-0: tokens don't expire). **MCP-trigger probe:** provisional — bare-n8n Variant A **doubtful** (all auth modes validate-against-fixed; image MCP confirms); **definitive probe deferred to Block 4** (needs a real token, non-blocking for 1–3); Variant B is a cheap fallback. **PENDING (gates completion):** Franciszek registers the OAuth app (redirect `https://agents.haxe.ai/webhook/clickup-oauth-callback`) + seeds the 2 secrets → onboard 1 Marketing + 1 Purchasing user via the start link → minimal negative smoke. |
+| 1 | ClickUp OAuth app + per-user token storage: app registration (secrets via Vault getter), consent/token-exchange/refresh flow, `user_clickup_credentials` table (migration), per-user Vault credential(s) per the Block-0 variant, onboard ≥2 test users in different departments | 🟧 **Option A LOCKED — Block 1 FINISH pending (2026-06-22)** — see the "ARCHITECTURE LOCKED — Option A" section above + `block-1-findings.md`. **Discovery** = hosted ClickUp MCP (per-user **MCP-OAuth** token in the Anthropic Vault; ~10y static_bearer; read-only via the toolset allowlist). **Extraction** = client-side tool on the retained loop (per-user **classic REST** token in **Supabase Vault**, read by the session loop by `caller_user_id`). **Two tokens, two consents** (irreducible). Driven by three probes: the MCP rejects our classic app token; the MCP-OAuth token works but is **401 on REST**; n8n **can't read** an injected bearer. **Block-1 FINISH:** add the MCP-OAuth flow to onboarding, store the REST token in Supabase + a `get_clickup_rest_token()` getter, re-key Franciszek's credential, onboard 1 Marketing + 1 Purchasing user, run the minimal negative smoke. Vault/`vault_ids` injection + first-user onboarding mechanics all proven. **Built + live:** migration 039 `user_clickup_credentials` (RLS-enabled, no-policy; one `vault_id` per user — the plan's two vault columns collapse to one because both per-user creds share a vault, no 409); migration 040 `get_clickup_oauth_app()` getter (callable, nulls until seeded); migration 041 `clickup_oauth_state` (CSRF). **Consent flow = a self-serve hosted n8n webhook** `ClickUp OAuth Onboarding (v1)` (`/webhook/clickup-oauth-start` → ClickUp consent → `/webhook/clickup-oauth-callback` exchanges code → per-user Vault + `static_bearer` cred keyed to `mcp.clickup.com/mcp` → mapping row; alerts via Post Alert; token not persisted on success), deployed + drift-clean; start (302) and callback-reject (400) paths verified live. `scripts/onboard-clickup-user.mjs` kept as a dev fallback. **No refresh machinery** (Block-0: tokens don't expire). **MCP-trigger probe:** provisional — bare-n8n Variant A **doubtful** (all auth modes validate-against-fixed; image MCP confirms); **definitive probe deferred to Block 4** (needs a real token, non-blocking for 1–3); Variant B is a cheap fallback. **PENDING (gates completion):** Franciszek registers the OAuth app (redirect `https://agents.haxe.ai/webhook/clickup-oauth-callback`) + seeds the 2 secrets → onboard 1 Marketing + 1 Purchasing user via the start link → minimal negative smoke. |
 | 2 | Session-to-user binding: `Execute Agent Session (v1)` resolves `caller_user_id →` the user's vault credential(s) and adds them to `vault_ids`; degrade + WARN for un-onboarded users | ⬜ not started |
 | 3 | Register the scoped ClickUp MCP (discovery) on the 4 agents (`Sync Agent Definitions`) + steer the `system`; retire the open-ended search-as-bot + `Check Space Member` software filter from Stage A; ClickUp MCP health dead-man's-switch | ⬜ not started |
 | 4 | `read-input (v1)` as-U extraction tool: add an as-U fetch mode (U's credential on `GET task`), expose it to the agents (Variant A self-hosted read-input MCP, or Variant B custom tool on the retained loop), steer the agent to inspect-then-extract; health/sync guard per variant | ⬜ not started |

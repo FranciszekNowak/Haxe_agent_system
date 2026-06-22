@@ -20,9 +20,13 @@ Beta surface: Anthropic Managed Agents Vault (OAuth auto-refresh, `vault_ids` pe
 > local-loopback script (`scripts/onboard-clickup-user.mjs`) is a dev fallback. **Reshape (2026-06-22):** the
 > hosted ClickUp MCP authenticates only with tokens from its OWN OAuth server (MCP Authorization spec,
 > `mcp.clickup.com/oauth/*`, DCR + PKCE, public client), **not** our classic OAuth-app token — proven by
-> probe. Fix (chosen): rework onboarding to that MCP OAuth flow; the MCP-issued token is accepted and lives
-> ~10 years (stored as `static_bearer`, no refresh). The classic app token is retained for the Block-4 as-U
-> **REST** extraction. See
+> probe. **Option A (locked 2026-06-22):** discovery rides the hosted MCP, scoped per user by a **MCP-OAuth** token
+> (DCR + PKCE; accepted, ~10y, `static_bearer` in the Anthropic Vault; read-only via the toolset allowlist since
+> `scope=read` is ignored). The MCP-OAuth token is **401 on ClickUp REST**, and n8n cannot read an injected
+> bearer (probe), so **extraction is a client-side tool on the retained agent loop** — the session loop reads
+> the user's **classic REST** token from **Supabase Vault** by `caller_user_id` and runs `read-input` as U; it
+> is **not** a self-hosted MCP. Two tokens (MCP-OAuth in the Vault, REST in Supabase), two consents per user.
+> See the master plan's "ARCHITECTURE LOCKED — Option A". See
 > `architecture/Build plans/adr-054-clickup-scoped-retrieval/`
 > (`master-plan.md`, `block-0-findings.md`, `block-1-findings.md`).
 
