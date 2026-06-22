@@ -1,10 +1,57 @@
 # ADR-054 Block 1 — OAuth app + per-user token storage (findings + status)
 
-**Status: SCAFFOLD COMPLETE, OPERATOR-GATED REMAINDER PENDING (2026-06-22).** Everything that does not
-require the live OAuth app is built, applied, and verified. The remainder — register the OAuth app, seed
-its secrets, onboard two cross-department users, run the negative smoke — is gated on a Workspace
-owner/admin action only Franciszek can take (Block-0 finding (e): app creation is owner/admin-only), and is
-written up under "Operator-gated remainder" below.
+**Status: BUILT + ONBOARDING PROVEN, BUT BLOCKED ON A CONFIRMED RESHAPE (2026-06-22).** The credential
+store, getters, hosted onboarding webhook, and the end-to-end onboarding of the first user all work (see
+below). **However, the positive MCP-acceptance test failed and surfaced a token-type reshape that blocks the
+whole approach as currently designed** — see the next section. Do not proceed to Blocks 2–5 until the
+token-acquisition path is corrected.
+
+## ⚠️ RESHAPE (2026-06-22) — the hosted ClickUp MCP rejects our OAuth-app token
+
+The positive acceptance test (`scripts/ma-spike-clickup-mcp.py`: a throwaway agent + the ClickUp MCP +
+Franciszek's vault attached) **failed at MCP initialize** with
+`mcp_authentication_failed_error: "MCP server 'clickup' initialize failed: server rejected the static bearer
+token — verify the credential value"` (retries exhausted). The model then **hallucinated** a tool call and
+fabricated Space names — a reminder that a silent MCP-auth failure degrades to confident fabrication, not an
+obvious error.
+
+The stored token is **valid** — it fetched Franciszek's real `/user` record during onboarding. So a token
+that works on ClickUp **REST** is rejected by ClickUp's **MCP**. Confirmed root cause via the MCP's published
+OAuth metadata (`https://mcp.clickup.com/.well-known/oauth-authorization-server` +
+`/.well-known/oauth-protected-resource`): **the hosted MCP is its OWN OAuth 2.1 authorization server**
+implementing the MCP Authorization spec (`mcp_authorization_spec_version: 2025-06-18`):
+- `authorization_endpoint: https://mcp.clickup.com/oauth/authorize`,
+  `token_endpoint: https://mcp.clickup.com/oauth/token`,
+  `registration_endpoint: https://mcp.clickup.com/oauth/register` (Dynamic Client Registration),
+- PKCE `S256`, **public client** (`token_endpoint_auth_methods: ["none"]`), grant `authorization_code`
+  **only** (no `refresh_token` grant advertised),
+- `scopes_supported: ["read","write"]` → **a read-only scope DOES exist at the MCP layer** (revises Block-0
+  Reshape 2), `resource_server_origin: https://api.clickup.com`.
+
+This is **separate** from ClickUp's classic API OAuth (`app.clickup.com/api` +
+`api.clickup.com/api/v2/oauth/token`) that the registered app and the onboarding webhook use. The MCP only
+accepts tokens **its own** OAuth server minted.
+
+**What still holds:** the per-user vault + `static_bearer` + `vault_ids` injection mechanics (proven end to
+end — the harness DID inject the credential and attempt the MCP connect); the credential lifecycle; and the
+as-U **REST** extraction planned for Block 4 (our app token is the *correct* token there — REST is where it
+works). **What is invalidated:** the onboarding flow's *token acquisition* (it mints a classic-API token the
+MCP rejects), and Block-0's inference that an OAuth-app token would be honored by the hosted MCP.
+
+**Options (decision pending — see the session handoff):**
+1. **Re-point onboarding at the MCP's OAuth server** (`mcp.clickup.com/oauth/*`: DCR → PKCE authorize →
+   token, `scope=read`), store that MCP-issued token in the per-user vault (everything downstream unchanged).
+   Keeps the hosted commodity MCP; gains a real read-only scope. Risks: no refresh grant (expiry/re-consent
+   cadence unknown); must re-confirm the harness accepts an MCP-OAuth-issued bearer.
+2. **Use harness-native MCP OAuth** if Managed Agents can itself drive the MCP Authorization-spec flow
+   (DCR + per-user consent) — least custom build, but unproven that the Vault/harness supports interactive
+   per-user MCP consent for unattended multi-user.
+3. **Self-host a thin ClickUp MCP** that accepts our per-user *REST* OAuth token (already proven to work) and
+   proxies to ClickUp REST as U. Full control + reuses the image-MCP hosting pattern; but it is a custom
+   build, against the "consume the commodity hosted MCP" preference.
+
+The original "Operator-gated remainder" below (onboard 2 users + negative smoke) is **paused** behind this
+decision: there is no point onboarding more users on a token type the MCP rejects.
 
 ## What was built and verified live this block
 
