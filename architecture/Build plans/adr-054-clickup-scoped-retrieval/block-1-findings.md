@@ -66,11 +66,24 @@ end (DCR `200` → PKCE authorize → token), and the resulting token was **acce
 DCR + PKCE, public client), storing the MCP token as a per-user `static_bearer` keyed to `mcp.clickup.com/mcp`.
 Everything downstream (per-user vault, `vault_ids` injection, session binding) is unchanged.
 
-**One open sub-question before the rework (a REST-identity check is now in the probe):** does the MCP-OAuth
-token also authenticate ClickUp **REST**? The mapping row needs the consenting user's `clickup_user_id`, and
-Block-4 attachment extraction is REST-based. If the MCP token works on REST → **one token, one consent**
-(identity + extraction + discovery all on it). If not → also mint the classic REST OAuth token and store a
-**second** per-user credential (two consents). The next probe run answers it.
+**Sub-question ANSWERED (2026-06-22): the MCP-OAuth token is `HTTP 401` on ClickUp REST** (`GET
+/api/v2/user` → 401, identity null). So the MCP token serves the **hosted MCP only**; user identity (for the
+mapping row) and Block-4 attachment extraction (REST-based) need the **classic REST OAuth token**. This forks
+the design:
+- **Option 1 (keep hosted MCP for discovery):** two tokens per user — the MCP-OAuth token (discovery) **and**
+  the classic REST token (identity + extraction) — and therefore **two consents** at onboarding (two separate
+  OAuth servers). Onboarding must be reworked to add the MCP-OAuth flow on top of the classic flow.
+- **Option 3 (self-host one thin ClickUp MCP on the REST token):** **one** token, **one** consent. Discovery
+  (~6 read tools) and Block-4 extraction both ride the classic REST token through a self-hosted MCP we
+  control (read-only by construction). **Bonus: the onboarding webhook already built mints exactly this REST
+  token + identity — so it needs no rework**, only re-keying the credential to our MCP's URL.
+
+**Key realization:** we self-host an MCP-protocol endpoint for **extraction regardless** (Block-0: the hosted
+MCP returns no attachment content), so Option 3's discovery tools are incremental on a build we already owe,
+and it reuses the onboarding we built. The hosted-MCP "commodity" benefit (Option 1) shrinks to "ClickUp
+maintains ~50 tools we mostly don't need," at the cost of a second token + second consent. **Recommendation
+shifted to Option 3** (pending operator confirmation). Both options still need the Block-4 bearer-forwarding
+capability (does our self-hosted MCP read the injected per-user bearer — the deferred Variant-A probe).
 
 The "Operator-gated remainder" below (onboard 2 users + negative smoke) resumes **after** the onboarding rework
 (no point onboarding users on the old, MCP-rejected token type).
