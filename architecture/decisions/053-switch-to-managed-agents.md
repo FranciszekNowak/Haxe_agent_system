@@ -1,10 +1,12 @@
 # ADR-053: Switch from bare model calls to Managed Agents
 
-Status: Accepted
-Date: 2026-06-16
+Status: Accepted — **implemented and live as the default lane 2026-06-22** (cutover completed in Block 9; `config.agent_lane='managed'`).
+Date: 2026-06-16 (accepted); 2026-06-22 (landed)
 Superseded in part by: ADR-055 — decision point 5 (image generation as a **client-side custom tool**
 serviced by the session stream) and rejected-alternative R8 are superseded; image generation moves to a
 **self-hosted MCP tool server**. The rest of ADR-053 stands.
+Amended (2026-06-22, Block 9): the **Krytycznie ważne** tier no longer routes to Fable 5 — see the
+"Amendment — Fable 5 → Opus 4.8 on the managed lane" section under Consequences.
 Supersedes parts of: the single bare-call spine design
 References: ADR-035 (cost logging), ADR-043 (GDPR posture), ADR-047 (fallback seam, shape-agnostic Call Model), ADR-048 (input file handling), ADR-049 (file storage and per-user permission fidelity), ADR-050 (Google native AI interplay)
 Spec: multimodal-io-and-spine-decomposition-spec.md
@@ -69,3 +71,42 @@ The system is async-first (scheduled delivery), so interactive latency is ceded 
 - Accepted trades: Niski runs on Haiku inside the harness, not Gemini Flash; the Flash cost lever is abandoned as immaterial (single-digit dollars per month at realistic email volume). Beta dependency; agentic capability is not preserved through an Anthropic outage unless the second adapter is pre-built. The harness adds a minor, nonzero per-run cost on trivial tasks (cached definitions plus negligible runtime).
 - Cost-optimization surface moves to the agentic lane: prompt caching, right-sizing the model tier to impact, the Batch API for non-urgent runs, avoiding gratuitous tool calls, and web search at $10 per 1,000 calls. The email lane is cost noise.
 - Open follow-ups: a Docling fidelity check only if the unknown-format fallback is ever exercised; confirmation that the second adapter is worth pre-building if Anthropic agentic quality ever slips.
+
+## Landed (2026-06-22, Block 9)
+
+The cutover is complete and verified live. `config.agent_lane='managed'` is the default; the orchestrator
+routes Stage B to `Execute Agent Session (v1)` → `Render Agent Output (v1)` → `Post Reply (v1)`. The bare
+LiteLLM lane (`Execute LLM Call (v1)` + `Image Resolver (v1)`) is retained as the dormant outage failover,
+still selectable by flipping the flag (an unreadable/invalid flag fails safe to `bare` + a WARN). All
+modalities were verified end-to-end on the managed lane: plain text, in-harness web search (no n8n research
+workflows), image generation (via the ADR-055 image MCP → Supabase Storage carrier → ClickUp inline image),
+image input / vision (Files API), and office-document output (xlsx via an Anthropic Skill → ClickUp
+attachment, attachment id recorded on `agent_runs`). Per-block detail lives in
+`architecture/Build plans/adr-053-managed-agents/` (`master-plan.md` + `block-*-findings.md`).
+
+## Amendment — Fable 5 → Opus 4.8 on the managed lane (2026-06-22, Block 9)
+
+Decision point 3 routed the **Krytycznie ważne** tier to a Fable agent. Fable 5 (`claude-fable-5`) is **not
+available on the Managed Agents beta**: a session against it terminates with the provider error *"Claude
+Fable 5 is not available. Please use Opus 4.8"* (`retry_status: exhausted`) — access is gated behind a
+separate "Fable Mythos" program we are not in. The `agent_routing` row for Krytycznie ważne is therefore
+**repointed to the Opus 4.8 agent** (`claude-opus-4-8`), so critical-impact tasks run on the strongest Claude
+model we actually have access to. This mirrors the bare lane's existing Fable→Opus fallback (ADR-037) and is
+fully reversible: when Fable Mythos access is granted, repoint the row back. Consequence: Wysoki and
+Krytycznie ważne both run Opus 4.8 on the managed lane until then — the correct degraded behaviour (collapse
+to the best available tier, never a weaker one). `Sync Agent Definitions (v1)` is unaffected: it reads
+`agent_routing` as the impact→tier source of truth and treats Opus as serving two impacts (exactly as Sonnet
+already serves Średni + `__default__`); the Fable agent is left dormant in the Anthropic org.
+
+## Amendment — output adapter JSON robustness (2026-06-22, Block 9)
+
+Block-9 cross-modality testing surfaced a real user-facing defect: the agents emit their final block-array
+as a fenced ```json``` payload, but models frequently write multi-line markdown with **literal (unescaped)
+control characters inside the JSON string values**, which makes `JSON.parse` throw. The adapter's original
+fallback then dumped the *entire raw payload* (fence and all) into the ClickUp comment — the user saw raw
+JSON instead of a rendered answer. `Render Agent Output (v1)` now repairs unescaped control characters inside
+JSON string literals and re-parses before falling back; only a genuinely non-JSON payload (e.g. the agent
+answered in plain prose) falls through to plain-text rendering. **Known limitation (fast-follow):**
+`embed_input` (re-embedding an image already attached to the task) is unsupported on the managed lane — the
+agent references a ClickUp attachment filename rather than a Files-API `file_id`, so the adapter renders
+"[Obraz niedostępny]" + a WARN; the vision *description* path is unaffected.

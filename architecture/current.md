@@ -36,15 +36,21 @@ senior-management intervention.
    UI, and scheduling; worker processes pull jobs from Redis and execute
    workflows. Redis provides rate-limiting, decoupling, priority, and retries.
 
-3. **Anthropic direct + Vertex AI (global)** — model inference via LiteLLM gateway. **PD-blind** routing
-   by `(impact, modality)` (ADR-043, migration 021): `modality='text'` → Anthropic direct (Claude);
-   `modality='multimodal_input'` → Vertex AI Gemini (global endpoint, DPA+SCCs; flash for low tiers, pro
-   for high — ADR-042); `modality='image'` → image-gen tiers (Vertex gemini-image + OpenAI gpt-image-2, ADR-036 Block 8). Bedrock EU and
-   the `personal_data`/`eu_only` axis were retired (migration 021). See ADR-030, ADR-043, ADR-042.
-   **Accepted redirection (not yet built):** ADR-053 replaces this bare-call layer with Anthropic
-   Managed Agents as the single orchestration lane (LiteLLM retained only as a dormant failover);
-   ADR-054 defines per-user permission-scoped context retrieval within it. See the dedicated section
-   after §3 (Extension seams). Until built, the routing described here is the live system.
+3. **Anthropic Managed Agents (global)** — the live orchestration lane since 2026-06-22 (ADR-053,
+   cutover Block 9). A hosted agent runtime — Anthropic-operated sandbox, tool loop, code execution,
+   in-harness **web search**, and office-document **Skills** (docx/xlsx/pptx/pdf), with the **Files API**
+   for input/output files. One lane, selected by **impact only**: a small set of agent definitions
+   sharing `system`/tools/skills and differing only in model tier — Niski→Haiku, Średni→Sonnet,
+   Wysoki→Opus, Krytycznie ważne→Opus (repointed from Fable 5, which is gated on the Managed Agents beta —
+   ADR-053 amendment; reversible). Routing lives in the `agent_routing` table (impact → agent_id).
+   **Residency dropped** (ADR-053): global Anthropic endpoint for all tasks incl. PII; basis is lawful
+   processing (DPA/SCCs/DPF), not residency. **Image generation** runs via a self-hosted **MCP server**
+   that wraps the existing n8n image lane (Vertex gemini-image + OpenAI gpt-image-2 — ADR-055). The
+   **bare LiteLLM lane** (`(impact, modality)` PD-blind routing — Anthropic direct / Vertex Gemini, ADR-043)
+   is **retained as the dormant outage failover** (text + image; web research retired), selected by the
+   `config.agent_lane` flag (`managed` | `bare`, default `managed`; an unreadable flag fails safe to
+   `bare` + WARN). ADR-054 (per-user permission-scoped retrieval within the lane) is accepted but not yet
+   built. See ADR-053/054/055, and the live summary after §3.
 
 4. **Supabase (eu-west-1, Ireland)** — application database. Operational logs, threaded
    human feedback, process-change proposals, conversation session cache, email
@@ -70,11 +76,11 @@ senior-management intervention.
 └────────────────────────────────────────────────────────────────┘
                               ↕
 ┌────────────────────────────────────────────────────────────────┐
-│  LAYER 3: LiteLLM Gateway → Anthropic direct / Vertex AI       │
-│  PD-blind, routed by (impact, modality) — ADR-043             │
-│  text → Anthropic direct (Haiku/Sonnet/Opus/Fable 5)          │
-│  multimodal_input → Vertex AI Gemini (flash/pro, global)      │
-│  image → Vertex gemini-image + OpenAI gpt-image-2 (gen)       │
+│  LAYER 3: Anthropic Managed Agents (global) — LIVE LANE        │
+│  hosted runtime: sandbox, tool loop, web search, Skills, Files │
+│  one lane, by impact: Haiku/Sonnet/Opus (Krytyczne→Opus)      │
+│  image gen → self-hosted MCP → Vertex/OpenAI (ADR-055)        │
+│  bare LiteLLM (impact,modality) = dormant failover (agent_lane)│
 └────────────────────────────────────────────────────────────────┘
                               ↕
 ┌────────────────────────────────────────────────────────────────┐
@@ -141,7 +147,12 @@ For **due-date triggered** autonomous runs, caller is determined as:
 Two future capabilities are designed-for but NOT built. Seams are preserved so
 they slot in additively. See the corresponding ADRs.
 
-- **Multi-provider routing (LIVE; PD-blind).** Model invocation is centralized behind
+> **Note (2026-06-22):** the bare-lane seams below (`Invoke Model (v1)`, `model_routing`, the fallback
+> seam) are no longer the hot path — they now power the **dormant failover lane** selected by
+> `config.agent_lane='bare'`. The live default is the Managed Agents lane (see "Managed Agents spine —
+> LIVE" after this section). They remain LIVE in the sense that they still work when the lane is selected.
+
+- **Multi-provider routing (failover lane; PD-blind).** Model invocation is centralized behind
   `Invoke Model (v1)`; routing is data-driven via `model_routing (impact, modality)` — capability +
   modality only, no `personal_data`/EU axis (ADR-043, migration 021). `modality='text'` → Anthropic
   direct; `modality='multimodal_input'` → Vertex AI Gemini (flash/pro by tier, ADR-042); `modality='image'`
@@ -190,262 +201,52 @@ they slot in additively. See the corresponding ADRs.
 
 ---
 
-## Accepted redirection — Managed Agents spine + permission-scoped retrieval (ADR-053/054)
+## Managed Agents spine — LIVE (ADR-053 / ADR-055; cutover Block 9, 2026-06-22)
 
-> **Status: accepted 2026-06-16, not yet built.** Everything in §15 (the LiteLLM bare-call spine),
-> §2 Layer 3 (PD-blind `(impact, modality)` routing), and the caller-scoping in §3 remains the **live
-> system** until these are implemented. This section records the committed direction; when the build
-> lands, the affected sections are rewritten to match and this note collapses into them.
+The agent system runs all tasks through **Anthropic Managed Agents** as the single orchestration lane
+(hosted sandbox, tool loop, code execution, in-harness web search, office-document Skills, Files API).
+The orchestrator selects Stage B by the **`config.agent_lane`** flag (`managed` | `bare`, default
+**`managed`**; an unreadable/invalid flag fails safe to `bare` + a WARN). The bare LiteLLM lane
+(`Execute LLM Call (v1)` + `Image Resolver (v1)`) is retained as the **dormant outage failover** (text +
+image only — web research is in-harness now).
 
-**ADR-053 — bare model calls → Anthropic Managed Agents.** The system stops calling bare model
-endpoints and routes all agent tasks through Anthropic Managed Agents (a hosted runtime: sandbox,
-tool loop, code execution, web search, office-document Skills) as a single orchestration lane.
-Consequences when built:
+**Routing — impact → agent** (`agent_routing` table): Niski→Haiku, Średni→Sonnet, Wysoki→Opus,
+**Krytycznie ważne→Opus** (repointed from Fable 5, which is gated behind Anthropic's "Fable Mythos" beta
+access — the provider error directs callers to Opus 4.8; reversible when access is granted — ADR-053
+amendment). Tools and skills are universal; a mis-set impact degrades to a wrong tier, not a missing
+capability.
 
-- **One lane, selected by impact only** — a small set of agent definitions sharing system prompt,
-  skills, and tools, differing only in model tier (Haiku / Sonnet / Opus / Fable). No classifier, no
-  new custom field; tools are always present, so a mis-set impact degrades to a wrong tier, not a
-  missing capability.
-- **Residency dropped** — global Anthropic endpoint for all tasks including PII; the recorded basis is
-  lawful processing (DPA / SCCs / DPF), not residency. This retires the Bedrock carve-out and
-  *supersedes* the residency reasoning behind part of the current Layer-3 routing; the
-  `(impact, modality)` Gemini route survives only as bare-text/multimodal failover plumbing, not the
-  hot path.
-- **Read-input stays deterministic in n8n** (fetch / unzip / Docling / classify — ADR-048) and feeds
-  work-ready content to the managed agent instead of a bare call; in-sandbox extraction is a fallback
-  for unexpected formats only.
-- **Image generation becomes a custom client-side tool** wrapping the existing n8n image workflow
-  (ADR-036/051/052 stay intact); cost logging (ADR-035) is preserved because n8n still executes it.
-- **Web-research subworkflow retired** — replaced by the harness's built-in web search; the current
-  `research-the-web` seam (Extension seams above, §15) is superseded.
-- **Layered provider independence:** image layer fully provider-independent; bare-text LiteLLM retained
-  as a dormant outage failover; the agentic-harness layer is a single-provider commitment to Anthropic,
-  bounded by one normalized output contract `{text, files[], cost, status}` (one Anthropic adapter built
-  now, per the ADR-047 seam discipline) so a future agentic-provider swap is one adapter.
-- **Beta posture:** Managed Agents is public beta; the bare LiteLLM text path plus the image tool stay
-  as a degraded failover so text and images keep flowing during an Anthropic incident.
+**Stage B (managed):** `Execute Agent Session (v1)` (resolve tier agent + persistent environment, upload
+input images to the Files API, create/send the session, poll to idle, service the client-side custom-tool
+loop — retained for ADR-054's future Google tool, dormant for image — and compute the session USD cost) →
+`Render Agent Output (v1)` (parse the agent's fenced block-array → `rendered_delta` + `image_manifest`,
+fetching produced-image bytes from the `agent-output-images` carrier) → `Post Reply (v1)` (text + inline
+images + office-doc attachments). **Image generation** runs via the self-hosted **image MCP server**
+(ADR-055: `Haxe Image MCP (v1)` → `Image MCP Tool Handler (v1)` → `Image Tool Handler (v1)` → `Generate
+Images Parallel (v1)`); the client-side `generate_image` custom tool is the documented rollback.
 
-**ADR-054 — permission-scoped context retrieval within Managed Agents.** Builds on ADR-053. The
-managed agent gathers ClickUp / Gmail / Drive context **under the triggering user's identity, enforced
-by n8n at the executor**, never by the agent — scope lives in the credential, so a prompt-injected
-agent cannot exceed the user's permissions. This is the per-user-fidelity carry-over of the current
-caller-scoped Layer A/B model (§3) into the Managed Agents world.
+**Verified live across modalities** (Block 9): text, web research (in-harness, no n8n research workflows),
+image generation (MCP → carrier → inline ClickUp image), image input / vision (Files API), and
+office-document output (xlsx via a Skill → ClickUp attachment, attachment id recorded on `agent_runs`). One
+session `agent_runs` cost row per run (plus per-image rows); `Log Model Run (v1)` keeps sole FX/PLN
+ownership. The output adapter repairs models' common JSON defect (unescaped control characters inside the
+block-array's string values) before any plain-text fallback. **Known limitation (fast-follow):**
+`embed_input` — re-displaying an image already attached to the task — is unsupported on the managed lane
+(the agent references a ClickUp filename, not a Files-API `file_id`) → it renders "[Obraz niedostępny]" +
+a WARN; the vision *description* path works.
 
-- **Google** via domain-wide delegation (a custom client-side tool: n8n impersonates user U — ADR-049).
-- **ClickUp** via per-user OAuth tokens held in the Managed Agents Vault, attached per session by
-  `vault_id`; the stock ClickUp MCP then runs authenticated as U.
-- **Hybrid retrieval:** task-bound context (the task's own attachments/comments/links) is pre-gathered
-  deterministically in n8n (reuses read-input); open-ended discovery runs as live scoped tools the
-  agent calls. Only the discovery surface needs live per-user MCP, keeping the hard surface small.
-- **Credentials never enter the sandbox.** **Scope-correctness testing is the mandatory acceptance
-  gate** — a mis-mapped credential fails silently and the departmental boundary (e.g. Marketing cannot
-  read Purchasing) is the entire point.
+**Reliability:** an auth dead-man's-switch (`Managed Agents Auth Monitor (v1)`), the CU-rules sync +
+freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the
+image-MCP health monitor (`Image MCP Health Monitor (v1)`), all every 6h via `Post Alert (v1)`.
 
-> **Build progress (ADR-053 lane).** Blocks 0–8 (incl. 5.1–5.3, ADR-055) have landed; the lane is **wired
-> but not yet the default**. The orchestrator now routes Stage B by the **`config.agent_lane`** flag
-> (`managed` | `bare`), which **defaults to `bare`** until the Block-9 cutover — so the managed lane is
-> reachable today by flipping the flag, while normal traffic still runs the bare `Execute LLM Call (v1)`.
-> Image generation runs **via the self-hosted MCP server** (the four tier agents carry the image
-> `mcp_servers` entry; the client-side `generate_image` custom tool is the dormant rollback); Block 6 landed
-> the Supabase Storage bytes carrier so MCP-produced images now deliver to ClickUp. **Before flipping the
-> default to `managed` (Block 9): the Krytycznie ważne tier routes to Fable 5, currently unavailable — that
-> tier must be serviceable first.**
-> Live now:
-> - **Block 0** — capability spike (`block-0-findings.md`).
-> - **Block 1** — credential plumbing: the `get_anthropic_key()` Vault getter (migration 034) and
->   `Managed Agents Auth Monitor (v1)` (`X3GEjMgmByZgDJnt`, an auth dead-man's-switch probing
->   `GET /v1/agents` every 6h, alerting via `Post Alert (v1)`). The `anthropic_api_key` Vault secret is
->   seeded and the monitor is green.
-> - **Block 2** — the four tier agents exist in the Anthropic org (Haiku→Niski, Sonnet→Średni,
->   Opus→Wysoki, Fable→Krytycznie ważne), sharing one `system` (stable output contract + the synced
->   ClickUp global-rules doc `q7wz-44812`), the `generate_image` custom tool + built-in
->   `agent_toolset_20260401` (web search), and the docx/xlsx/pptx/pdf Anthropic skills; they differ only
->   in `model.id`. Routing + provenance live in the new **`agent_routing`** table (migration 035; impact
->   → agent_id, untouched `model_routing` still serves the bare lane). `Sync Agent Definitions (v1)`
->   (`4K1w78hJ7JhsUwdN`) reads the CU doc, bakes the rules into each agent's static `system`, and
->   creates/version-updates the agents idempotently (skips when the baked rules hash + conventions
->   version already match — no version inflation; an update requires the agent's current `version` in the
->   body). The **`Agent Rules Freshness Check (v1)`** dead-man's-switch (`7lakbgmrH93ygiyZ`) independently
->   re-hashes the CU doc and compares it to a provenance marker embedded in each **live** agent's
->   `system`, so stale/out-of-band-drifted rules cannot serve silently (drift → WARN, never-synced /
->   missing-marker / unreadable agent → CRITICAL, all via `Post Alert (v1)`). Both run every 6h.
-> - **Block 3** — the Files-API input path: **`Upload Input Images (v1)`** (`2VkZN5UeqVk6MDLW`) takes
->   Read Input's image blocks (loose ClickUp pre-signed URLs **and** zip-inner Supabase-signed URLs —
->   both arrive as `{type:image, ref, mime, source_ref, alt, order}`), fetches each to a binary property
->   (never base64 in the flow), uploads it to the Anthropic Files API (`POST /v1/files`, multipart
->   `file` + `purpose=agent`, beta header `files-api-2025-04-14`), and returns a
->   `{file_id, url, source_ref, mime, alt, order}` map for Stage B to carry into the session. Per-image
->   **fail-soft**: an un-fetchable or upload-failed image is dropped with a `warnings[]` entry while the
->   rest proceed (Stage B fires the warnings via `Post Alert (v1)`, mirroring Read Input → Stage A; the
->   helper's return stays a single branch-free terminal). Input images attach to the `user.message` as an
->   image content block `{type:image, source:{type:file, file_id}}` (Messages-API parity) — **confirmed
->   live end-to-end** (the agent correctly described a supplied image); the events call carries both betas
->   (`managed-agents-2026-04-01,files-api-2025-04-14`) when a message references a `file_id`.
->   `Read Input (v1)` itself is unchanged (still URL-based).
-> - **Block 4** — the `generate_image` custom-tool handler: **`Image Tool Handler (v1)`**
->   (`vpGswBj2kR2D85hl`). Accepts the tool contract `{prompt, reference_file_ids?, count?, aspect_ratio?,
->   size?}`; resolves `reference_file_ids` → `reference_urls` through the session's `{file_id→url}` map
->   (Block 3's output); calls **`Generate Images Parallel (v1)`** (`2keb6XVWq5PG0leK`) **unchanged** — the
->   ADR-052 `reference_urls[]` seam; converts each returned base64 image to a binary and uploads it to the
->   Files API (`POST /v1/files`, `purpose=agent`, reusing the Block-3 upload node); and returns a
->   `tool_result { status, file_ids[], images[]{file_id,b64_json,…}, warnings[], message }`. The `file_id`s
->   are what the agent embeds; the carried `b64_json` is for Block 6 delivery (uploaded files are not
->   downloadable, so the bytes are kept in hand rather than re-fetched). **No second cost writer** — the
->   batch's own `Call Log Model Run` (mode=each) writes one priced `agent_runs` row per image (verified
->   live: one `vertex_ai/gemini-2.5-flash-image` row, `cost_pln` 0.1414). **Fail-soft, never throws into the
->   session**: a generation/upload failure or a batch throw degrades to a `failed`/`partial` tool_result + a
->   returned `warnings[]` entry (fired by Block 5 via `Post Alert (v1)`, mirroring Block 3 → Stage B); a
->   batch throw's CRITICAL is already escalated by the batch's own `errorWorkflow`. Verified live: plain
->   text-to-image returns a `file_id`; the reference path (`reference_file_id` → its URL) returns
->   `used_reference:true` (anchored on the supplied photo, ADR-052 transport fidelity); no-prompt /
->   missing-key cases return a clean `failed` tool_result. **Note:** the per-image `triggered_by` must be a
->   value allowed by the `agent_runs_triggered_by_check` constraint — the handler defaults the fallback to
->   `image_gen` and otherwise forwards the session's `triggered_by` (Block 5 should forward a valid one,
->   e.g. `explicit_mention`).
-> - **Block 5** — the new Stage B core: **`Execute Agent Session (v1)`** (`Rtb1cZbmUqmfGD98`). Given a
->   `user_message` (person prefs + task context + triggering comment), `impact`, `input_images_json`, and
->   caller metadata, it resolves the tier agent from `agent_routing` (with `__default__` fallback) bound to
->   a **persistent shared environment** (`env_01T1PexJQheEUVnzVTKjyrz4`, created once and stored in
->   `config.managed_agent_environment_id`), calls `Upload Input Images (v1)` (Block 3), builds the
->   `user.message` (input-image `{type:image,source:{type:file,file_id}}` blocks + text), creates a session
->   and sends the message. **Web search, code execution, and Skills run in-harness — no n8n loop and no
->   search logic** (verified: a web-search task returned cited findings with a source URL, `web_search_count`
->   1, with no research workflows invoked). The one n8n-serviced callback is the custom **`generate_image`**
->   tool: a single **`Poll Round`** Code node does the entire wait by polling `GET /v1/sessions/{id}/events`
->   (full history) + `GET /v1/sessions/{id}` for `.status` with `this.helpers.httpRequest` + an absolute
->   **840 s soft-deadline** (carried as `deadline_epoch`, mirrors the image batch's 840 s < 900 s task-runner
->   kill); on an unanswered `agent.custom_tool_use` it calls `Image Tool Handler (v1)` (forwarding the session
->   `file_map_json` + a valid `triggered_by`), POSTs the `user.custom_tool_result` (echoing the tool-use id),
->   and **recurses** (the `research-the-web` `executeWorkflow` self-call idiom) once per tool round (capped
->   at 12). Pending-tool detection is **stateless** — a tool use is answered iff a `user.custom_tool_result`
->   with its id exists in the event history; "done" = status `idle` **and** an `agent.message` after the last
->   user event (robust against the transient pre-run/post-result idle). The return is a single branch-free
->   terminal (`Final Return` re-reads the canonical output) carrying `{status, output_message (the block-array),
->   files[]{file_id,b64_json,…}, file_ids[], session_usage, duration_seconds, web_search_count, model_used,
->   session_id, warnings[]}`; **`usd_cost` is a NULL stub — Block 6 computes it** from the raw `session.usage`
->   token tiers + `stats.duration_seconds` + web-search count. All warnings (Upload Input Images + Image Tool
->   Handler + poll/deadline/terminated/max-rounds) are bundled into one consolidated `Post Alert (v1)` firing.
->   Verified live end-to-end: a text task returned the block-array + raw usage/duration (8 s); a web-search
->   task returned cited findings; a `generate_image` task serviced the callback through one recursive round
->   and returned the produced `file_id` + b64 (`status` `completed`, no warnings, clean alert channel).
-> - **Block 5.1 (ADR-055)** — MCP capability gate: **passed**. The harness calls a self-hosted MCP tool
->   **in-harness** (`agent.mcp_tool_use`/`_result`, no client pause) when the toolset is `always_allow`, and
->   held a **200 s** tool call open (clears the ~170 s gpt-image-2-high worst case). Host = the **n8n MCP
->   Server Trigger** (no new infra), reachable at `https://agents.haxe.ai/mcp/<path>` over SSE with bearer
->   auth. `Execute Agent Session (v1)` needs no change (its loop is retained for ADR-054's Google tool).
->   Findings: `block-5.1-findings.md`.
-> - **Block 5.2 (ADR-055)** — the self-hosted **image MCP server**, built + tested **in isolation** (the
->   four agents are **not yet switched** to it — Block 5.3). Pieces: (a) **migration 036** —
->   `agent_input_file_map(file_id pk, url, mime, source_ref, created_at)` (a global file_id→signed-URL map,
->   **RLS on / no policy** so only the pipeline's direct Postgres role reads it; a 24 h `pg_cron` TTL prune
->   + `agent_input_file_map_prune_runs` audit log), the `get_image_mcp_bearer()` Vault getter (mirrors
->   `get_anthropic_key()`), and `triggered_by += 'image_mcp'`. (b) **`Upload Input Images (v1)`** now
->   **upserts** each `{file_id→url,mime,source_ref}` row after a successful upload — additive + fail-soft
->   (`Aggregate → Upsert File Map → Final Return` re-reads Aggregate; a write failure appends a returned
->   WARN, never blocks the upload). (c) **`Haxe Image MCP (v1)`** (`c4vnNLb9usfHJWg3`) — an n8n MCP Server
->   Trigger at `https://agents.haxe.ai/mcp/haxe-image-gen` (SSE, bearer via the `Image MCP bearer (ADR-055)`
->   credential) exposing one **`generate_image`** tool (`prompt` required; `reference_file_ids` as an
->   optional JSON-array string, `count`/`aspect_ratio`/`size` optional) → **`Image MCP Tool Handler (v1)`**
->   (`zxY41zZWRbXon2Eq`), which resolves `reference_file_ids` → signed URLs from `agent_input_file_map`
->   (**no session context** — Block 5.1) and then calls **`Image Tool Handler (v1)` unchanged** (one shared
->   image-gen+upload+cost core; per-image `agent_runs` rows via the batch's own `Log Model Run`, no second
->   writer). Because the harness calls it directly, the handler **fires its own consolidated `Post Alert
->   (v1)`**. Verified live with a direct MCP call (bearer): `initialize` + `tools/list` (advertises
->   `generate_image`, only `prompt` required) + `tools/call` → image generated in **24 s**, one priced
->   `agent_runs` row (`triggered_by=image_mcp`, `impact=Średni`, ~0.49 PLN); the reference path resolved a
->   `file_id` via the table (`used_reference:true`); an empty prompt returned a `failed` tool_result + WARN
->   with no throw; alert channel clean. **Consequences:** the MCP path is **identity-/context-free** — cost
->   rows are **tier-fixed to `Średni`** (`__default__` is invalid for `agent_runs.impact`; the harness
->   passes no task impact) and **not task-attributable** (`clickup_task_id` null). The Block-4/5 client-side
->   image path stays the **dormant rollback**. **⚠ Block-6 delivery gap (flagged):** Files-API uploads are
->   `purpose=agent` → **not downloadable**, and via MCP the produced base64 no longer returns to n8n, so
->   Block 6 has **no carrier** for MCP-produced image bytes — it will need one (e.g. persist produced bytes
->   to Supabase Storage / an output `file_id→bytes` map), or an ADR-055 amendment. Findings:
->   `block-5.2-findings.md`.
-> - **Block 5.3 (ADR-055)** — **the four tier agents are switched to the image MCP server.** `Sync Agent
->   Definitions (v1)` now bakes, instead of the `generate_image` custom tool, an `mcp_servers` entry
->   `[{type:url, url:https://agents.haxe.ai/mcp/haxe-image-gen, name:haxe_image}]` **(no auth field)** plus the
->   paired `tools` entry `{type:mcp_toolset, mcp_server_name:haxe_image, default_config:{enabled:true,
->   permission_policy:{type:always_allow}}}` (`conventions_version` bumped 1→2 to force the re-sync); all four
->   agents re-versioned and verified live. **Auth is a per-session Anthropic Vault, not a field on the agent**
->   (the Block-5.1 open item, resolved against the live API — Managed Agents differs from the Messages-API MCP
->   connector): a persistent vault `vlt_011CcCBgjtCiZewXB8c6Ty47` (`config.image_mcp_vault_id`) holds a
->   **`static_bearer`** credential `{auth:{type:static_bearer, mcp_server_url, token}}` keyed by the MCP URL,
->   its token mirrored from the Supabase Vault `image_mcp_bearer_token` (rotation: update both Vaults + the n8n
->   credential; a mismatch trips the health monitor with a 403). `Execute Agent Session (v1)` now passes
->   `vault_ids:[config.image_mcp_vault_id]` on `sessions.create` (fail-soft if the key is missing), so the
->   harness injects the bearer when the agent calls `generate_image`. The call runs **in-harness**
->   (`agent.mcp_tool_use`, no client pause), so the pause/resume loop's `generate_image` branch is **dormant for
->   image** (retained for ADR-054's Google tool). New **`Image MCP Health Monitor (v1)`** (`Er1JlLYAQLkIk7yB`,
->   every 6h) probes the endpoint with an MCP `initialize` + the bearer (200 = healthy; 403/404/5xx → CRITICAL
->   via `Post Alert (v1)`; an unseeded Vault secret → its own CRITICAL). Verified live end-to-end: an image task
->   through `Execute Agent Session (v1)` produced a `file_id` via MCP with `outcome:done` (the custom-tool branch
->   never fired), one priced `image_mcp` `agent_runs` row, clean alert channel; the health check trips on a
->   deliberately-down path. **Rollback:** re-add the `generate_image` custom tool in `Build System` (and drop the
->   `mcp_servers`/`mcp_toolset`) → the Block-4/5 client-side path re-activates. Findings: `block-5.3-findings.md`.
-> - **Block 6** — **output adapter + session cost + the image-bytes carrier** (resolves the 5.2/5.3 delivery
->   gap). **(1) Carrier:** a private Supabase Storage bucket **`agent-output-images`**; `Image Tool Handler (v1)`
->   now also persists each produced image's bytes there keyed by its Files-API `file_id` (the shared handler →
->   both lanes populate it), because `purpose=agent` uploads are not downloadable and on the MCP path the bytes
->   never return to n8n. **Migration 037** prunes the bucket at 24h via the Storage REST DELETE (mirrors the
->   zip-inner purge). **(2) Output adapter:** new **`Render Agent Output (v1)`** (`vPbbN4UQj0LAAtiV`, active) —
->   parses the agent's fenced ```json block-array, fetches produced-image bytes from the carrier, and emits the
->   **`Post Reply (v1)` contract** `{rendered_delta, image_manifest}` reusing `Image Resolver (v1)`'s `mdToOps`
->   renderer verbatim + Post Reply's existing `{type:image_ref}` upload path (Post Reply unchanged). **(3)
->   Session cost:** `Execute Agent Session (v1)`'s `Build Final Output` computes the session `usd_cost` (was a
->   stub) from `session.usage` token tiers + `0.08·duration_seconds/3600` runtime + web-search×$0.01 (price map
->   haiku/sonnet/opus-4-8/fable-5; unknown model → Opus-4.8 floor + WARN), and a fail-soft `Log Session Cost`
->   side-branch writes **one priced session `agent_runs` row** via `Log Model Run (v1)` — image cost is NOT
->   included (the per-image `image_mcp` rows are logged independently by `Generate Images Parallel`, no
->   double-count). **Agent output protocol corrected (`conventions_version` 2→3):** the agents now **call
->   `generate_image` and reference the returned `file_id`** in `{type:image, mode:generate, ref:<file_id>}`
->   (no `prompt` in the output block) — the bare-lane "emit a generate-with-prompt block" convention does not
->   work on the managed lane (no downstream generator). Verified live end-to-end: the agent embedded a produced
->   `file_id`, the carrier held the 1.23 MB PNG, the adapter resolved it to a deliverable base64
->   `image_manifest`, one priced session row + one `image_mcp` row, clean alerts. Findings: `block-6-findings.md`.
-> - **Block 7** — **office-doc delivery** (xlsx/docx/pptx/pdf the agent produces via Skills/code-exec) to
->   ClickUp. **Fork resolved live: enumeration-authoritative** — the agent's output is prose-only (it names the
->   doc but emits no `file_id`), so `Execute Agent Session (v1)`'s `Build Final Output` lists the session's
->   downloadable output files (`GET /v1/files?scope_id=<session_id>`, both betas, `downloadable:true` +
->   office-doc mime) and returns `doc_files[] = [{file_id, filename, mime, size_bytes}]`. **`Post Reply (v1)`**
->   gains a `Has Docs?` branch (new inputs `doc_attachments`+`session_id`; a no-op for the bare lane, which
->   never sets them): `Get Doc Key` (the `get_anthropic_key()` getter) → `Download Doc` (`GET
->   /v1/files/{id}/content`) → **`Validate Doc`** (a zip-library-free structural gate — OOXML must be a PK ZIP
->   with the EOCD record, `[Content_Types].xml`, and the type's required part; PDF must be `%PDF-`+`%%EOF`+`/Page`)
->   → `Upload Doc` (ClickUp task attachment, reusing the Block-10 upload pattern) → `Append Doc Ops` (a
->   "Załączniki" section: a `📎` link per delivered doc, a Polish note per dropped one) → fail-soft
->   `Docs Dropped?` → one consolidated WARN via `Post Alert (v1)`. **Migration 038** adds
->   `agent_runs.clickup_attachment_ids` (jsonb); `Record Artifact` records the doc **and** inline-image
->   attachment ids (ADR-044 erasure hub). **Agent convention `conventions_version` 3→4:** office docs are saved
->   to session outputs and the system attaches them automatically — the agent must **not** supply a doc `file_id`,
->   just mention the file in a `text` block. Verified live: an xlsx attachment opens and contains the fed numbers
->   (`<v>111/222/333</v>`), its attachment id is recorded; a deliberately corrupt output (mime-mismatch + bad
->   file_id) → WARN + Polish notes + nothing uploaded + `clickup_attachment_ids=[]`; 0 CRITICAL. Office-doc OUTPUT
->   files are downloadable, so this path is separate from the Block-6 image carrier. Findings: `block-7-findings.md`.
-> - **Block 8** — **the lane switch + orchestrator wiring + research retirement.** New `config.agent_lane`
->   (`managed`|`bare`, default `bare`). The **`Agent Orchestrator (v1)`** (`a8XKaijkMFNBpRBa`) `Context OK?`
->   true branch now flows `Read Agent Lane` (Postgres) → `Resolve Lane` (Code; re-reads + spreads the Stage A
->   context, resolves the flag, fail-safe to `bare` on an unreadable/absent/malformed value) → `Lane =
->   managed?`. The **managed branch** is wired end-to-end: `Call Execute Agent Session` → `Session OK?` →
->   `Call Render Agent Output (v1)` → a second **`Call Post Reply (Managed)`** caller of the shared
->   `Post Reply (v1)` (passing the adapter's `rendered_delta`/`image_manifest` plus `doc_attachments`=`doc_files`
->   + `session_id` straight through to Block 7's `Has Docs?` branch). The **bare branch** (`Lane = managed?`
->   false → the existing `Call Execute LLM`) is byte-identical. Guards/alerts (all via `Post Alert (v1)`):
->   `Lane Unreadable?` → `Alert Lane Unreadable` (WARN, fail-safe flag); `Session OK?` false (empty session) →
->   `Alert Session Empty` (WARN, no empty reply posted — Execute Agent Session CRITICALs internally on
->   create/send failure, so this is a deliberate non-duplicate breadcrumb); `Render Has Warnings?` →
->   `Alert Render Warnings` (WARN, adapter/image-delivery degradation). **Research retired from Stage A:** the
->   `Call Decide Research` node is removed (`Call Workspace Search → Load Agent Rules` direct), `Build Prompt`
->   drops the research reads; `decide-research-and-deliver`/`research-the-web` are deleted from the repo (live
->   copies orphaned — deletion pending operator). `research_parameters` left dormant. **Web research now exists
->   only in-harness on the managed lane; the bare failover lane is text+image only.** Verified live: bare lane
->   posts (exec 2827); managed success path session→render→post-reply posts a comment on a clean task (exec
->   2892); the session-failure guard suppresses empty posts (execs 2849/2873); an `__invalid__` flag falls
->   safe to bare + WARN (exec 2908); drift `✓ all 32 match`; 0 CRITICAL. **Default stays `bare`**; the flip to
->   `managed` + the comment-footer cost reconciliation are Block 9. Findings: `block-8-findings.md`.
-> Plan + per-block detail: `architecture/Build plans/adr-053-managed-agents/`.
+**ADR-054 — permission-scoped context retrieval (accepted, NOT yet built).** The next direction: the
+managed agent gathers ClickUp / Gmail / Drive context **under the triggering user's identity, enforced by
+n8n at the executor** (scope lives in the credential, never trusted to the agent) — Google via domain-wide
+delegation (a client-side custom tool on the retained loop), ClickUp via per-user OAuth held in the Managed
+Agents Vault. Scope-correctness testing is its mandatory acceptance gate.
 
----
+Per-block build history: `architecture/Build plans/adr-053-managed-agents/` (`master-plan.md` +
+`block-*-findings.md`).
 
 ## 4. The learning system
 
@@ -1232,18 +1033,26 @@ unless noted. The build control plane is Claude Code → n8n MCP (ADR-018).
 ### 15.1 Workflow set and build state
 
 The original design named the core engine a single **"Main Orchestrator"** worker workflow. It is
-now realized as a **thin `Agent Orchestrator (v1)`** that calls three stage subworkflows in
-sequence — **A `Assemble Context and Build Prompt (v1)` → B `Execute LLM Call (v1)` → C `Post Reply
-(v1)`** — each with its own execution log and a shared status-reset + alert on failure. This
-decomposition (commit `ff14622`, ADR-036) replaced the earlier monolithic `Agent Spine (v1)` and is
-the canonical form going forward.
+now realized as a **thin `Agent Orchestrator (v1)`** that runs **Stage A `Assemble Context and Build
+Prompt (v1)`**, then **selects the Stage B lane by `config.agent_lane`** (ADR-053 Block 8), then **Stage C
+`Post Reply (v1)`** — each with its own execution log and a shared status-reset + alert on failure. Since
+the **2026-06-22 cutover (Block 9) the default is the managed lane**: Stage B = **`Execute Agent Session
+(v1)` → `Render Agent Output (v1)`** (Anthropic Managed Agents). The earlier **bare** Stage B
+(**`Execute LLM Call (v1)`**, the LiteLLM path, commit `ff14622`, ADR-036) is retained as the **dormant
+failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent Spine (v1)` it replaced is gone.
 
 | Workflow | Role | State |
 |---|---|---|
-| **`Agent Orchestrator (v1)`** (was "Agent Spine"/"Main Orchestrator", id `a8XKaijkMFNBpRBa`) | Thin orchestrator: set status → A → B → C + shared Reset+Alert | **LIVE** |
-| **`Assemble Context and Build Prompt (v1)`** (Stage A) | Context Gather + Search + Build Prompt | **LIVE** |
-| **`Execute LLM Call (v1)`** (Stage B) | Invoke Model → drafted reply + cost | **LIVE** |
-| **`Post Reply (v1)`** (Stage C) | Post draft comment, cost field, status flip (owns CU side-effects) | **LIVE** |
+| **`Agent Orchestrator (v1)`** (was "Agent Spine"/"Main Orchestrator", id `a8XKaijkMFNBpRBa`) | Thin orchestrator: set status → A → **lane switch (`config.agent_lane`)** → B → C + shared Reset+Alert | **LIVE** |
+| **`Assemble Context and Build Prompt (v1)`** (Stage A) | Context Gather + Search + Build Prompt (research call retired, Block 8) | **LIVE** |
+| **`Execute Agent Session (v1)`** (id `Rtb1cZbmUqmfGD98`, Stage B — **managed**) | Anthropic Managed Agents session: resolve tier agent (`agent_routing`) + env → upload input images (Files API) → create/send → poll to idle → service custom-tool loop → session USD cost + enumerate produced docs | **LIVE — default Stage B** |
+| **`Render Agent Output (v1)`** (id `vPbbN4UQj0LAAtiV`, managed) | Output adapter: parse the agent's fenced block-array → `rendered_delta` + `image_manifest` (produced-image bytes from the `agent-output-images` carrier); control-char JSON repair before fallback | **LIVE** |
+| **`Execute LLM Call (v1)`** (id `9qdJA4xnAGbxqkt9`, Stage B — **bare failover**) | Invoke Model → drafted reply + cost (LiteLLM lane; selected by `config.agent_lane='bare'`) | **LIVE (dormant failover)** |
+| **`Post Reply (v1)`** (Stage C) | Post draft comment, cost field, status flip, office-doc + image attachments (owns CU side-effects) | **LIVE** |
+| **`Sync Agent Definitions (v1)`** (id `4K1w78hJ7JhsUwdN`) + **`Agent Rules Freshness Check (v1)`** (id `7lakbgmrH93ygiyZ`) | Bake CU global-rules into the four tier agents' `system` (idempotent create/version-update) + a freshness dead-man's-switch (stale rules → WARN/CRITICAL). Both every 6h | **LIVE** |
+| **`Upload Input Images (v1)`** (id `2VkZN5UeqVk6MDLW`) | Fetch task/zip-inner image refs → Anthropic Files API (`purpose=agent`) → `{file_id→url}` map; upserts `agent_input_file_map` for MCP reference resolution | **LIVE** |
+| **`Haxe Image MCP (v1)`** (id `c4vnNLb9usfHJWg3`) → **`Image MCP Tool Handler (v1)`** (id `zxY41zZWRbXon2Eq`) → **`Image Tool Handler (v1)`** (id `vpGswBj2kR2D85hl`) | Self-hosted image MCP (n8n MCP Server Trigger, bearer) the agents call in-harness for `generate_image` (ADR-055) → resolves references → `Generate Images Parallel (v1)` unchanged → Files-API upload + carrier persist + per-image cost. Client-side `generate_image` custom tool is the dormant rollback | **LIVE** |
+| **`Managed Agents Auth Monitor (v1)`** (id `X3GEjMgmByZgDJnt`) + **`Image MCP Health Monitor (v1)`** (id `Er1JlLYAQLkIk7yB`) + **`Fable 5 Access Monitor (v1)`** (id `Moh1coo5pPmuSTmD`) | Dead-man's-switches: Anthropic auth probe (6h), image-MCP `initialize` probe (6h), bare-lane Fable reachability (daily) — all alert via `Post Alert (v1)` | **LIVE** |
 | **`Context Gather (v1)`** | Assemble labelled task context (task + ancestor chain + fields) | **LIVE** |
 | **`Invoke Model (v1)`** | Centralized model-call seam: route → LiteLLM → exact PLN cost → log. **Text + multimodal-INPUT only** since ADR-051 Block 5 (image generation moved to `Generate Images Parallel`) | **LIVE** |
 | **`Generate Images Parallel (v1)`** (id `2keb6XVWq5PG0leK`, ADR-051) | Concurrent image-gen batch: `Promise.all` over a bounded pool (cap `config.image_concurrency_cap`=4) fires all of a run's `generate` images at once (wall-clock ≈ slowest single, not the sum); inline image-resolution (ADR-045) + per-image one-tier-below fallback; reuses `Log Model Run` for per-image cost; returns per-image results + `warnings[]`. Auth via the image-scoped LiteLLM key in Supabase Vault (`get_litellm_image_key()`). Cap raised 4→5 (migration 033). **Block 7 (2026-06-16): timeout is non-blocking** — `Fire Images Concurrently` carries an internal **840 s soft-deadline** (`Promise.race`) that returns partial results (un-generated images → `success:false` + an `image-batch/timeout-partial` WARN, never a CRITICAL) below the raised global **`N8N_RUNNERS_TASK_TIMEOUT=900 s`** (15 min, fits 2 `gpt-image-2` waves); per-call HTTP timeout 240→300 s clamped to remaining budget; a failed/not-generated image now bills **0** (`Explode Results` applies the floor only on success). | **LIVE — the sole image-gen path: `Image Resolver`'s generate branch calls it (Block 4), and `Invoke Model`'s dead image branch was deleted (Block 5, 2026-06-15)** |
@@ -1261,9 +1070,15 @@ the canonical form going forward.
 
 ### 15.2 `Agent Orchestrator (v1)` + Stages A/B/C — the generic engine
 
-`n8n/workflows/agent-orchestrator.json`, n8n id `a8XKaijkMFNBpRBa`, **11 nodes** (thin). Entry is
+`n8n/workflows/agent-orchestrator.json`, n8n id `a8XKaijkMFNBpRBa` (thin; expanded in Block 8 with the
+lane-resolution + managed-branch nodes). Entry is
 either a Form Trigger (`taskId`, manual testing) or a `When Called` Execute-Workflow trigger (from
-the webhook producer). It sets status **W trakcie** on a **parallel fire-and-forget side-branch off
+the webhook producer). After Stage A + the `Context OK?` guard, **`Read Agent Lane` → `Resolve Lane` →
+`Lane = managed?`** routes Stage B: **true** → the managed chain (`Call Execute Agent Session` → `Session
+OK?` → `Call Render Agent Output` → `Call Post Reply (Managed)`, passing `doc_attachments`/`session_id`
+through to Post Reply's office-doc branch); **false** → the bare `Call Execute LLM`. An unreadable/invalid
+flag fails safe to bare + `Alert Lane Unreadable` (WARN); an empty managed session → `Alert Session Empty`
+(WARN, no empty post); adapter degradation → `Alert Render Warnings` (WARN) — all via `Post Alert (v1)`. It sets status **W trakcie** on a **parallel fire-and-forget side-branch off
 the trigger itself** — so the requester sees "W trakcie" within ~1 s of webhook receipt, not after the
 ~30 s context build (repositioned 2026-06-11; a status-write failure routes to `Alert Status Failed`
 and never blocks the run). In parallel it calls three stage subworkflows in sequence — each a
@@ -1288,7 +1103,15 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   routing returns the **Gemini** alias for all multimodal tasks (`haxe-gemini-flash`/`-pro` by tier; ADR-043
   made Gemini the active multimodal route, superseding both the former "PD guard drops images" stance and the
   Claude-direct vision path).
-- **Stage B — `Execute LLM Call (v1)`** (`n8n/workflows/execute-llm-call.json`, id `9qdJA4xnAGbxqkt9`,
+- **Stage B (managed, default) — `Execute Agent Session (v1)` → `Render Agent Output (v1)`** (ADR-053/055):
+  resolve the tier agent from `agent_routing` (Niski→Haiku, Średni→Sonnet, Wysoki→Opus, Krytycznie ważne→Opus
+  — Fable repointed) bound to the persistent environment; upload input images to the Files API; create + send
+  the session; poll to idle (web search, code execution, Skills run in-harness; the client-side custom-tool
+  loop is retained for ADR-054's future Google tool, dormant for image since it runs via the MCP server);
+  compute the session USD cost; enumerate produced office-docs. `Render Agent Output (v1)` then turns the
+  agent's block-array into the Post Reply contract (`rendered_delta` + `image_manifest`, fetching produced
+  images from the carrier). Verified live across text / web-research / image-gen / vision / office-doc (Block 9).
+- **Stage B (bare, dormant failover) — `Execute LLM Call (v1)`** (`n8n/workflows/execute-llm-call.json`, id `9qdJA4xnAGbxqkt9`,
   12 nodes): `Invoke Model (v1)` → drafted reply + cost; forwards `image_blocks_json` to Invoke Model.
   **Multimodal output (Block 12, 2026-06-13):** the drafting model now returns the **output-block list**, so
   Stage B runs `Call Invoke Model → Parse Output Blocks (tolerant JSON parse; un-parseable → single text block)

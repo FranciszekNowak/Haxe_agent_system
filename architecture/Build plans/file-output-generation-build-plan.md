@@ -1,5 +1,12 @@
  File Output Generation: block-based build plan (ADR-045 + ADR-046)
 
+ > **SUPERSEDED 2026-06-22 — do not build from this plan.** This plan generated office documents on the
+ > *bare* Messages API plus our own code-execution and a hand-built Skills layer. ADR-053 (Managed Agents)
+ > replaced that approach: office-document output (docx/xlsx/pptx/pdf) is now produced by **Anthropic
+ > Skills inside the Managed Agents runtime** and delivered as ClickUp attachments by `Post Reply (v1)`
+ > (ADR-053 Block 7), verified live in the Block 9 cutover. Kept for historical context only. See
+ > `architecture/Build plans/adr-053-managed-agents/master-plan.md` and ADR-053/ADR-055.
+
  This is a self-contained master plan for the file-output capability. Read it in full at the start of
  every block. It can run standalone or be appended to the existing GDPR/multimodal master plan; its blocks
  are numbered F1..F5 to avoid collision. Same routine as the other plans: read this file top to bottom,
