@@ -6,6 +6,18 @@ Depends on: ADR-053 (Managed Agents switch), ADR-049 (per-user permission fideli
 References: ADR-035 (cost logging)
 Beta surface: Anthropic Managed Agents Vault (OAuth auto-refresh, `vault_ids` per session, credentials proxied outside the sandbox)
 
+> **Build status (updated 2026-06-22; full consequences reconciled in master-plan Block 6).** This is being
+> built **ClickUp-only**; Google (Drive + Gmail) DWD is **deferred to a follow-up ADR**. Two Block-0 reshapes
+> override the mechanism described below: (1) ClickUp OAuth tokens **do not expire and issue no refresh
+> token**, so the per-user credential is a **`static_bearer`** holding the access token — **not** the
+> "OAuth auto-refresh" credential the Beta-surface line and §2 describe, and there is no refresh machinery;
+> (2) the as-U **REST `GET task` extraction is load-bearing**, not optional, because the hosted ClickUp MCP
+> returns no attachment metadata/content. **Block 1 landed (scaffold, not yet wired into sessions):** the
+> per-user credential store (`user_clickup_credentials`, migration 039; one Anthropic Vault per user), the
+> OAuth app-secret getter (`get_clickup_oauth_app()`, migration 040), and the consent/onboarding tool
+> (`scripts/onboard-clickup-user.mjs`). See `architecture/Build plans/adr-054-clickup-scoped-retrieval/`
+> (`master-plan.md`, `block-0-findings.md`, `block-1-findings.md`).
+
 ## Decision (verdict first)
 
 The managed agent gathers context from ClickUp, Gmail, and Drive under the triggering user's identity, enforced by n8n at the executor level, never by the agent. Google uses domain-wide delegation through a custom tool; ClickUp uses per-user OAuth tokens held in the Vault and selected per session. Task-bound context is pre-gathered deterministically; only open-ended discovery runs as live scoped tools. Scope is enforced by the credential, so a prompt-injected agent cannot exceed the user's permissions.

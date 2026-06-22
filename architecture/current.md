@@ -49,8 +49,9 @@ senior-management intervention.
    **bare LiteLLM lane** (`(impact, modality)` PD-blind routing — Anthropic direct / Vertex Gemini, ADR-043)
    is **retained as the dormant outage failover** (text + image; web research retired), selected by the
    `config.agent_lane` flag (`managed` | `bare`, default `managed`; an unreadable flag fails safe to
-   `bare` + WARN). ADR-054 (per-user permission-scoped retrieval within the lane) is accepted but not yet
-   built. See ADR-053/054/055, and the live summary after §3.
+   `bare` + WARN). ADR-054 (per-user permission-scoped ClickUp retrieval within the lane) is accepted and
+   in progress — Block 1 scaffold (per-user credential store + onboarding) landed, not yet wired into
+   sessions. See ADR-053/054/055, and the live summary after §3.
 
 4. **Supabase (eu-west-1, Ireland)** — application database. Operational logs, threaded
    human feedback, process-change proposals, conversation session cache, email
@@ -239,11 +240,19 @@ inline — no re-upload, mirroring the bare lane's `Image Resolver`.
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the
 image-MCP health monitor (`Image MCP Health Monitor (v1)`), all every 6h via `Post Alert (v1)`.
 
-**ADR-054 — permission-scoped context retrieval (accepted, NOT yet built).** The next direction: the
-managed agent gathers ClickUp / Gmail / Drive context **under the triggering user's identity, enforced by
-n8n at the executor** (scope lives in the credential, never trusted to the agent) — Google via domain-wide
-delegation (a client-side custom tool on the retained loop), ClickUp via per-user OAuth held in the Managed
-Agents Vault. Scope-correctness testing is its mandatory acceptance gate.
+**ADR-054 — permission-scoped context retrieval (accepted; in progress — ClickUp-only, Block 1 scaffold
+landed).** The direction: the managed agent gathers context **under the triggering user's identity, enforced
+by n8n at the executor** (scope lives in the credential, never trusted to the agent). This build is **scoped
+to ClickUp only** (operator decision 2026-06-22); Google (Drive + Gmail) is deferred to a follow-up ADR.
+Each member's own ClickUp OAuth access token is held as a `static_bearer` credential in a **per-user**
+Anthropic Vault (one vault per user — credentials are keyed by `mcp_server_url`, so same-URL creds can't
+share a vault), and a session attaches only the triggering user's vault, scoping every ClickUp MCP call to
+what that human can see. **Built so far (Block 1, not yet wired into sessions):** the credential store —
+`user_clickup_credentials` (migration 039, RLS-enabled), the OAuth app-secret getter `get_clickup_oauth_app()`
+(migration 040), and the consent/onboarding tool `scripts/onboard-clickup-user.mjs`. ClickUp OAuth tokens
+don't expire (no refresh machinery). **Still bot-token-only in production** until session binding (Block 2),
+scoped MCP discovery + retiring the `Check Space Member` software filter (Block 3), and the as-U REST
+extraction tool (Block 4) land. Scope-correctness testing (Block 5) is its mandatory acceptance gate.
 
 Per-block build history: `architecture/Build plans/adr-053-managed-agents/` (`master-plan.md` +
 `block-*-findings.md`).
