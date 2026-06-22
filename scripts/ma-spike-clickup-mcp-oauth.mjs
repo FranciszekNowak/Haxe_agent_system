@@ -160,6 +160,19 @@ let vaultId = null;
   if (!tok.access_token) throw new Error('no access_token in token response: ' + JSON.stringify(tok).slice(0, 300));
   console.log('OK token obtained - DURABILITY:', JSON.stringify({ token_type: tok.token_type, expires_in: tok.expires_in ?? '(none -> non-expiring)', scope: tok.scope ?? '(unspecified)' }));
 
+  // 4b) Does the SAME MCP-OAuth token also work on ClickUp REST? Decides one-token (identity + Block-4
+  //     extraction ride the MCP token) vs two-token onboarding, and yields the consenting user's
+  //     clickup_user_id for the mapping row. Tries raw Authorization then Bearer. Token itself never printed.
+  let restStatus = 'n/a', whoami = null;
+  for (const scheme of [tok.access_token, 'Bearer ' + tok.access_token]) {
+    try {
+      const r = await fetch('https://api.clickup.com/api/v2/user', { headers: { Authorization: scheme } });
+      restStatus = r.status;
+      if (r.ok) { const j = await r.json().catch(() => ({})); whoami = j && j.user ? { id: j.user.id, username: j.user.username } : null; break; }
+    } catch (e) { restStatus = 'error:' + (e && e.message); }
+  }
+  console.log('OK REST /user with the MCP token -> HTTP', restStatus, '| identity:', JSON.stringify(whoami));
+
   // 5) throwaway vault + mcp_oauth credential (no refresh block; far-future expiry)
   const vault = await jf('vault', `${ANTHROPIC}/v1/vaults`, { method: 'POST', headers: aHdr(), body: JSON.stringify({ display_name: 'spike-clickup-mcp-oauth-054' }) });
   vaultId = vault.id;

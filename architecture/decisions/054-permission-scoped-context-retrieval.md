@@ -17,7 +17,12 @@ Beta surface: Anthropic Managed Agents Vault (OAuth auto-refresh, `vault_ids` pe
 > OAuth app-secret getter (`get_clickup_oauth_app()`, migration 040), a CSRF-state table (migration 041), and
 > a self-serve hosted consent flow (n8n `ClickUp OAuth Onboarding (v1)`: `/webhook/clickup-oauth-start` →
 > ClickUp consent → `/webhook/clickup-oauth-callback` mints the per-user Vault credential + mapping row); a
-> local-loopback script (`scripts/onboard-clickup-user.mjs`) is a dev fallback. See
+> local-loopback script (`scripts/onboard-clickup-user.mjs`) is a dev fallback. **Reshape (2026-06-22):** the
+> hosted ClickUp MCP authenticates only with tokens from its OWN OAuth server (MCP Authorization spec,
+> `mcp.clickup.com/oauth/*`, DCR + PKCE, public client), **not** our classic OAuth-app token — proven by
+> probe. Fix (chosen): rework onboarding to that MCP OAuth flow; the MCP-issued token is accepted and lives
+> ~10 years (stored as `static_bearer`, no refresh). The classic app token is retained for the Block-4 as-U
+> **REST** extraction. See
 > `architecture/Build plans/adr-054-clickup-scoped-retrieval/`
 > (`master-plan.md`, `block-0-findings.md`, `block-1-findings.md`).
 

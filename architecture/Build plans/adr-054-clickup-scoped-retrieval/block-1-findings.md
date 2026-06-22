@@ -50,8 +50,30 @@ MCP rejects), and Block-0's inference that an OAuth-app token would be honored b
    proxies to ClickUp REST as U. Full control + reuses the image-MCP hosting pattern; but it is a custom
    build, against the "consume the commodity hosted MCP" preference.
 
-The original "Operator-gated remainder" below (onboard 2 users + negative smoke) is **paused** behind this
-decision: there is no point onboarding more users on a token type the MCP rejects.
+**RESOLUTION (2026-06-22) — Option 1 confirmed viable; Option 2 ruled out.** The Managed Agents vault docs
+confirm Anthropic never drives the MCP consent (you obtain + store the token; it only injects/refreshes), so
+**Option 2 is out**. The probe `scripts/ma-spike-clickup-mcp-oauth.mjs` then drove the MCP's own OAuth end to
+end (DCR `200` → PKCE authorize → token), and the resulting token was **accepted by the MCP**
+(`mcp_oauth_validate` → **`valid`**). Key facts:
+- **Durability:** `expires_in: 315360000` (**10 years**) → effectively non-expiring → store as
+  **`static_bearer`**, no refresh machinery (Franciszek's "no expiry" intuition holds).
+- **Scope:** requested `scope=read`, ClickUp returned `read write` — it grants full regardless, so **read-only
+  stays enforced by the `mcp_toolset` allowlist (Block 3)**, not by the OAuth scope (Block-0 Reshape 2 stands).
+- **DCR shape:** minimal RFC 7591 body (`redirect_uris`, `token_endpoint_auth_method:none`, grant/response
+  types) `200`s; adding `client_name`/`scope` `400`s.
+
+**Decision: Option 1 — rework onboarding to ClickUp's MCP OAuth endpoints** (`mcp.clickup.com/oauth/*`,
+DCR + PKCE, public client), storing the MCP token as a per-user `static_bearer` keyed to `mcp.clickup.com/mcp`.
+Everything downstream (per-user vault, `vault_ids` injection, session binding) is unchanged.
+
+**One open sub-question before the rework (a REST-identity check is now in the probe):** does the MCP-OAuth
+token also authenticate ClickUp **REST**? The mapping row needs the consenting user's `clickup_user_id`, and
+Block-4 attachment extraction is REST-based. If the MCP token works on REST → **one token, one consent**
+(identity + extraction + discovery all on it). If not → also mint the classic REST OAuth token and store a
+**second** per-user credential (two consents). The next probe run answers it.
+
+The "Operator-gated remainder" below (onboard 2 users + negative smoke) resumes **after** the onboarding rework
+(no point onboarding users on the old, MCP-rejected token type).
 
 ## What was built and verified live this block
 
