@@ -441,14 +441,83 @@
       }
     },
     {
+      "id": "is-extract-clickup",
+      "name": "Is extract_clickup_task?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2860, 320],
+      "notes": "ADR-054 Block 4b: route the non-image pending custom tool. TRUE (main[0]): name=extract_clickup_task -> Call Extract Tool Handler (reads U's REST token, runs read-input AS U on the task id, returns text + image file_id blocks the agent SEES). FALSE (main[1]): an unregistered custom tool -> Build Error Result Text answers 'not available' so the session never stalls. v1 registers generate_image (now an MCP tool, so its client-side branch is dormant) + extract_clickup_task (this is its first live client-side user).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-extract",
+              "leftValue": "={{ $json.pending_tool_name }}",
+              "rightValue": "extract_clickup_task",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "call-extract-handler",
+      "name": "Call Extract Tool Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [3080, 240],
+      "notes": "ADR-054 Block 4b: service the extract_clickup_task custom-tool call. Forwards the agent's clickup_task_id (parsed from pending_tool_input_json), the triggering caller_user_id (set by n8n from the trigger, NOT the agent -> unspoofable identity), and clickup_scope (for the handler's token-presence guard). The handler (ClickUp Extract Tool Handler v1) reads U's classic REST token from Supabase, runs read-input AS U on the task id (out-of-scope id -> access-denied, never the bot), uploads extracted images to the Files API, and returns { status, tool_result_content_json (text + image file_id blocks), new_warnings_json, new_images_json:'[]' }. onError=continueRegularOutput so a handler failure degrades to a tool result, never throws into the session.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "y985MgyA5lCxOFCH",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ (JSON.parse($json.pending_tool_input_json || '{}').clickup_task_id) || '' }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "clickup_scope": "={{ $json.clickup_scope }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "build-extract-result-text",
+      "name": "Build Extract Result Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3300, 240],
+      "notes": "ADR-054 Block 4b: pass the Extract Tool Handler's result into the loop's result contract. Emits tool_result_content_json (the user.custom_tool_result content[] — text + image file_id blocks the agent reads; Post Tool Result posts it verbatim), new_images_json='[]' (extracted images are consumed by the agent, NOT produced output files, so they must not accumulate into the final reply), and new_warnings_json (real extraction warnings — surfaced once by Classify Alert -> Post Alert; an access-denied is NOT warned, it is the boundary working). Defensive: a handler error (onError) leaves no content -> a failure tool_result + WARN so the session still resumes.",
+      "parameters": {
+        "jsCode": "const h = $json || {};\nlet content = h.tool_result_content_json;\nlet warns = h.new_warnings_json;\nif (!content) {\n  content = JSON.stringify([{ type: 'text', text: 'Ekstrakcja zalacznika nie powiodla sie (blad narzedzia). Pracuj na podstawie dostepnego kontekstu i nie zglaszaj tego jako bledu.' }]);\n  warns = JSON.stringify([{ source: 'managed-agents/extract-handler-failed', err: String((h.error && (h.error.message || h.error)) || 'brak wyniku ekstrakcji').slice(0, 300), severity: 'WARN' }]);\n}\nreturn [{ json: {\n  tool_result_content_json: content,\n  new_images_json: h.new_images_json || '[]',\n  new_warnings_json: warns || '[]'\n} }];"
+      }
+    },
+    {
       "id": "merge-result",
       "name": "Merge Result",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
-      "position": [3300, 200],
-      "notes": "Converge the handler result text (input 0) and the unknown-tool error text (input 1) into ONE stream so Post Tool Result + Build Next State keep a single input. Exactly one branch executes per round.",
+      "position": [3520, 200],
+      "notes": "Converge the image-handler result (input 0, dormant — generate_image is an MCP tool now), the unknown-tool error text (input 1), and the ADR-054 Block 4b extract_clickup_task result (input 2) into ONE stream so Post Tool Result + Build Next State keep a single input. Exactly one branch executes per round.",
       "parameters": {
-        "numberInputs": 2
+        "numberInputs": 3
       }
     },
     {
@@ -481,7 +550,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ events: [ { type: 'user.custom_tool_result', custom_tool_use_id: $('Poll Round').first().json.pending_tool_id, content: [ { type: 'text', text: $json.tool_result_text } ] } ] }) }}",
+        "jsonBody": "={{ JSON.stringify({ events: [ { type: 'user.custom_tool_result', custom_tool_use_id: $('Poll Round').first().json.pending_tool_id, content: ($json.tool_result_content_json ? JSON.parse($json.tool_result_content_json) : [ { type: 'text', text: $json.tool_result_text } ]) } ] }) }}",
         "options": {
           "timeout": 30000
         }
@@ -868,9 +937,49 @@
         ],
         [
           {
+            "node": "Is extract_clickup_task?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is extract_clickup_task?": {
+      "main": [
+        [
+          {
+            "node": "Call Extract Tool Handler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Build Error Result Text",
             "type": "main",
             "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Extract Tool Handler": {
+      "main": [
+        [
+          {
+            "node": "Build Extract Result Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Extract Result Text": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 2
           }
         ]
       ]

@@ -75,14 +75,50 @@ Split mirrors the Block-3 safe-seam approach so each commit leaves a verified wo
   - **Deferred to 4b:** the as-U **positive** (a real REST token fetching a task the user can see) — proven
     end-to-end when the handler resolves the real token. The capability is dormant (no agent wired yet).
 
-- **Block 4b — the agent-facing extraction tool.** A `ClickUp Extract Tool Handler (v1)` sub-workflow
-  (mirrors `Image Tool Handler`): reads U's REST token via `get_clickup_rest_token(caller_user_id)` →
-  calls `read-input` as-U → uploads any image blocks via `Upload Input Images` → returns `{status, text,
-  file_ids, images[], warnings[]}`. Wire it into `Execute Agent Session`'s retained loop (a new branch beside
-  `Is generate_image?` routing `extract_clickup_task`). Register the custom tool + inspect-then-extract
-  steering in `Sync Agent Definitions` (bump `CONV`). Token-presence guard: WARN if a user has a Supabase REST
-  token but no Anthropic MCP vault (or vice-versa) — a half-onboarded user whose discovery or extraction would
-  silently no-op.
+- **Block 4b — the agent-facing extraction tool. ✅ DONE + LIVE-VERIFIED (2026-06-23).**
+  New sub-workflow **`ClickUp Extract Tool Handler (v1)`** (`y985MgyA5lCxOFCH`, 9 nodes): `When Called`
+  (clickup_task_id, caller_user_id, clickup_scope) → `Get REST Token` (`get_clickup_rest_token`) → `Has Token?`
+  → (token) `Read Input as-U` → `Upload Images` (`Upload Input Images`, images filtered to png/jpeg/gif/webp) →
+  `Build Extract Result` → `Merge Result` → `Return`; the no-token branch → `Build No Token Result`. Returns
+  `{ status, tool_result_content_json (text + image file_id blocks), new_warnings_json, new_images_json:'[]' }`.
+  `saveDataSuccessExecution:none` so U's REST token is not persisted in its execution data.
+  - **`Execute Agent Session (v1)`** (33 nodes): added `Is extract_clickup_task?` on the `Is generate_image?`
+    FALSE branch → `Call Extract Tool Handler` → `Build Extract Result Text` → `Merge Result` (2→3 inputs).
+    `Post Tool Result` now posts `tool_result_content_json` as the content array verbatim (falls back to the
+    single-text `tool_result_text` for the dormant image path — backward-compatible).
+  - **`Sync Agent Definitions (v1)`** (`CONV` 5→6): registered the `extract_clickup_task` custom tool
+    (`{type:'custom', input_schema:{clickup_task_id}}`) + inspect-then-extract steering on the 3 routed agents.
+  - **Two build bugs caught + fixed during verification:** (1) `$json` chaining is unreliable across consecutive
+    Execute Workflow nodes — switched the downstream reads to explicit `$('NodeName').first().json` (the pattern
+    that already worked); (2) `Upload Input Images`' aggregated `file_map` entries carry no `ok` field (it
+    already drops failures), so the `f.ok && f.file_id` gate rejected every upload → gate on `f.file_id` only.
+  - **Token-presence guard:** un-onboarded caller → an "unavailable" tool result (no extraction, never the bot),
+    WARN only when `clickup_scope==='scoped'` (half-onboarded: discovery present but REST token missing),
+    suppressed for un-onboarded (Block 2 already WARNs — mirrors Block 3a).
+  - **End-to-end proof:** an agent driven as the onboarded user (`caller_user_id` 2521617) called
+    `extract_clickup_task` on a clean disposable task (a text note + a green PNG); it returned
+    *"Sekretny znacznik … EKSTRAKCJA-OK-7741, a obraz ma zielony kolor"* — proving document text **and** image
+    vision both reached the agent through the as-U tool. `status:completed`, 0 warnings, alerts 0 CRITICAL.
+
+### Known limitation + residual (flagged, not silently accepted)
+- **Corrupt source raster terminates the session.** A first e2e attempt on the junk test task `869dhad2q` (which
+  holds a deliberately broken doc + a corrupt image) hit `session.error "Could not process image"` with
+  `retry_status:terminal` — the Managed Agents API kills the session irrecoverably on an unprocessable image.
+  This is a **pre-existing fragility shared with the input-image path** (documented on `Create Session`), not
+  introduced by extraction. Mitigation added: delivered images are filtered to vision-supported raster formats
+  (png/jpeg/gif/webp), catching bad *formats* (svg/tiff/heic/unknown). A corrupt-but-valid-format raster can
+  still terminate. **Follow-up worth considering:** validate/transcode each image before delivery (a shared
+  hardening for both the extraction and input-image paths).
+- **`read-input` logs the `as_user_token`.** The handler suppresses its own execution data, but `read-input`'s
+  own success executions still record the `as_user_token` When-Called input (the token is U's ~10y ClickUp OAuth
+  token). Low risk on a single-tenant team-only n8n, but a log-hygiene follow-up (e.g. set `read-input`
+  success-saving off, or a dedicated as-U reader) is worth weighing.
+
+### Still pending (not Block 4)
+The cross-department **negative** matrix (a Marketing user denied a Purchasing-only task via *both* discovery and
+extraction) is **Block 5's** mandatory gate and needs 1 Marketing + 1 Purchasing onboarded test user (still
+outstanding from Block 1's DoD). Block 4 proved the access-denied **mechanism** (4a: bogus token → ClickUp 401 →
+access-denied, never the bot) and the full positive path; the exhaustive cross-dept proof is Block 5.
 
 **Verification reach:** the positive path and the access-denied *mechanism* (garbage/denied id) are testable
 now with Franciszek. The true **cross-department negative** ("extract a Purchasing-only task as a Marketing
