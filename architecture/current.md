@@ -463,7 +463,7 @@ a data location change.
 > longer threaded through context assembly, workspace search, or the research gate: removed from
 > `assemble-context` (the `Call PD Verifier` node + rewire `Assemble Parent Context → Assemble Task Context`, the
 > `personal_data` mappings to Assemble Task Context/Decide-Research, the `personal_data`/`pd_verifier_ok` outputs of
-> `Build Prompt`, the `r4` rule + `pd_verifier=` token of the context-health check), `workspace-search`
+> `Build Prompt`, the `r4` rule + `pd_verifier=` token of the context-health check), `assemble-task-context`
 > (input + both Invoke-Model mappings), `decide-research` (input, gate `model_override` and research
 > fallback hard-set to the non-PD `-direct` aliases, gate mapping), `execute-llm-call` and
 > `agent-orchestrator` (the `personal_data` passthrough). `fable-access-monitor`'s runbook SQL dropped
@@ -1249,11 +1249,11 @@ See ADR-027 (post-back) and ADR-015 (generic pipeline).
 
 ### 15.3 `Assemble Parent Context (v1)`
 
-> Renamed 2026-06-23 from **`Context Gather (v1)`** (display name only; n8n id, repo file
-> `context-gather.json`, and callers — which reference it by id — are unchanged). Historical ADRs
-> (e.g. ADR-020) keep the old name.
+> Renamed 2026-06-23 from **`Context Gather (v1)`** (display name + repo file
+> `context-gather.json` → `assemble-parent-context.json`; n8n id and callers — which reference it
+> by id — are unchanged). Historical ADRs (e.g. ADR-020) keep the old name/path.
 
-`n8n/workflows/context-gather.json`, n8n id `qgM37HdQj78Rn090`. Callable via Form Trigger
+`n8n/workflows/assemble-parent-context.json`, n8n id `qgM37HdQj78Rn090`. Callable via Form Trigger
 (`taskId`) or an Execute-Workflow trigger. Reads a ClickUp task and assembles a labelled
 context object: `current_task`, ordered `ancestor_chain`, stub `linked_doc_leaves`,
 `truncated_at_depth`. Shape = a bounded unroll of native ClickUp `Task→Get` fetches gated by
@@ -1407,8 +1407,8 @@ ADR-051 (image generation moved out to the parallel batch).
 ### 15.5 `Assemble Task Context (v1)`
 
 > Renamed 2026-06-23 from **`Workspace Search (v1)`** (and the **`Search (v1)`** shorthand;
-> display name only — n8n id, repo file `workspace-search.json`, and id-based callers unchanged).
-> The old names appear in historical ADRs (e.g. ADR-031) and commits.
+> display name + repo file `workspace-search.json` → `assemble-task-context.json`; n8n id and
+> id-based callers unchanged). The old names/path appear in historical ADRs (e.g. ADR-031) and commits.
 
 `Assemble Task Context (v1)` sits between Assemble Parent Context and Build Prompt (ADR-031). (The former `PD Verifier (v1)`
 seam — id `hzwmak7UBpuHaiTO`, a stub always returning `personal_data: false` — was **deleted in Block 2**,
