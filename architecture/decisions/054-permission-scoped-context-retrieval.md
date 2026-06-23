@@ -56,9 +56,12 @@ Beta surface: Anthropic Managed Agents Vault (OAuth auto-refresh, `vault_ids` pe
 > `Post Alert (v1)`). **Live proof:** an onboarded run (Franciszek) performed in-harness scoped discovery —
 > the agent called `clickup_get_workspace_hierarchy` and returned his real Spaces, `status:completed`, 0
 > warnings; an un-onboarded run completed cleanly (`outcome:done`, not terminated) with exactly one WARN;
-> Alerts channel 0 CRITICAL / 1 expected WARN. **Still pending — Block 3b:** retire the open-ended
-> search-as-bot path + the `Check Space Member` software filter (R3 violation) from `workspace-search` /
-> Stage A, now that scoped discovery is proven live.
+> Alerts channel 0 CRITICAL / 1 expected WARN. **Block 3b DONE + live-verified (2026-06-23):** the open-ended
+> search-as-bot path + the `Check Space Member` / `Layer B Filter` software membership gate (the R3 violation)
+> are removed from `Workspace Search (v1)` (36→12 nodes); it now fetches only the triggering task's own comments
+> + threaded replies and returns the unchanged contract with `additional_context` always empty. Open-ended
+> discovery is now exclusively the agent's in-harness scoped ClickUp MCP. See the Block 3b outcome section below.
+> **Still pending — Block 4:** the as-U REST extraction tool on the retained loop.
 
 ## Decision (verdict first)
 
@@ -137,3 +140,15 @@ The enforcement point is now wired. `Execute Agent Session (v1)` (`Rtb1cZbmUqmfG
 3. **`Create Session`** — `vault_ids` extended from `[image_mcp_vault_id]` to `[image_mcp_vault_id, clickup_mcp_vault_id].filter(Boolean)`, each conditional/fail-soft.
 
 **Degrade, not break** (decision #5): an un-onboarded caller's session is created with only the image vault and still runs on deterministic pre-gather; the run returns a result and fires exactly one WARN telling the operator to onboard that user. **Verified live** by driving the workflow both ways: the onboarded caller (Franciszek, `caller_user_id` 2521617) produced a session whose `vault_ids` read back as `[image_vault, his_vault]`; an un-onboarded caller produced an image-vault-only session, `clickup_scope: 'degraded'`, and exactly one consolidated WARN on the Alerts channel; both sessions created and completed. Confirmed in passing that attaching a ClickUp vault whose hosted MCP is **not yet registered** on the agent does **not** error at `sessions.create` — so the binding (Block 2) safely precedes MCP registration (Block 3); the attached vault is inert until Block 3 wires the discovery MCP. No new silent-failure surface: the only new failure mode (un-onboarded user) is the loud WARN; a resolve-query error already degrades via `onError: continueRegularOutput`.
+
+## Block 3b build outcome (2026-06-23) — software filter retired (R3 closed for discovery), live-verified
+
+With scoped discovery proven live (Block 3a), the open-ended **search-as-bot** path and the **`Check Space Member` / `Layer B Filter`** software membership gate were removed from `Workspace Search (v1)` (`eL3fJuRMpzVRuVUT`). This closes the **R3 violation** on the discovery surface: post-hoc filtering of bot-retrieved candidates was exactly the "service account plus application-code permission filtering" R3 rejects. Scope now comes from the API acting as U — the agent's own per-user-scoped ClickUp MCP — not from our filter.
+
+What was removed (the sub-workflow went **36 → 12 nodes**): the Haiku query-extraction sub-call (`triggered_by=search_step`), the ClickUp task search + dedup, the `Space Loop` → `Check Space Member` → `Layer B Filter` membership gate (`GET /space/{id}/member` per candidate space, fail-closed), the up-to-5 accessible-artifact read-back, and the selective-condense Haiku pass.
+
+What was kept (task-bound, U's own task — no leak): the `Fetch Task Comments` (last 30 comments) + the threaded-reply sub-branch (`Pick Threads` → `Has Threads?` → `Expand Threads` → `Fetch Replies` → `Collect Replies`), with their two best-effort WARN side-branches. `Build Output` is now the single linear terminal leaf (keeps the sub-workflow-return-determinism rule) and emits the **unchanged** `{task_comments, additional_context, sources_used, sources_filtered_out}` contract with `additional_context` always `''`, `sources_used: []`, `sources_filtered_out: 0` — so `Assemble Context and Build Prompt (v1)` (and any other caller) does not break; it simply omits the now-empty "Dodatkowy kontekst" section and keeps `workspace_search_ok: true`.
+
+**Lane consequence (recorded honestly).** Stage A (`Assemble Context`) is **shared** by both the bare `Agent Orchestrator` spine and the managed `Execute Agent Session` lane, so retiring the bot-driven open-ended search removes that `additional_context` enrichment for **both**. The replacement — agent-driven, credential-scoped discovery via the hosted ClickUp MCP — currently exists **only on the managed lane** (Block 3a). The bare lane therefore no longer receives open-ended semantic enrichment; it retains the triggering task's own comments plus the deterministic Context Gather / Read Input pre-gather. This is consistent with the locked decision that the managed lane is the path forward (ADR-053); the bare lane's reduction is a loss of enrichment, **not** a loosening of scope (it gets strictly less, never more, and never another department's data).
+
+**Verified live** (Definition of Done): drove `Workspace Search (v1)` directly on a disposable `Lista testy AI` task carrying one top-level comment + one threaded reply — it returned both (reply interleaved, `↳`-prefixed, `is_reply:true`) with `additional_context` empty and the contract intact, every node on the expected branch, no search/Layer-B nodes left; drove the full Stage A (`Assemble Context and Build Prompt (v1)`) on the same task — `workspace_search_ok: true`, the comments present in the built prompt, no "Dodatkowy kontekst" section, `input_warnings_count: 0`; Alerts channel **0 CRITICAL / 0 WARN**; drift-check clean; disposable task deleted. Migration `009`'s `search_step` `triggered_by` value is now unused but left in place (append-only, harmless).

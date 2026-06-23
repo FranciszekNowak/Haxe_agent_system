@@ -286,10 +286,21 @@ already WARNs). A `ClickUp MCP Health Monitor (v1)` (`hrtNkFFL4iMVn9J9`) dead-ma
 endpoint every 6h (`/.well-known/oauth-authorization-server`; 2xx healthy, else CRITICAL). **Verified live:** an
 onboarded run performed in-harness scoped discovery (the agent called `clickup_get_workspace_hierarchy` and
 returned the caller's real Spaces, `status:completed`, 0 warnings); an un-onboarded run completed cleanly
-(`outcome:done`, not terminated) with exactly one WARN; Alerts 0 CRITICAL / 1 expected WARN. **Still pending:**
-**Block 3b** retires the open-ended search-as-bot path + the `Check Space Member` software filter (R3 violation)
-from `workspace-search` / Stage A, now that scoped discovery is proven live; the as-U REST extraction tool is
-**Block 4**. Scope-correctness testing (Block 5) is its mandatory acceptance gate.
+(`outcome:done`, not terminated) with exactly one WARN; Alerts 0 CRITICAL / 1 expected WARN. **Built (Block 3b —
+software filter retired, 2026-06-23):** now that scoped discovery is proven live, the open-ended search-as-bot
+path **and** the `Check Space Member` post-hoc membership filter (the ADR-054 R3 violation) are removed from
+`Workspace Search (v1)`. The sub-workflow went from 36 nodes to **12**: dropped query extraction (Haiku),
+ClickUp task search, the `Space Loop`/`Check Space Member`/`Layer B Filter` membership gate, the artifact
+read-back, and the selective-condense Haiku pass. It now fetches **only the triggering task's own comments +
+threaded replies** on the bot token (U already has access — no cross-department leak) and returns the
+**unchanged** `{task_comments, additional_context, sources_used, sources_filtered_out}` contract with
+`additional_context` always `''`, so `assemble-context` callers don't break. Open-ended related-context
+discovery is now entirely the agent's in-harness, per-user-scoped ClickUp MCP (Block 3a). **Verified live:**
+driving `Workspace Search (v1)` on a disposable task returned the top-level comment + interleaved threaded reply
+with `additional_context` empty; the full Stage A (`Assemble Context and Build Prompt (v1)`) reported
+`workspace_search_ok: true` with the comments in the built prompt and **no** "Dodatkowy kontekst" search section;
+0 CRITICAL / 0 WARN. **Still pending:** the as-U REST extraction tool is **Block 4**. Scope-correctness testing
+(Block 5) is its mandatory acceptance gate.
 
 Per-block build history: `architecture/Build plans/adr-053-managed-agents/` (`master-plan.md` +
 `block-*-findings.md`).
@@ -830,8 +841,10 @@ The ClickUp substrate the generic pipeline reads from. State as of 2026-06-09:
 
 - **Agent CU account — DONE.** `agent@haxe.com` is a ClickUp **Member** (only Members can mint
   the personal API token the pipeline needs); its token drives all ClickUp I/O and reads CU
-  Docs via the Docs v3 API. Caller-scoping is enforced in software (Layer A prompt + Layer B
-  Space-membership in `Search (v1)`), not by the account. See §13.3, ADR-004, ADR-026.
+  Docs via the Docs v3 API. Caller-scoping was historically enforced in software (Layer A prompt
+  + Layer B Space-membership in `Search (v1)`), not by the account; ADR-054 **retired the Layer B
+  software filter** (Block 3b) and moves managed-lane scope onto the caller's own per-user ClickUp
+  OAuth credential instead. See §13.3, §15.5, ADR-004, ADR-026, ADR-054.
 - **Workspace custom fields — DONE** (verified 2026-06-03). Six live `[AI] …` fields drive
   agent control: `Czy zadanie dla AI` (autonomous gate), `Wpływ zadania na wynik firmy`
   (5-level impact → model tier + queue priority), `Finalny, zaakceptowany efekt`
@@ -968,9 +981,13 @@ Single base account `agent@haxe.com`. Intended as a comment-write-only Guest, bu
 ClickUp won't let guests mint an API token, so it is a **Member** (broad edit/delete
 rights) — see ADR-004 (2026-06-02 update). Runtime scope narrows to the calling user's
 permissions (see §3, ADR-004). **Layer A** (prompt-level) is enforced by the persona
-prompt system. **Layer B** (space-membership enforcement) is implemented in `Search (v1)`
-(ADR-031): candidate artifacts from spaces where the caller is not a member are excluded
-fail-closed (`GET /space/{id}/member` check; failure = exclude, not include).
+prompt system. **Layer B** (the software space-membership filter that `Search (v1)` ran via
+`GET /space/{id}/member`, ADR-031) was **retired in ADR-054 Block 3b (2026-06-23)**: post-hoc
+filtering of bot-retrieved results is exactly what ADR-054 R3 rejects. On the **managed lane**,
+scope is now enforced by the **credential** — the agent's open-ended ClickUp discovery runs
+in-harness under the caller's own per-user OAuth token (Block 3a), so it can never see another
+department's data to begin with. `Search (v1)` no longer does open-ended discovery at all; it now
+returns only the triggering task's own comments (see §15.5).
 
 > **Least-privilege model (ADR-026).** The durable control is *capability containment*:
 > the LLM holds no credentials and no tools (`Invoke Model` is pure prompt→completion),
@@ -1102,7 +1119,7 @@ failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent S
 | **`Context Gather (v1)`** | Assemble labelled task context (task + ancestor chain + fields) | **LIVE** |
 | **`Invoke Model (v1)`** | Centralized model-call seam: route → LiteLLM → exact PLN cost → log. **Text + multimodal-INPUT only** since ADR-051 Block 5 (image generation moved to `Generate Images Parallel`) | **LIVE** |
 | **`Generate Images Parallel (v1)`** (id `2keb6XVWq5PG0leK`, ADR-051) | Concurrent image-gen batch: `Promise.all` over a bounded pool (cap `config.image_concurrency_cap`=4) fires all of a run's `generate` images at once (wall-clock ≈ slowest single, not the sum); inline image-resolution (ADR-045) + per-image one-tier-below fallback; reuses `Log Model Run` for per-image cost; returns per-image results + `warnings[]`. Auth via the image-scoped LiteLLM key in Supabase Vault (`get_litellm_image_key()`). Cap raised 4→5 (migration 033). **Block 7 (2026-06-16): timeout is non-blocking** — `Fire Images Concurrently` carries an internal **840 s soft-deadline** (`Promise.race`) that returns partial results (un-generated images → `success:false` + an `image-batch/timeout-partial` WARN, never a CRITICAL) below the raised global **`N8N_RUNNERS_TASK_TIMEOUT=900 s`** (15 min, fits 2 `gpt-image-2` waves); per-call HTTP timeout 240→300 s clamped to remaining budget; a failed/not-generated image now bills **0** (`Explode Results` applies the floor only on success). | **LIVE — the sole image-gen path: `Image Resolver`'s generate branch calls it (Block 4), and `Invoke Model`'s dead image branch was deleted (Block 5, 2026-06-15)** |
-| **`Search (v1)`** | Comment + external-artifact retrieval, Layer-B scoped | **LIVE** |
+| **`Search (v1)`** | Triggering-task comment + threaded-reply fetch (open-ended search + Layer-B retired, ADR-054 Block 3b) | **LIVE** |
 | **`CU Webhook Producer (v1)`** | Comment-webhook trigger → verify → detect mention → call spine | **LIVE (@-mention)** |
 | **`Post Alert (v1)`** | Centralized alert seam → ClickUp Alerts task | **LIVE** |
 | **`Error Handler (v1)`** | Global `errorWorkflow`: throws → CRITICAL + status rollback | **LIVE** |
@@ -1389,15 +1406,25 @@ ADR-051 (image generation moved out to the parallel batch).
 seam — id `hzwmak7UBpuHaiTO`, a stub always returning `personal_data: false` — was **deleted in Block 2**,
 ADR-043; the pipeline is PD-blind.)
 
-- **`Search (v1)`** (id `eL3fJuRMpzVRuVUT`, 22 nodes) — always fetches the last **30 task
-  comments**; if the triggering comment references external artifacts, extracts search queries
-  via a Haiku sub-call (`triggered_by=search_step`, logged as an `agent_runs` sub-row), searches
-  ClickUp tasks + docs, enforces **Layer B** fail-closed (`GET /space/{id}/member` per candidate
-  space; caller not a member → excluded), reads up to **5** accessible artifacts, and condenses
-  if > ~4000 tokens (second Haiku sub-run). Returns `task_comments`, `additional_context`,
-  `sources_used`, `sources_filtered_out`; `Build Prompt` injects these before the task context.
-  Requires migration `009` (`search_step` added to `agent_runs.triggered_by` CHECK) — apply
-  before Search processes a triggering comment with external references.
+- **`Search (v1)`** (id `eL3fJuRMpzVRuVUT`, **12 nodes** since ADR-054 Block 3b, 2026-06-23) — now
+  fetches **only** the triggering task's last **30 comments + their threaded replies** on the bot
+  token (U already has access to U's own task — no cross-department leak) and returns the unchanged
+  `{task_comments, additional_context, sources_used, sources_filtered_out}` contract with
+  `additional_context` **always `''`**, `sources_used: []`, `sources_filtered_out: 0`. `Build Prompt`
+  injects `task_comments` before the task context; with `additional_context` empty it simply omits the
+  "Dodatkowy kontekst (wyszukiwanie semantyczne)" section.
+  > **Retired in Block 3b (ADR-054 R3):** the former open-ended **search-as-bot** path — the Haiku
+  > query-extraction sub-call (`triggered_by=search_step`), the ClickUp task/doc search, the
+  > `Check Space Member` / `Layer B Filter` post-hoc membership gate, the up-to-5 artifact read-back,
+  > and the selective-condense Haiku pass — was all removed. Software-side membership filtering of
+  > open-ended results is exactly the post-hoc filtering ADR-054 R3 rejects; open-ended related-context
+  > discovery now happens **in-harness** via the agent's per-user-scoped ClickUp MCP (Block 3a), where
+  > the credential enforces scope. **Lane impact:** Stage A is shared, so this removes the bot-driven
+  > `additional_context` for **both** lanes; the agent-driven scoped-MCP replacement currently exists
+  > **only on the managed lane** (`Execute Agent Session`), so the bare `Agent Orchestrator` spine no
+  > longer receives open-ended semantic enrichment (it keeps the triggering task's own comments + the
+  > deterministic Context Gather / Read Input pre-gather). Migration `009`'s `search_step`
+  > `triggered_by` value is now unused but harmless (append-only; left in place).
 
 ### 15.6 Post-back — draft comment, rendering, thread-aware replies
 
