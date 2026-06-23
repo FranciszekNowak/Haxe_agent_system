@@ -241,8 +241,8 @@ inline — no re-upload, mirroring the bare lane's `Image Resolver`.
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the
 image-MCP health monitor (`Image MCP Health Monitor (v1)`), all every 6h via `Post Alert (v1)`.
 
-**ADR-054 — permission-scoped context retrieval (accepted; in progress — ClickUp-only, Block 1 scaffold
-landed).** The direction: the managed agent gathers context **under the triggering user's identity, enforced
+**ADR-054 — permission-scoped context retrieval (accepted; in progress — ClickUp-only, Block 3a landed:
+caller-scoped discovery live).** The direction: the managed agent gathers context **under the triggering user's identity, enforced
 by n8n at the executor** (scope lives in the credential, never trusted to the agent). This build is **scoped
 to ClickUp only** (operator decision 2026-06-22); Google (Drive + Gmail) is deferred to a follow-up ADR.
 **Architecture locked to Option A** after three live probes proved the tokens are not interchangeable: ClickUp's
@@ -271,10 +271,25 @@ agent cannot spoof whose scope it runs under. An un-onboarded caller **degrades,
 is simply omitted (`clickup_scope: 'degraded'`) and one consolidated WARN (`managed-agents/clickup-scope-degraded`)
 fires through the existing `Post Alert (v1)` seam, while the run still proceeds on deterministic pre-gather.
 Verified live both ways (onboarded session's `vault_ids` carries the user's vault; un-onboarded session is
-image-vault-only + exactly one WARN; both sessions create and complete). The attached ClickUp vault is **inert in
-production** until **Block 3** registers the hosted ClickUp MCP on the tier agents (and retires the `Check Space
-Member` software filter); the as-U REST extraction tool is **Block 4**. Scope-correctness testing (Block 5) is its
-mandatory acceptance gate.
+image-vault-only + exactly one WARN; both sessions create and complete). **Built (Block 3a — scoped discovery
+live, 2026-06-23):** `Sync Agent Definitions (v1)` now registers the hosted ClickUp MCP (`mcp.clickup.com/mcp`,
+`{type:"url"}`) + a paired **READ-ONLY `mcp_toolset` allowlist** (14 read/discovery tools, each with its own
+`always_allow` — the API defaults `default_config` to `always_ask`, so the per-tool grant is load-bearing;
+`default_config.enabled:false` blocks every write tool, since ClickUp OAuth has no read-only scope so read-only
+is enforced in software) + Polish discovery steering on the **3 routed tier agents** (Haiku/Sonnet/Opus) at
+`CONV=5`. (The "4 tier agents" of earlier planning is now 3 distinct model agents: the critical tier
+`Krytycznie ważne` routes to **Opus**, not the un-routed **orphan** `Haxe Agent — Fable` — flagged for cleanup,
+harmless.) The managed-lane Poll Round now treats a ClickUp MCP `mcp_authentication_failed_error` as
+**NON-fatal** — the run degrades and completes rather than `terminate`-ing; a mid-run WARN fires **only** for an
+onboarded user whose scope genuinely fails (`clickup_scope==='scoped'`), suppressed for un-onboarded (Block 2
+already WARNs). A `ClickUp MCP Health Monitor (v1)` (`hrtNkFFL4iMVn9J9`) dead-man's-switch probes the hosted
+endpoint every 6h (`/.well-known/oauth-authorization-server`; 2xx healthy, else CRITICAL). **Verified live:** an
+onboarded run performed in-harness scoped discovery (the agent called `clickup_get_workspace_hierarchy` and
+returned the caller's real Spaces, `status:completed`, 0 warnings); an un-onboarded run completed cleanly
+(`outcome:done`, not terminated) with exactly one WARN; Alerts 0 CRITICAL / 1 expected WARN. **Still pending:**
+**Block 3b** retires the open-ended search-as-bot path + the `Check Space Member` software filter (R3 violation)
+from `workspace-search` / Stage A, now that scoped discovery is proven live; the as-U REST extraction tool is
+**Block 4**. Scope-correctness testing (Block 5) is its mandatory acceptance gate.
 
 Per-block build history: `architecture/Build plans/adr-053-managed-agents/` (`master-plan.md` +
 `block-*-findings.md`).

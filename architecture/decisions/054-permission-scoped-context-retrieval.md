@@ -36,6 +36,29 @@ Beta surface: Anthropic Managed Agents Vault (OAuth auto-refresh, `vault_ids` pe
 > See the master plan's "ARCHITECTURE LOCKED — Option A". See
 > `architecture/Build plans/adr-054-clickup-scoped-retrieval/`
 > (`master-plan.md`, `block-0-findings.md`, `block-1-findings.md`).
+>
+> **Block 2 DONE + live-verified (2026-06-23):** `Execute Agent Session (v1)` binds the triggering caller's
+> per-user ClickUp MCP-OAuth Vault id into the session `vault_ids` (resolved in `Resolve Agent` by
+> `caller_user_id`, carried in `Build Setup`, attached in `Create Session`); un-onboarded users degrade
+> (no scoped tools) + one consolidated `clickup-scope-degraded` WARN. **Block 3a DONE + live-verified
+> (2026-06-23):** the hosted ClickUp MCP (`mcp.clickup.com/mcp`, `{type:"url"}`) + a paired READ-ONLY
+> `mcp_toolset` allowlist (14 read/discovery tools, each with its own `always_allow` — the API defaults
+> `default_config` to `always_ask`, so per-tool `always_allow` is load-bearing; default disabled blocks every
+> write tool) + Polish discovery steering are registered on the **3 routed tier agents** (Haiku/Sonnet/Opus)
+> via `Sync Agent Definitions (v1)` at `CONV=5`. Note: the "4 tier agents" of earlier planning is now **3
+> distinct model agents** — the critical tier (`Krytycznie ważne`) routes to **Opus**, not the **orphan**
+> `Haxe Agent — Fable` (un-routed since the critical tier moved off Fable; flagged for cleanup, harmless).
+> The managed-lane Poll Round now treats a ClickUp MCP `mcp_authentication_failed_error` as **NON-fatal** (the
+> run degrades and completes, it does not `terminate`); a mid-run WARN fires **only** for onboarded users whose
+> scope genuinely failed (`clickup_scope==='scoped'`), suppressed for un-onboarded (Block 2 already WARNed —
+> operator decision 2026-06-23). A `ClickUp MCP Health Monitor (v1)` dead-man's-switch probes the hosted
+> endpoint every 6h (`mcp.clickup.com/.well-known/oauth-authorization-server`; 2xx healthy, else CRITICAL via
+> `Post Alert (v1)`). **Live proof:** an onboarded run (Franciszek) performed in-harness scoped discovery —
+> the agent called `clickup_get_workspace_hierarchy` and returned his real Spaces, `status:completed`, 0
+> warnings; an un-onboarded run completed cleanly (`outcome:done`, not terminated) with exactly one WARN;
+> Alerts channel 0 CRITICAL / 1 expected WARN. **Still pending — Block 3b:** retire the open-ended
+> search-as-bot path + the `Check Space Member` software filter (R3 violation) from `workspace-search` /
+> Stage A, now that scoped discovery is proven live.
 
 ## Decision (verdict first)
 

@@ -1,0 +1,143 @@
+{
+  "name": "ClickUp MCP Health Monitor (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Every 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [0, 200],
+      "notes": "ADR-054 Block 3: health dead-man's-switch for the COMMODITY hosted ClickUp MCP (https://mcp.clickup.com/mcp) that all four tier agents use for caller-scoped discovery. ClickUp operates the endpoint (we cannot fix it), but if it is down EVERY scoped discovery silently degrades to no-discovery for every user — this surfaces that within ~6h instead of at the next real task. Mirrors Image MCP Health Monitor (v1).",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 380],
+      "notes": "Test entry for Definition-of-Done verification via scripts/test-subworkflow.mjs (a Schedule Trigger cannot be fired over the n8n API). No inputs needed.",
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "probe",
+      "name": "Probe ClickUp MCP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 280],
+      "notes": "GET the ClickUp MCP's PUBLIC OAuth Authorization-Server metadata (https://mcp.clickup.com/.well-known/oauth-authorization-server). This endpoint needs NO token (n8n cannot read a per-user MCP-OAuth token out of the Anthropic Vault — by design), yet its reachability is a valid liveness signal for the same service that serves /mcp. 2xx -> healthy (service up); any non-2xx OR network/timeout routes to the error output (onError) -> CRITICAL. Per-user auth CORRECTNESS is NOT tested here — it is re-validated per session at run time (the agent surfaces a tool error) and by the Block-5 cross-department gate; this switch only catches a down/unreachable ClickUp MCP service.",
+      "parameters": {
+        "method": "GET",
+        "url": "https://mcp.clickup.com/.well-known/oauth-authorization-server",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "healthy",
+      "name": "Healthy",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [480, 180],
+      "notes": "Terminal for the healthy path. Silent on purpose — a healthy probe must NOT post to the Alerts task every 6h.",
+      "parameters": {}
+    },
+    {
+      "id": "alert-down",
+      "name": "Alert ClickUp MCP Down",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [480, 380],
+      "notes": "CRITICAL via Post Alert (v1) seam (ADR-025) when the ClickUp MCP service is unreachable or returns non-2xx. While down, all four tier agents lose caller-scoped ClickUp discovery (they degrade to no-discovery, surfaced per run). Check status.clickup.com and that mcp.clickup.com resolves; this is a ClickUp-side outage we cannot fix, only route around (the lane still serves task-bound pre-gather).",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "clickup-mcp/health",
+            "message": "Sonda ClickUp MCP nie powiodla sie — hostowany serwer MCP (mcp.clickup.com) niedostepny lub zwrocil blad.",
+            "details": "=Blad: {{ (($json.error || {}).message) || $json.error || JSON.stringify($json).slice(0,300) }}. Endpoint: https://mcp.clickup.com/.well-known/oauth-authorization-server. Gdy ClickUp MCP jest niedostepny, wszystkie 4 agenty traca zakresowane wyszukiwanie kontekstu w ClickUp (degraduja do braku discovery, sygnalizowane per sesja). Sprawdz status.clickup.com oraz rozwiazywanie nazwy mcp.clickup.com. To awaria po stronie ClickUp — mozna ja tylko obejsc (lane nadal serwuje pre-gather zwiazany z zadaniem)."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 6h": {
+      "main": [
+        [
+          {
+            "node": "Probe ClickUp MCP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Probe ClickUp MCP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Probe ClickUp MCP": {
+      "main": [
+        [
+          {
+            "node": "Healthy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert ClickUp MCP Down",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "timezone": "Europe/Warsaw",
+    "executionOrder": "v1"
+  }
+}

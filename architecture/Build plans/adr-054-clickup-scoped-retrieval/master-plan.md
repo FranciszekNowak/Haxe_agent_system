@@ -191,9 +191,30 @@ Re-key during the Block-1 finish. ⚠️ The Anthropic API key was exposed in-se
   `vault_ids` = `[image, user]`, un-onboarded = `[image]` + exactly one WARN; both create + complete; the unused
   ClickUp vault does NOT error at `sessions.create` (so Block 2 safely precedes Block 3). The vault is inert in
   production until Block 3 registers the hosted MCP.
-- **Block 3:** register the hosted ClickUp MCP on the 4 tier agents via `Sync Agent Definitions` + a **read-only
-  `mcp_toolset` allowlist** (disable every write tool) + steer the shared `system` for open-ended discovery;
-  retire the `Check Space Member` software filter in `workspace-search`; add a ClickUp MCP health dead-man's-switch.
+- **Block 3 — SPLIT at a safe seam (2026-06-23) into 3a (DONE) + 3b (pending)** so each commit leaves a verified
+  working state (house "order so each leaves a working state").
+  - **Block 3a — DONE + live-verified (2026-06-23):** registered the hosted ClickUp MCP (`mcp.clickup.com/mcp`,
+    `{type:"url"}`) + a **read-only `mcp_toolset` allowlist** (14 read/discovery tools, each with its own
+    `always_allow` — the API defaults `default_config` to `always_ask`, so the per-tool grant is **load-bearing**;
+    `default_config.enabled:false` disables every write tool) + Polish discovery steering on the **3 routed tier
+    agents** (Haiku/Sonnet/Opus — `agent_routing` has only 3 distinct model_ids; the critical tier `Krytycznie
+    ważne` routes to **Opus**, NOT the un-routed **orphan** `Haxe Agent — Fable`, flagged for cleanup) via
+    `Sync Agent Definitions (v1)` at `CONV=5`. **Plus a required degrade fix** the pre-flight probe surfaced:
+    once `clickup` is on the agent definition, an un-onboarded session emits a benign ClickUp MCP
+    `mcp_authentication_failed_error`, and the managed-lane Poll Round previously treated **any** `session.error`
+    as `terminated` → it now treats a ClickUp MCP auth error as **non-fatal** (run degrades + completes), WARNing
+    only for onboarded users whose scope genuinely fails (`clickup_scope==='scoped'`), suppressing the duplicate
+    for un-onboarded (Block 2 already WARNs — operator decision). Added `ClickUp MCP Health Monitor (v1)`
+    (`hrtNkFFL4iMVn9J9`), 6h dead-man's-switch on the hosted endpoint. **Live proof:** onboarded run →
+    in-harness scoped discovery (agent called `clickup_get_workspace_hierarchy`, returned real Spaces, completed,
+    0 warnings); un-onboarded run → `outcome:done` (not terminated), exactly one WARN; Alerts 0 CRITICAL / 1
+    expected WARN. Pre-flight capability gate: `scripts/ma-spike-block3-readonly-degrade.py` (allowlist accepted,
+    reads work, degrade clean). Files: `sync-agent-definitions.json`, `execute-agent-session.json`,
+    `clickup-mcp-health-monitor.json` — all drift-clean.
+  - **Block 3b — pending:** retire the open-ended search-as-bot path + the `Check Space Member` software filter
+    (ADR-054 R3) from `workspace-search` / `assemble-context-and-build-prompt` (Stage A), keeping the task-bound
+    comment/threaded-reply fetch (bot token). Now that scoped discovery is proven live, the old bot-driven
+    `additional_context` is redundant and the post-hoc filter violates R3 — remove both.
 - **Block 4:** client-side **extraction** tool on the retained loop — reads the REST token from Supabase by
   `caller_user_id`, runs `read-input` as U on a task id (out-of-scope id → access-denied); steer inspect-then-
   extract; a token-presence guard (WARN if a user has one token but not the other).
@@ -220,14 +241,36 @@ Re-key during the Block-1 finish. ⚠️ The Anthropic API key was exposed in-se
 > reach a Purchasing-only task). **Block 2 is DONE + live-verified (2026-06-23)** — `Execute Agent Session (v1)`
 > now binds the caller's per-user ClickUp vault into the session `vault_ids` (resolve in `Resolve Agent`, carry in
 > `Build Setup`, attach in `Create Session`), degrading + WARNing for un-onboarded users; the attached vault is
-> inert until the MCP is registered. **Next: build Block 3** — via `Sync Agent Definitions (v1)`, register the
-> hosted ClickUp MCP (`mcp.clickup.com/mcp`, `{type:"url"}`) + a paired **read-only `mcp_toolset` allowlist**
-> (disable every write tool — no read-only OAuth scope exists) on the 4 tier agents, steer the shared `system`
-> for caller-scoped open-ended discovery, **retire the `Check Space Member` software filter** in
-> `workspace-search` / Stage A, bump `CONV` to force re-sync, and add a ClickUp MCP health dead-man's-switch
-> (mirror `Image MCP Health Monitor (v1)`). DoD wants a live @-mention as the onboarded user showing in-harness
-> scoped discovery (a task the bot can see but U cannot is NOT returned). Write back per block, commit, verify
-> live per Definition of Done, route alerts through `Post Alert (v1)`.
+> inert until the MCP is registered. **Block 3a is DONE + live-verified (2026-06-23):** `Sync Agent Definitions
+> (v1)` now registers the hosted ClickUp MCP (`mcp.clickup.com/mcp`, `{type:"url"}`) + a read-only `mcp_toolset`
+> allowlist (14 read/discovery tools, each with its own `always_allow` — the API defaults `default_config` to
+> `always_ask`, so the per-tool grant is load-bearing; default disabled blocks every write tool) + Polish
+> discovery steering on the **3 routed tier agents** (Haiku/Sonnet/Opus — `agent_routing` has 3 distinct
+> model_ids; the critical tier `Krytycznie ważne` routes to **Opus**, NOT the un-routed **orphan**
+> `Haxe Agent — Fable`, which you may want to archive) at `CONV=5`. A pre-flight probe
+> (`scripts/ma-spike-block3-readonly-degrade.py`) surfaced a required degrade fix: once `clickup` is on the agent
+> definition an un-onboarded session emits a benign ClickUp MCP `mcp_authentication_failed_error`, so the
+> managed-lane **Poll Round** in `execute-agent-session.json` now treats that error as **non-fatal** (the run
+> degrades + completes, it does not `terminate`), WARNing only for onboarded users whose scope genuinely fails
+> and suppressing the duplicate for un-onboarded (Block 2 already WARNs). Added `ClickUp MCP Health Monitor (v1)`
+> (`hrtNkFFL4iMVn9J9`), a 6h dead-man's-switch on the hosted endpoint. Proven live: onboarded @-mention →
+> in-harness scoped discovery (agent called `clickup_get_workspace_hierarchy`, returned the caller's real Spaces,
+> `status:completed`, 0 warnings); un-onboarded → `outcome:done` (NOT terminated) + exactly one WARN; Alerts 0
+> CRITICAL. All 3 edited workflow files drift-clean. **Next: build Block 3b** — retire the open-ended
+> search-as-bot path + the `Check Space Member` (Layer B) software filter (ADR-054 R3) from `workspace-search.json`
+> and `assemble-context-and-build-prompt.json` (Stage A). KEEP the task-bound comment + threaded-reply fetch
+> (bot token: `Fetch Task Comments` + the threads sub-branch) — that is U's own task, no leak. The agent now does
+> open-ended discovery itself via the scoped MCP, so the bot-driven `additional_context` is redundant; make
+> `additional_context` empty but **preserve the `{task_comments, additional_context, sources_used,
+> sources_filtered_out}` output contract** so `assemble-context` callers don't break. Deploy via
+> `scripts/import-workflow.mjs`, re-export with `scripts/export-workflows.mjs`, confirm
+> `scripts/check-workflow-drift.mjs` clean (3 PRE-EXISTING unrelated drifts — `agent-orchestrator`,
+> `generate-images-parallel`, `post-reply` — are NOT yours; leave them). DoD: an @-mention still returns the
+> triggering task's own comments; no regression; alerts clean. **Then Block 4** (as-U REST extraction tool) and
+> **Block 5** (cross-department negative gate — also needs the operator to onboard 1 Marketing + 1 Purchasing user
+> via `scripts/onboard-clickup-mcp-user.mjs` and run the negative smoke, still outstanding from Block 1's DoD).
+> Write back per block, commit, verify live per Definition of Done, route alerts through `Post Alert (v1)`; never
+> read or post-watch the Alerts task `869dj2z2c`.
 
 ## Target architecture (under ADR-054, ClickUp-only) — ⚠️ superseded above (extraction is client-side, not a self-hosted MCP; discovery needs a separate MCP-OAuth token)
 
@@ -296,7 +339,8 @@ Re-key during the Block-1 finish. ⚠️ The Anthropic API key was exposed in-se
 | 0 | Capability gate: prove the stock ClickUp MCP is registerable + per-user OAuth token in the Anthropic Vault scopes it to U in-harness; prove the negative (A's token can't read B-only data); the MCP tool surface; the credential lifecycle; **and the read-input-as-U token-sourcing variant (A self-hosted MCP per-call injection vs B Supabase mirror)** — **or** a clear "reshape" finding | ✅ done 2026-06-22 — `block-0-findings.md`. Core design **holds** (hosted MCP `mcp.clickup.com/mcp` is registerable; per-user token in Vault scopes it). **3 reshapes:** (1) credential = **static_bearer** not auto-refresh (ClickUp tokens don't expire / no refresh token / no scopes → drop the refresh dead-man's-switch); (2) lock the `mcp_toolset` **read-only** in software (no read-only scope exists); (3) the as-U **REST** extraction is **load-bearing** (MCP returns no attachment metadata + no extracted content). Token-sourcing: prefer **Variant A** (two static_bearer creds, same non-expiring token, no mirror); B is a light fallback. **Live ClickUp scoping+negative is gated on Block 1's OAuth app** (MCP rejects `pk_`; greenfield) — pull a 2-user negative smoke into Block 1's tail. |
 | 1 | ClickUp OAuth app + per-user token storage: app registration (secrets via Vault getter), consent/token-exchange/refresh flow, `user_clickup_credentials` table (migration), per-user Vault credential(s) per the Block-0 variant, onboard ≥2 test users in different departments | 🟩 **Option A FINISH BUILT + live-verified (2026-06-22); only operator-gated onboarding remains.** Migrations 042 (REST-token store/getter, Supabase Vault) + 043 (MCP-phase state columns) applied + round-trip-verified; the onboarding webhook reworked to **chain both consents** (classic REST → store REST token in Supabase → DCR + PKCE → hosted-MCP consent at `/webhook/clickup-mcp-callback` → mint the MCP-OAuth token + per-user Anthropic Vault `static_bearer` + upsert mapping row); PKCE via the native Crypto node; deployed (31 nodes, valid), re-exported drift-clean; start (302, real client_id), classic-callback-reject (400) and mcp-callback-reject (400) verified live; 0 onboarding alerts. **ALLOWLIST GATE (2026-06-22):** ClickUp's hosted MCP allowlists HTTPS redirect URIs — the self-serve webhook's MCP-DCR returns 400 "not allowlisted" (form submitted; the production webhook switches on unchanged once approved). The OAuth **loopback** path is un-gated, so interim onboarding uses **`scripts/onboard-clickup-mcp-user.mjs`** (loopback DCR+PKCE → per-user Anthropic Vault static_bearer + row). **DISCOVERY PROVEN LIVE:** Franciszek onboarded (vault `vlt_011CcJU6Q9MVqpds2D1VLmLH`); a throwaway agent with his vault called `clickup_get_workspace_hierarchy` and returned his real 17 Spaces (no auth error) — the linchpin positive test passes; rotated Anthropic key confirmed working. **OPERATOR-GATED REMAINDER (gates DoD):** onboard 1 Marketing + 1 Purchasing user (loopback), run the cross-department negative smoke (CEO sees all spaces → needs a limited user). — see the "ARCHITECTURE LOCKED — Option A" section above + `block-1-findings.md`. **Discovery** = hosted ClickUp MCP (per-user **MCP-OAuth** token in the Anthropic Vault; ~10y static_bearer; read-only via the toolset allowlist). **Extraction** = client-side tool on the retained loop (per-user **classic REST** token in **Supabase Vault**, read by the session loop by `caller_user_id`). **Two tokens, two consents** (irreducible). Driven by three probes: the MCP rejects our classic app token; the MCP-OAuth token works but is **401 on REST**; n8n **can't read** an injected bearer. **Block-1 FINISH:** add the MCP-OAuth flow to onboarding, store the REST token in Supabase + a `get_clickup_rest_token()` getter, re-key Franciszek's credential, onboard 1 Marketing + 1 Purchasing user, run the minimal negative smoke. Vault/`vault_ids` injection + first-user onboarding mechanics all proven. **Built + live:** migration 039 `user_clickup_credentials` (RLS-enabled, no-policy; one `vault_id` per user — the plan's two vault columns collapse to one because both per-user creds share a vault, no 409); migration 040 `get_clickup_oauth_app()` getter (callable, nulls until seeded); migration 041 `clickup_oauth_state` (CSRF). **Consent flow = a self-serve hosted n8n webhook** `ClickUp OAuth Onboarding (v1)` (`/webhook/clickup-oauth-start` → ClickUp consent → `/webhook/clickup-oauth-callback` exchanges code → per-user Vault + `static_bearer` cred keyed to `mcp.clickup.com/mcp` → mapping row; alerts via Post Alert; token not persisted on success), deployed + drift-clean; start (302) and callback-reject (400) paths verified live. `scripts/onboard-clickup-user.mjs` kept as a dev fallback. **No refresh machinery** (Block-0: tokens don't expire). **MCP-trigger probe:** provisional — bare-n8n Variant A **doubtful** (all auth modes validate-against-fixed; image MCP confirms); **definitive probe deferred to Block 4** (needs a real token, non-blocking for 1–3); Variant B is a cheap fallback. **PENDING (gates completion):** Franciszek registers the OAuth app (redirect `https://agents.haxe.ai/webhook/clickup-oauth-callback`) + seeds the 2 secrets → onboard 1 Marketing + 1 Purchasing user via the start link → minimal negative smoke. |
 | 2 | Session-to-user binding: `Execute Agent Session (v1)` resolves `caller_user_id →` the user's vault credential(s) and adds them to `vault_ids`; degrade + WARN for un-onboarded users | ✅ **DONE 2026-06-23 — live-verified.** 3 edits to `execute-agent-session.json` (drift-clean re-export): `Resolve Agent` query joins `user_clickup_credentials` ($2=`caller_user_id`, status active) → `clickup_mcp_vault_id`; `Build Setup` carries it + `clickup_scope` flag + appends a `managed-agents/clickup-scope-degraded` WARN when absent; `Create Session` `vault_ids = [image, clickup].filter(Boolean)`. Onboarded run → session `vault_ids` carries the user's vault; un-onboarded → image-only + exactly one consolidated WARN; both create + complete; unused ClickUp vault doesn't error at `sessions.create` (binding safely precedes Block 3 MCP registration). Test `agent_runs` rows deleted; alerts clean (the one WARN was the intended degrade test). |
-| 3 | Register the scoped ClickUp MCP (discovery) on the 4 agents (`Sync Agent Definitions`) + steer the `system`; retire the open-ended search-as-bot + `Check Space Member` software filter from Stage A; ClickUp MCP health dead-man's-switch | ⬜ not started |
+| 3a | Register the scoped ClickUp MCP (discovery) on the routed tier agents (`Sync Agent Definitions`, read-only allowlist) + steer the `system`; degrade-safe Poll Round (ClickUp MCP auth error non-fatal); ClickUp MCP health dead-man's-switch | ✅ **DONE 2026-06-23 — live-verified.** Hosted MCP + 14-tool read-only allowlist (per-tool `always_allow`) + discovery steering on the 3 routed agents (Haiku/Sonnet/Opus; critical tier = Opus, orphan Fable un-routed) at `CONV=5`; `execute-agent-session` Poll Round treats a clickup `mcp_authentication_failed_error` as non-fatal (degrade, not terminate), WARN only for onboarded scope-failure, suppress un-onboarded duplicate; `ClickUp MCP Health Monitor (v1)` (`hrtNkFFL4iMVn9J9`) live. Onboarded run → in-harness scoped discovery (real Spaces, 0 warn); un-onboarded → `done`+1 WARN (not terminated); Alerts 0 CRITICAL. 3 files drift-clean. Probe: `scripts/ma-spike-block3-readonly-degrade.py`. |
+| 3b | Retire the open-ended search-as-bot path + `Check Space Member` software filter (ADR-054 R3) from `workspace-search` / Stage A; keep task-bound comment/reply fetch | ⬜ not started — scoped discovery is now live, so the bot-driven `additional_context` is redundant and the post-hoc filter is the R3 violation to remove |
 | 4 | `read-input (v1)` as-U extraction tool: add an as-U fetch mode (U's credential on `GET task`), expose it to the agents (Variant A self-hosted read-input MCP, or Variant B custom tool on the retained loop), steer the agent to inspect-then-extract; health/sync guard per variant | ⬜ not started |
 | 5 | Scope-correctness acceptance gate: cross-department negative test matrix across **both** discovery and extraction (Marketing-triggered task cannot retrieve Purchasing-only data via any path, incl. "extract task xyz"); mis-mapped credential fails loud | ⬜ not started |
 | 6 | Cutover, ongoing ops (onboard all members, token refresh/revocation, health/sync), write-backs (current.md + ADR-054 → landed), GDPR record, note Google deferred | ⬜ not started |
