@@ -289,14 +289,14 @@ returned the caller's real Spaces, `status:completed`, 0 warnings); an un-onboar
 (`outcome:done`, not terminated) with exactly one WARN; Alerts 0 CRITICAL / 1 expected WARN. **Built (Block 3b —
 software filter retired, 2026-06-23):** now that scoped discovery is proven live, the open-ended search-as-bot
 path **and** the `Check Space Member` post-hoc membership filter (the ADR-054 R3 violation) are removed from
-`Workspace Search (v1)`. The sub-workflow went from 36 nodes to **12**: dropped query extraction (Haiku),
+`Assemble Task Context (v1)`. The sub-workflow went from 36 nodes to **12**: dropped query extraction (Haiku),
 ClickUp task search, the `Space Loop`/`Check Space Member`/`Layer B Filter` membership gate, the artifact
 read-back, and the selective-condense Haiku pass. It now fetches **only the triggering task's own comments +
 threaded replies** on the bot token (U already has access — no cross-department leak) and returns the
 **unchanged** `{task_comments, additional_context, sources_used, sources_filtered_out}` contract with
 `additional_context` always `''`, so `assemble-context` callers don't break. Open-ended related-context
 discovery is now entirely the agent's in-harness, per-user-scoped ClickUp MCP (Block 3a). **Verified live:**
-driving `Workspace Search (v1)` on a disposable task returned the top-level comment + interleaved threaded reply
+driving `Assemble Task Context (v1)` on a disposable task returned the top-level comment + interleaved threaded reply
 with `additional_context` empty; the full Stage A (`Assemble Context and Build Prompt (v1)`) reported
 `workspace_search_ok: true` with the comments in the built prompt and **no** "Dodatkowy kontekst" search section;
 0 CRITICAL / 0 WARN. **Still pending:** the as-U REST extraction tool is **Block 4**. Scope-correctness testing
@@ -461,8 +461,8 @@ a data location change.
 > **Block 2 — strip PD plumbing, behaviour-neutral (2026-06-11, ADR-043).** The `PD Verifier (v1)`
 > sub-workflow (`hzwmak7UBpuHaiTO`) was **deleted** (workflow + repo file), and `personal_data` is no
 > longer threaded through context assembly, workspace search, or the research gate: removed from
-> `assemble-context` (the `Call PD Verifier` node + rewire `Context Gather → Workspace Search`, the
-> `personal_data` mappings to Search/Decide-Research, the `personal_data`/`pd_verifier_ok` outputs of
+> `assemble-context` (the `Call PD Verifier` node + rewire `Assemble Parent Context → Assemble Task Context`, the
+> `personal_data` mappings to Assemble Task Context/Decide-Research, the `personal_data`/`pd_verifier_ok` outputs of
 > `Build Prompt`, the `r4` rule + `pd_verifier=` token of the context-health check), `workspace-search`
 > (input + both Invoke-Model mappings), `decide-research` (input, gate `model_override` and research
 > fallback hard-set to the non-PD `-direct` aliases, gate mapping), `execute-llm-call` and
@@ -645,7 +645,7 @@ current.md is updated via targeted diffs, not full-file rewrites, to avoid silen
 
 - **Phase 0** — infrastructure (git, AWS, 1Password, Supabase, VPS, Docker stack, Nginx + TLS). **COMPLETE** (infra hardened, password auth disabled, both machines keyed).
 - **Phase 1** — ClickUp foundation. **IN PROGRESS** — see *Phase 1 status* below. The agent CU account, the six `[AI]` custom fields, and the global agent-rules + operator-preferences docs are live; research is complete (NPD process mapped; observations doc) and the core model + KM-maintenance design confirmed. Remaining: full Agent System Space build-out (process templates with checklist-in-description + doc leaves) and the rest of the team's preference docs.
-- **Phase 2** — the spine. **IN PROGRESS (core path COMPLETE)** — the generic read→route→infer→post-back pipeline (thin `Agent Orchestrator (v1)` → Stage A `Assemble Context and Build Prompt` → B `Execute LLM Call` → C `Post Reply`; ADR-036), signature-verified @-mention triggering (`CU Webhook Producer (v1)`, ADR-029), thread-aware replies via `conversation_sessions`, and `Search (v1)` + Layer-B caller-scoped reads (ADR-031) are all live and verified end-to-end. See *Phase 2 status* below and §15. Remaining: selective `linked_doc_leaves`; autonomous status/due-date triggers (Phase 3).
+- **Phase 2** — the spine. **IN PROGRESS (core path COMPLETE)** — the generic read→route→infer→post-back pipeline (thin `Agent Orchestrator (v1)` → Stage A `Assemble Context and Build Prompt` → B `Execute LLM Call` → C `Post Reply`; ADR-036), signature-verified @-mention triggering (`CU Webhook Producer (v1)`, ADR-029), thread-aware replies via `conversation_sessions`, and `Assemble Task Context (v1)` + Layer-B caller-scoped reads (ADR-031) are all live and verified end-to-end. See *Phase 2 status* below and §15. Remaining: selective `linked_doc_leaves`; autonomous status/due-date triggers (Phase 3).
 - **Phase 3** — email + due-date triggering + queue tuning.
 - **Phase 4** — learning loop (proposers).
 - **Phase 5** — team rollout.
@@ -842,7 +842,7 @@ The ClickUp substrate the generic pipeline reads from. State as of 2026-06-09:
 - **Agent CU account — DONE.** `agent@haxe.com` is a ClickUp **Member** (only Members can mint
   the personal API token the pipeline needs); its token drives all ClickUp I/O and reads CU
   Docs via the Docs v3 API. Caller-scoping was historically enforced in software (Layer A prompt
-  + Layer B Space-membership in `Search (v1)`), not by the account; ADR-054 **retired the Layer B
+  + Layer B Space-membership in `Assemble Task Context (v1)`), not by the account; ADR-054 **retired the Layer B
   software filter** (Block 3b) and moves managed-lane scope onto the caller's own per-user ClickUp
   OAuth credential instead. See §13.3, §15.5, ADR-004, ADR-026, ADR-054.
 - **Workspace custom fields — DONE** (verified 2026-06-03). Six live `[AI] …` fields drive
@@ -878,7 +878,7 @@ State as of 2026-06-10:
   8 nodes) sets status then calls three stage subworkflows in sequence — **A** `Assemble Context and
   Build Prompt (v1)` → **B** `Execute LLM Call (v1)` → **C** `Post Reply (v1)` — each with its own
   execution log and a shared **Reset Status + Alert** on any stage failure (ADR-032/036). Stage A
-  composes `Context Gather (v1)` → `Search (v1)` → `Build Prompt`; B runs
+  composes `Assemble Parent Context (v1)` → `Assemble Task Context (v1)` → `Build Prompt`; B runs
   `Invoke Model (v1)`; C posts the thread-aware draft and owns the ClickUp side-effects. (The earlier
   monolithic 26-node `agent-spine.json` was decomposed in place — `a8XKaijkMFNBpRBa` is now the
   orchestrator.)
@@ -981,12 +981,12 @@ Single base account `agent@haxe.com`. Intended as a comment-write-only Guest, bu
 ClickUp won't let guests mint an API token, so it is a **Member** (broad edit/delete
 rights) — see ADR-004 (2026-06-02 update). Runtime scope narrows to the calling user's
 permissions (see §3, ADR-004). **Layer A** (prompt-level) is enforced by the persona
-prompt system. **Layer B** (the software space-membership filter that `Search (v1)` ran via
+prompt system. **Layer B** (the software space-membership filter that `Assemble Task Context (v1)` ran via
 `GET /space/{id}/member`, ADR-031) was **retired in ADR-054 Block 3b (2026-06-23)**: post-hoc
 filtering of bot-retrieved results is exactly what ADR-054 R3 rejects. On the **managed lane**,
 scope is now enforced by the **credential** — the agent's open-ended ClickUp discovery runs
 in-harness under the caller's own per-user OAuth token (Block 3a), so it can never see another
-department's data to begin with. `Search (v1)` no longer does open-ended discovery at all; it now
+department's data to begin with. `Assemble Task Context (v1)` no longer does open-ended discovery at all; it now
 returns only the triggering task's own comments (see §15.5).
 
 > **Least-privilege model (ADR-026).** The durable control is *capability containment*:
@@ -1107,7 +1107,7 @@ failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent S
 | Workflow | Role | State |
 |---|---|---|
 | **`Agent Orchestrator (v1)`** (was "Agent Spine"/"Main Orchestrator", id `a8XKaijkMFNBpRBa`) | Thin orchestrator: set status → A → **lane switch (`config.agent_lane`)** → B → C + shared Reset+Alert | **LIVE** |
-| **`Assemble Context and Build Prompt (v1)`** (Stage A) | Context Gather + Search + Build Prompt (research call retired, Block 8) | **LIVE** |
+| **`Assemble Context and Build Prompt (v1)`** (Stage A) | Assemble Parent Context + Assemble Task Context + Build Prompt (research call retired, Block 8) | **LIVE** |
 | **`Execute Agent Session (v1)`** (id `Rtb1cZbmUqmfGD98`, Stage B — **managed**) | Anthropic Managed Agents session: resolve tier agent (`agent_routing`) + env → upload input images (Files API) → create/send → poll to idle → service custom-tool loop → session USD cost + enumerate produced docs | **LIVE — default Stage B** |
 | **`Render Agent Output (v1)`** (id `vPbbN4UQj0LAAtiV`, managed) | Output adapter: parse the agent's fenced block-array → `rendered_delta` + `image_manifest` (produced-image bytes from the `agent-output-images` carrier); control-char JSON repair before fallback | **LIVE** |
 | **`Execute LLM Call (v1)`** (id `9qdJA4xnAGbxqkt9`, Stage B — **bare failover**) | Invoke Model → drafted reply + cost (LiteLLM lane; selected by `config.agent_lane='bare'`) | **LIVE (dormant failover)** |
@@ -1116,10 +1116,10 @@ failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent S
 | **`Upload Input Images (v1)`** (id `2VkZN5UeqVk6MDLW`) | Fetch task/zip-inner image refs → Anthropic Files API (`purpose=agent`) → `{file_id→url}` map; upserts `agent_input_file_map` for MCP reference resolution | **LIVE** |
 | **`Haxe Image MCP (v1)`** (id `c4vnNLb9usfHJWg3`) → **`Image MCP Tool Handler (v1)`** (id `zxY41zZWRbXon2Eq`) → **`Image Tool Handler (v1)`** (id `vpGswBj2kR2D85hl`) | Self-hosted image MCP (n8n MCP Server Trigger, bearer) the agents call in-harness for `generate_image` (ADR-055) → resolves references → `Generate Images Parallel (v1)` unchanged → Files-API upload + carrier persist + per-image cost. Client-side `generate_image` custom tool is the dormant rollback | **LIVE** |
 | **`Managed Agents Auth Monitor (v1)`** (id `X3GEjMgmByZgDJnt`) + **`Image MCP Health Monitor (v1)`** (id `Er1JlLYAQLkIk7yB`) + **`Fable 5 Access Monitor (v1)`** (id `Moh1coo5pPmuSTmD`) | Dead-man's-switches: Anthropic auth probe (6h), image-MCP `initialize` probe (6h), bare-lane Fable reachability (daily) — all alert via `Post Alert (v1)` | **LIVE** |
-| **`Context Gather (v1)`** | Assemble labelled task context (task + ancestor chain + fields) | **LIVE** |
+| **`Assemble Parent Context (v1)`** | Assemble labelled task context (task + ancestor chain + fields) | **LIVE** |
 | **`Invoke Model (v1)`** | Centralized model-call seam: route → LiteLLM → exact PLN cost → log. **Text + multimodal-INPUT only** since ADR-051 Block 5 (image generation moved to `Generate Images Parallel`) | **LIVE** |
 | **`Generate Images Parallel (v1)`** (id `2keb6XVWq5PG0leK`, ADR-051) | Concurrent image-gen batch: `Promise.all` over a bounded pool (cap `config.image_concurrency_cap`=4) fires all of a run's `generate` images at once (wall-clock ≈ slowest single, not the sum); inline image-resolution (ADR-045) + per-image one-tier-below fallback; reuses `Log Model Run` for per-image cost; returns per-image results + `warnings[]`. Auth via the image-scoped LiteLLM key in Supabase Vault (`get_litellm_image_key()`). Cap raised 4→5 (migration 033). **Block 7 (2026-06-16): timeout is non-blocking** — `Fire Images Concurrently` carries an internal **840 s soft-deadline** (`Promise.race`) that returns partial results (un-generated images → `success:false` + an `image-batch/timeout-partial` WARN, never a CRITICAL) below the raised global **`N8N_RUNNERS_TASK_TIMEOUT=900 s`** (15 min, fits 2 `gpt-image-2` waves); per-call HTTP timeout 240→300 s clamped to remaining budget; a failed/not-generated image now bills **0** (`Explode Results` applies the floor only on success). | **LIVE — the sole image-gen path: `Image Resolver`'s generate branch calls it (Block 4), and `Invoke Model`'s dead image branch was deleted (Block 5, 2026-06-15)** |
-| **`Search (v1)`** | Triggering-task comment + threaded-reply fetch (open-ended search + Layer-B retired, ADR-054 Block 3b) | **LIVE** |
+| **`Assemble Task Context (v1)`** | Triggering-task comment + threaded-reply fetch (open-ended search + Layer-B retired, ADR-054 Block 3b) | **LIVE** |
 | **`CU Webhook Producer (v1)`** | Comment-webhook trigger → verify → detect mention → call spine | **LIVE (@-mention)** |
 | **`Post Alert (v1)`** | Centralized alert seam → ClickUp Alerts task | **LIVE** |
 | **`Error Handler (v1)`** | Global `errorWorkflow`: throws → CRITICAL + status rollback | **LIVE** |
@@ -1154,7 +1154,7 @@ empty completion (both added 2026-06-11 after a zero-attachment task silently pr
 ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the stages:
 
 - **Stage A — `Assemble Context and Build Prompt (v1)`** (`n8n/workflows/assemble-context-and-build-prompt.json`,
-  id `GGTBvFBgGSNbtUR6`, 11 nodes): `Context Gather (v1)` → Workspace Search
+  id `GGTBvFBgGSNbtUR6`, 11 nodes): `Assemble Parent Context (v1)` → Assemble Task Context
   (now also fetches **threaded comment replies** — `GET /comment/{id}/reply` per top-30 comment with
   `reply_count>0` — and interleaves them under their parent in `task_comments`, ADR-040) →
   Load Agent Rules → **`Read Input (v1)`** → `Build Prompt` (the `Decide Research` web-research call was
@@ -1228,8 +1228,8 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   **GLOBAL agent-rules doc + the caller's personal agent-preferences doc** (CU Docs v3,
   `q7wz-16892`; core-model step 3, so output follows firm rules + person style); the
   **triggering comment** ("Wiadomość wywołująca tę akcję", placed *before* task context so the
-  agent acts on what was written, not a cold re-run of the task description); the **`Search
-  (v1)`** context (comments + external artifacts); then the **task context** (task + ancestor
+  agent acts on what was written, not a cold re-run of the task description); the **`Assemble Task
+  Context (v1)`** context (the triggering task's own comments + threaded replies); then the **task context** (task + ancestor
   chain). It emits a soft output structure — **Wyniki / Pytania / Decyzje / Sugestie**
   (§13.1) — as guidance, not a hard template.
 - **Status lifecycle:** `[AI] Status agenta` flips **W trakcie → Zakończono** around the run —
@@ -1247,7 +1247,11 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
 
 See ADR-027 (post-back) and ADR-015 (generic pipeline).
 
-### 15.3 `Context Gather (v1)`
+### 15.3 `Assemble Parent Context (v1)`
+
+> Renamed 2026-06-23 from **`Context Gather (v1)`** (display name only; n8n id, repo file
+> `context-gather.json`, and callers — which reference it by id — are unchanged). Historical ADRs
+> (e.g. ADR-020) keep the old name.
 
 `n8n/workflows/context-gather.json`, n8n id `qgM37HdQj78Rn090`. Callable via Form Trigger
 (`taskId`) or an Execute-Workflow trigger. Reads a ClickUp task and assembles a labelled
@@ -1400,13 +1404,17 @@ credential + HTTP Request cannot sign Bedrock — only the native node can; ADR-
 See ADR-022 (shape), ADR-023 (routing), ADR-024 (LiteLLM/cost), ADR-030 (multi-provider), ADR-036 (Block 6),
 ADR-051 (image generation moved out to the parallel batch).
 
-### 15.5 `Search (v1)`
+### 15.5 `Assemble Task Context (v1)`
 
-`Search (v1)` sits between Context Gather and Build Prompt (ADR-031). (The former `PD Verifier (v1)`
+> Renamed 2026-06-23 from **`Workspace Search (v1)`** (and the **`Search (v1)`** shorthand;
+> display name only — n8n id, repo file `workspace-search.json`, and id-based callers unchanged).
+> The old names appear in historical ADRs (e.g. ADR-031) and commits.
+
+`Assemble Task Context (v1)` sits between Assemble Parent Context and Build Prompt (ADR-031). (The former `PD Verifier (v1)`
 seam — id `hzwmak7UBpuHaiTO`, a stub always returning `personal_data: false` — was **deleted in Block 2**,
 ADR-043; the pipeline is PD-blind.)
 
-- **`Search (v1)`** (id `eL3fJuRMpzVRuVUT`, **12 nodes** since ADR-054 Block 3b, 2026-06-23) — now
+- **`Assemble Task Context (v1)`** (id `eL3fJuRMpzVRuVUT`, **12 nodes** since ADR-054 Block 3b, 2026-06-23) — now
   fetches **only** the triggering task's last **30 comments + their threaded replies** on the bot
   token (U already has access to U's own task — no cross-department leak) and returns the unchanged
   `{task_comments, additional_context, sources_used, sources_filtered_out}` contract with
@@ -1423,7 +1431,7 @@ ADR-043; the pipeline is PD-blind.)
   > `additional_context` for **both** lanes; the agent-driven scoped-MCP replacement currently exists
   > **only on the managed lane** (`Execute Agent Session`), so the bare `Agent Orchestrator` spine no
   > longer receives open-ended semantic enrichment (it keeps the triggering task's own comments + the
-  > deterministic Context Gather / Read Input pre-gather). Migration `009`'s `search_step`
+  > deterministic Assemble Parent Context / Read Input pre-gather). Migration `009`'s `search_step`
   > `triggered_by` value is now unused but harmless (append-only; left in place).
 
 ### 15.6 Post-back — draft comment, rendering, thread-aware replies
@@ -1445,7 +1453,7 @@ post never sets status or `[AI] Finalny…`.
 
 - **Reviewer** = the **mentioner** (webhook path) / the manual triggerer (operator default,
   optional `reviewer_user_id` form field). The automatic assignee→creator rule is data-ready
-  (Context Gather returns assignee/creator) and applies when the autonomous triggers land.
+  (Assemble Parent Context returns assignee/creator) and applies when the autonomous triggers land.
 - **Thread-aware (`conversation_sessions`):** `Check Session` (Postgres) looks up an active row
   for `(clickup_task_id, caller_user_id)`. If found, the reply nests in the thread via `POST
   /api/v2/comment/{comment_root_id}/reply` (on failure → new top-level comment + WARN); if not,
@@ -1561,7 +1569,7 @@ webhook, `responseMode: onReceived` → instant 200. Flow:
   Future guardrail: route by event/field first, then apply the right gate per route — never a
   single global "must be a mention" filter.
 - **Private-space note:** the agent is a Member (reads all public spaces, suiting workspace-wide
-  mentions); a mention in a private space the agent isn't a member of triggers but Context Gather
+  mentions); a mention in a private space the agent isn't a member of triggers but Assemble Parent Context
   403s → WARN.
 
 The producer returns 200 immediately and invokes the spine via the `When Called` trigger
@@ -1573,7 +1581,7 @@ autonomous producers.
 - **`Post Alert (v1)`** (id `YSCdHlmdf3p9XEUx`) → ClickUp **Alerts task `869dj2z2c`** — the
   single seam every alert routes through (severity / source / message / details).
 - **`Error Handler (v1)`** (id `81eplXMD1v5ONhzs`) — set as `errorWorkflow` on Invoke Model /
-  Agent Spine / Context Gather (and the producer); throws surface as **CRITICAL** with status
+  Agent Spine / Assemble Parent Context (and the producer); throws surface as **CRITICAL** with status
   rollback. Proven by a real failure raising a CRITICAL alert.
 - **Proactive WARNs** (non-blocking side branches), all via `Post Alert`: routing-default-used,
   cost-missing, agent_runs-insert-failed, cost-sync-failed, FX-freshness, bad-signature,
