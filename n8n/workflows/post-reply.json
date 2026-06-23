@@ -314,7 +314,7 @@
       "name": "Alert Record Artifact",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1760, 608],
+      "position": [1760, 752],
       "notes": "WARN when the comment-id write found no row or errored. Defense-in-depth: a missing run row is also alerted upstream by Log Model Run. Posts to the Alerts task (disjoint from the answer task) so no webhook loop; does not block reply/status.",
       "parameters": {
         "workflowId": {
@@ -539,15 +539,15 @@
       "name": "Has Docs?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [1740, 360],
+      "position": [1744, 368],
       "notes": "True: doc_attachments non-empty -> office-doc delivery branch (download from Files API, validate, upload to ClickUp task attachment). False: no docs -> straight to Is @mention? (unchanged text/image path). Office-doc OUTPUT files are downloadable from the Files API (Block 0), unlike images. doc_attachments + session_id come from Execute Agent Session's doc_files (Block 8 wiring); the bare lane never sets them so this stays false there.",
       "parameters": {
         "conditions": {
           "options": {
-            "version": 3,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "loose"
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
           },
           "conditions": [
             {
@@ -571,7 +571,7 @@
       "name": "Get Doc Key",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
-      "position": [1740, 560],
+      "position": [1968, 352],
       "notes": "Reads the anthropic_api_key Vault secret via SECURITY DEFINER getter public.get_anthropic_key() (migration 034) so Download Doc can fetch session output files from the Files API. Same getter Execute Agent Session uses; keeps the key out of the inter-workflow contract. retryOnFail; a hard DB failure throws -> errorWorkflow CRITICAL.",
       "parameters": {
         "operation": "executeQuery",
@@ -593,10 +593,9 @@
       "name": "Parse Docs",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1940, 560],
+      "position": [1952, 560],
       "notes": "Parse doc_attachments ([{file_id,filename,mime}]) -> one item per produced office-doc. Mirrors Parse Manifest for images. Has Docs? guarantees non-empty input.",
       "parameters": {
-        "mode": "runOnceForAllItems",
         "jsCode": "const wc = $('When Called').first().json;\nlet docs = wc.doc_attachments;\nif (typeof docs === 'string') { try { docs = JSON.parse(docs || '[]'); } catch (e) { docs = []; } }\nif (!Array.isArray(docs)) docs = [];\nconst out = [];\nfor (let i = 0; i < docs.length; i++) {\n  const d = docs[i] || {};\n  out.push({ json: { file_id: d.file_id || '', filename: d.filename || ('dokument-' + (i+1)), mime: d.mime || 'application/octet-stream', idx: i } });\n}\nreturn out;"
       }
     },
@@ -605,13 +604,11 @@
       "name": "Download Doc",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2140, 560],
+      "position": [2144, 560],
       "notes": "GET /v1/files/{file_id}/content (scope_id=session_id, both betas) -> binary `data`. Office-doc OUTPUT files are downloadable (Block 0). onError=continueErrorOutput: a fetch failure (expired/missing/network) -> Build Doc Download Failed -> dropped + WARN, never thrown. Key from Get Doc Key.",
       "parameters": {
-        "method": "GET",
         "url": "=https://api.anthropic.com/v1/files/{{ $json.file_id }}/content?scope_id={{ $('When Called').first().json.session_id }}",
         "sendHeaders": true,
-        "specifyHeaders": "keypair",
         "headerParameters": {
           "parameters": [
             {
@@ -631,8 +628,7 @@
         "options": {
           "response": {
             "response": {
-              "responseFormat": "file",
-              "outputPropertyName": "data"
+              "responseFormat": "file"
             }
           },
           "timeout": 60000
@@ -648,10 +644,9 @@
       "name": "Validate Doc",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2340, 560],
+      "position": [2352, 560],
       "notes": "VALIDATION GATE (Block 7 DoD). Reads each downloaded doc's bytes (binary is filesystem-mode -> getBinaryDataBuffer, not binary.data.data) and asserts structural integrity + the required part is present, WITHOUT a zip library (crypto/zlib unavailable in Code nodes): OOXML (xlsx/docx/pptx) must be a PK ZIP, contain the End-Of-Central-Directory record (PK\\x05\\x06 -> not truncated), [Content_Types].xml, and the type's required part (xl/workbook.xml | word/document.xml | ppt/presentation.xml — these member names are stored as plaintext in the zip). PDF must start %PDF-, contain %%EOF in the tail, and have /Page. Valid -> pass binary (fileName/mime set) to Upload Doc; invalid -> reason (Polish) -> Build Doc Invalid. Paired-item idiom maps bytes back to Parse Docs meta (mirrors Extract B64).",
       "parameters": {
-        "mode": "runOnceForAllItems",
         "jsCode": "const items = $input.all();\nconst docs = $('Parse Docs').all();\nconst REQUIRED = {\n  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xl/workbook.xml',\n  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'word/document.xml',\n  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'ppt/presentation.xml'\n};\nconst out = [];\nfor (let k = 0; k < items.length; k++) {\n  let srcIdx = 0;\n  const pi = items[k].pairedItem;\n  if (pi != null) srcIdx = (typeof pi === 'number') ? pi : (pi.item != null ? pi.item : 0);\n  const meta = (docs[srcIdx] && docs[srcIdx].json) || {};\n  const filename = meta.filename || 'dokument';\n  const mime = meta.mime || '';\n  let buf = null;\n  try { buf = await this.helpers.getBinaryDataBuffer(k, 'data'); } catch (e) {}\n  let valid = false, reason = '';\n  if (!buf || buf.length < 200) {\n    reason = 'plik pusty lub zbyt maly (' + (buf ? buf.length : 0) + ' B)';\n  } else if (mime === 'application/pdf') {\n    const head = buf.slice(0, 5).toString('latin1');\n    const tail = buf.slice(Math.max(0, buf.length - 2048)).toString('latin1');\n    if (head !== '%PDF-') reason = 'naglowek PDF nieprawidlowy';\n    else if (tail.indexOf('%%EOF') < 0) reason = 'brak znacznika %%EOF (plik obciety?)';\n    else if (buf.toString('latin1').indexOf('/Page') < 0) reason = 'brak stron w dokumencie PDF';\n    else valid = true;\n  } else if (REQUIRED[mime]) {\n    const isZip = buf[0] === 0x50 && buf[1] === 0x4B && (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07);\n    const latin = buf.toString('latin1');\n    const hasEOCD = latin.indexOf('PK\u0005\u0006') >= 0;\n    const hasCT = latin.indexOf('[Content_Types].xml') >= 0;\n    const hasPart = latin.indexOf(REQUIRED[mime]) >= 0;\n    if (!isZip) reason = 'nie jest archiwum ZIP/OOXML';\n    else if (!hasEOCD) reason = 'uszkodzone archiwum (brak rekordu EOCD — plik obciety?)';\n    else if (!hasCT) reason = 'brak [Content_Types].xml';\n    else if (!hasPart) reason = 'brak wymaganej czesci ' + REQUIRED[mime];\n    else valid = true;\n  } else {\n    valid = true;\n  }\n  const o = { json: { valid: valid, file_id: meta.file_id, filename: filename, mime: mime, reason: reason } };\n  if (valid && items[k].binary && items[k].binary.data) {\n    o.binary = { data: Object.assign({}, items[k].binary.data, { fileName: filename, mimeType: mime }) };\n  }\n  out.push(o);\n}\nreturn out;"
       }
     },
@@ -660,15 +655,15 @@
       "name": "Doc Valid?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [2540, 560],
+      "position": [2544, 560],
       "notes": "True: structurally valid -> Upload Doc (binary rides along). False: corrupt/unreadable -> Build Doc Invalid (dropped + WARN + Polish note, never a broken attachment).",
       "parameters": {
         "conditions": {
           "options": {
-            "version": 3,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "loose"
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
           },
           "conditions": [
             {
@@ -683,7 +678,8 @@
             }
           ],
           "combinator": "and"
-        }
+        },
+        "options": {}
       }
     },
     {
@@ -691,7 +687,7 @@
       "name": "Upload Doc",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2740, 460],
+      "position": [2752, 464],
       "notes": "Uploads each VALID doc to the ClickUp task -> {id,title,url} (reuses the Block-10 attachment-upload pattern). Multipart field `attachment` <- binary data (fileName set by Validate Doc). onError=continueRegularOutput so a failed upload flows on as dropped (Build Doc Uploaded marks it). ClickUp has no delete-attachment API; on partial failure the WARN surfaces orphaned ids.",
       "parameters": {
         "method": "POST",
@@ -727,7 +723,7 @@
       "name": "Build Doc Uploaded",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2940, 460],
+      "position": [2944, 464],
       "notes": "Normalize an upload outcome -> {ok,id,url,filename,reason}. Success: ClickUp {id,title,url}. Failure (continueRegularOutput): no id -> dropped, reason 'upload'. filename from ClickUp title, fallback to the paired Validate Doc item.",
       "parameters": {
         "mode": "runOnceForEachItem",
@@ -739,7 +735,7 @@
       "name": "Build Doc Invalid",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2740, 660],
+      "position": [2752, 672],
       "notes": "Validation-failed branch: the doc is corrupt/unreadable -> dropped with the Polish reason from Validate Doc. Never uploaded (no broken attachment).",
       "parameters": {
         "mode": "runOnceForEachItem",
@@ -751,7 +747,7 @@
       "name": "Build Doc Download Failed",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2340, 760],
+      "position": [2352, 768],
       "notes": "Download error branch (continueErrorOutput): the produced doc could not be fetched from the Files API (expired/missing/network) -> dropped with reason. The error item retains the Parse Docs json (filename/file_id).",
       "parameters": {
         "mode": "runOnceForEachItem",
@@ -763,10 +759,9 @@
       "name": "Merge Docs",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
-      "position": [3140, 560],
+      "position": [3152, 560],
       "notes": "Converge uploaded (0), invalid (1) and download-failed (2) doc outcomes into ONE stream so Aggregate Docs keeps a single input (CLAUDE.md aggregator trap).",
       "parameters": {
-        "mode": "append",
         "numberInputs": 3
       }
     },
@@ -775,10 +770,9 @@
       "name": "Aggregate Docs",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [3340, 560],
+      "position": [3344, 560],
       "notes": "Reduce doc outcomes -> doc_attachment_ids[] (successful ClickUp ids, for erasure recording), links[{filename,url}] (for the comment), dropped[{filename,reason}], and a single consolidated WARN if anything was dropped. One incoming connection only.",
       "parameters": {
-        "mode": "runOnceForAllItems",
         "jsCode": "const rows = $input.all().map(function(i){ return i.json; }).filter(Boolean);\nconst doc_attachment_ids = [];\nconst links = [];\nconst dropped = [];\nfor (const r of rows) {\n  if (r.ok && r.id) { doc_attachment_ids.push(r.id); links.push({ filename: r.filename, url: r.url }); }\n  else { dropped.push({ filename: r.filename, reason: r.reason || 'nieznany' }); }\n}\nconst warnings = [];\nif (dropped.length) warnings.push({ source: 'post-reply/doc-delivery', err: 'Nie dostarczono ' + dropped.length + ' pliku(ow): ' + dropped.map(function(d){ return d.filename + ' (' + d.reason + ')'; }).join('; '), severity: 'WARN' });\nreturn [{ json: { doc_attachment_ids: doc_attachment_ids, links: links, dropped: dropped, dropped_count: dropped.length, warnings: warnings } }];"
       }
     },
@@ -787,10 +781,9 @@
       "name": "Append Doc Ops",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [3540, 560],
+      "position": [3552, 560],
       "notes": "Append a 'Załączniki' section to Finalize Comment's ops: a link line per delivered doc and a Polish note per dropped doc. Re-reads Finalize Comment's ops (absolute ref) and carries doc_attachment_ids forward for Record Artifact. Feeds Is @mention? ($json.ops is what Post Reply/Post Draft post).",
       "parameters": {
-        "mode": "runOnceForAllItems",
         "jsCode": "const agg = ($input.first() && $input.first().json) || {};\nconst fin = $('Finalize Comment').first().json;\nconst ops = Array.isArray(fin.ops) ? fin.ops.slice() : [];\nconst links = Array.isArray(agg.links) ? agg.links : [];\nconst dropped = Array.isArray(agg.dropped) ? agg.dropped : [];\nif (links.length || dropped.length) {\n  ops.push({ text: '\\n' });\n  ops.push({ text: 'Załączniki' });\n  ops.push({ text: '\\n', attributes: { header: 2 } });\n  for (const l of links) {\n    ops.push({ text: '📎 ' });\n    ops.push({ text: l.filename, attributes: { link: l.url } });\n    ops.push({ text: '\\n', attributes: { list: 'bullet' } });\n  }\n  for (const d of dropped) {\n    ops.push({ text: '⚠️ Nie udało się dołączyć pliku „' + d.filename + '” (plik uszkodzony lub niedostępny).\\n', attributes: { italic: true } });\n  }\n}\nreturn [{ json: { ops: ops, run_payload_bytes: fin.run_payload_bytes, attachment_ids: fin.attachment_ids || [], doc_attachment_ids: agg.doc_attachment_ids || [] } }];"
       }
     },
@@ -799,15 +792,15 @@
       "name": "Docs Dropped?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [3340, 760],
+      "position": [3344, 768],
       "notes": "True: >=1 doc dropped (corrupt/download/upload) -> WARN (side branch, non-blocking). The comment still posts with the delivered docs + Polish notes for the dropped ones.",
       "parameters": {
         "conditions": {
           "options": {
-            "version": 3,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "loose"
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
           },
           "conditions": [
             {
@@ -821,7 +814,8 @@
             }
           ],
           "combinator": "and"
-        }
+        },
+        "options": {}
       }
     },
     {
@@ -829,7 +823,7 @@
       "name": "Alert Docs Dropped",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [3540, 760],
+      "position": [3552, 768],
       "notes": "WARN via the centralized Post Alert (v1) seam when an office-doc could not be delivered (validation/download/upload). Side branch; does not block the comment.",
       "parameters": {
         "workflowId": {
