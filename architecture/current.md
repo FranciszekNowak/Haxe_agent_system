@@ -263,9 +263,18 @@ both consents in one link**: `/webhook/clickup-oauth-start` → classic consent 
 hosted-MCP consent → `/webhook/clickup-mcp-callback` (exchange, create the per-user Anthropic Vault +
 `static_bearer` MCP credential, upsert the mapping row). A local-loopback script
 (`scripts/onboard-clickup-user.mjs`) is retained as a dev fallback. ClickUp OAuth tokens don't expire (no refresh
-machinery). **Still bot-token-only in production** until session binding (Block 2),
-scoped MCP discovery + retiring the `Check Space Member` software filter (Block 3), and the as-U REST
-extraction tool (Block 4) land. Scope-correctness testing (Block 5) is its mandatory acceptance gate.
+machinery). **Built (Block 2 — session-to-user binding, 2026-06-23):** `Execute Agent Session (v1)` now resolves
+the triggering `caller_user_id` → that user's per-user ClickUp Vault id (the `Resolve Agent` query joins
+`user_clickup_credentials` on status `active`) and attaches it to the session's `vault_ids` alongside the
+image-MCP vault (`Build Setup` → `Create Session`). The binding is set by n8n from `caller_user_id` only, so the
+agent cannot spoof whose scope it runs under. An un-onboarded caller **degrades, not breaks**: the ClickUp vault
+is simply omitted (`clickup_scope: 'degraded'`) and one consolidated WARN (`managed-agents/clickup-scope-degraded`)
+fires through the existing `Post Alert (v1)` seam, while the run still proceeds on deterministic pre-gather.
+Verified live both ways (onboarded session's `vault_ids` carries the user's vault; un-onboarded session is
+image-vault-only + exactly one WARN; both sessions create and complete). The attached ClickUp vault is **inert in
+production** until **Block 3** registers the hosted ClickUp MCP on the tier agents (and retires the `Check Space
+Member` software filter); the as-U REST extraction tool is **Block 4**. Scope-correctness testing (Block 5) is its
+mandatory acceptance gate.
 
 Per-block build history: `architecture/Build plans/adr-053-managed-agents/` (`master-plan.md` +
 `block-*-findings.md`).
