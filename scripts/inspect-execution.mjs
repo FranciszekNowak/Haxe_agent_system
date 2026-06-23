@@ -7,13 +7,23 @@
 // verification needs: per-node status, per-OUTPUT item counts (so you can SEE which IF/Switch branch
 // fired), execution time, and a truncated dump of each node's output JSON. Read-only.
 //
-//   N8N_API_KEY=...  node scripts/inspect-execution.mjs <execId> [--nodes A,B] [--fields x,y] [--full] [--in]
+//   N8N_API_KEY=...  node scripts/inspect-execution.mjs <execId> [--nodes A,B] [--fields x,y] [--full] [--in] [--no-redact]
 //   (optional) N8N_API_URL=https://agents.haxe.ai/api/v1
 //
 //   --nodes A,B   only these nodes (default: all, in execution order)
 //   --fields x,y  only these json keys per node (default: all keys, truncated)
 //   --full        don't truncate long strings / big arrays (use when you need the raw value)
 //   --in          also show each node's INPUT items (default: output only)
+//   --no-redact   show secret-like values verbatim (default: REDACT them — see below)
+//
+// SECRET REDACTION (default ON). Pipeline nodes legitimately CARRY secrets in their JSON (e.g. Build
+// Setup carries the Anthropic api key as `key`, Create Session's headers carry `x-api-key`/Bearer), so a
+// naive dump prints live credentials into the terminal/transcript — this already leaked the rotated
+// Anthropic key twice during ADR-054. By default this tool masks values whose KEY name looks secret
+// (key/token/secret/password/authorization/*_key/*_token/…) and any token-SHAPED substring (sk-ant-…,
+// sk-…, pk_…, "Bearer …") wherever it appears, recursively, including nested header/body blobs. Vault
+// IDs (`*_vault_id`) are NOT secret and are left visible. Pass --no-redact only when you truly need the
+// raw value (and never paste that output anywhere it persists).
 //
 // Examples:
 //   node scripts/inspect-execution.mjs 1569
@@ -38,6 +48,24 @@ const onlyNodes = typeof flag('--nodes') === 'string' ? flag('--nodes').split(',
 const onlyFields = typeof flag('--fields') === 'string' ? flag('--fields').split(',').map((s) => s.trim()) : null;
 const FULL = !!flag('--full');
 const SHOW_IN = !!flag('--in');
+const REDACT = !argv.includes('--no-redact');
+
+// Redact secrets before display (default ON; see header). Two layers: by KEY name (the field holds a
+// secret) and by VALUE shape (a token string anywhere, incl. nested header/body objects). Vault ids
+// (`*_vault_id`) are non-secret identifiers and deliberately excluded from the key-name pattern.
+const SECRET_KEY_RE = /^(?:x-)?(?:api[_-]?key|key|secret|password|passwd|token|access[_-]?token|refresh[_-]?token|authorization|auth|bearer|client[_-]?secret|.*_secret|.*_token|.*_key|.*_api_key)$/i;
+const SECRET_VAL_RE = /(sk-ant-[A-Za-z0-9._-]{8,}|sk-[A-Za-z0-9]+-[A-Za-z0-9._-]{8,}|pk_[A-Za-z0-9_]{8,}|Bearer\s+[A-Za-z0-9._-]{8,})/g;
+const maskInStr = (s) => s.replace(SECRET_VAL_RE, (m) => (/^Bearer/i.test(m) ? 'Bearer «redacted»' : '«redacted»'));
+const redactDeep = (v, keyName) => {
+  if (!REDACT) return v;
+  if (typeof v === 'string') {
+    if (keyName && SECRET_KEY_RE.test(keyName)) return v ? `«redacted:${v.length}c»` : v;
+    return maskInStr(v);
+  }
+  if (Array.isArray(v)) return v.map((x) => redactDeep(x, null));
+  if (v && typeof v === 'object') { const o = {}; for (const k of Object.keys(v)) o[k] = redactDeep(v[k], k); return o; }
+  return v;
+};
 
 const MAXSTR = 180, MAXARR = 6;
 const trunc = (v) => {
@@ -71,7 +99,7 @@ if (!runData) { console.error('no resultData.runData (execution may have no data
 
 const wfName = j?.workflowData?.name || j.workflowId;
 const durMs = j.startedAt && j.stoppedAt ? (new Date(j.stoppedAt) - new Date(j.startedAt)) : null;
-console.log(`exec ${execId} — "${wfName}" — status=${j.status}${durMs != null ? ` — ${durMs}ms` : ''}`);
+console.log(`exec ${execId} — "${wfName}" — status=${j.status}${durMs != null ? ` — ${durMs}ms` : ''}${REDACT ? '  [secrets redacted; --no-redact to disable]' : '  [--no-redact: SECRETS SHOWN]'}`);
 const topErr = j?.data?.resultData?.error;
 if (topErr) console.log(`  TOP-LEVEL ERROR @ ${topErr.node?.name || '?'}: ${topErr.message || topErr}`);
 console.log('');
@@ -98,7 +126,7 @@ for (const name of names) {
       const arr = out || [];
       if (!arr.length) return;
       if (main.length > 1) console.log(`    └ output[${idx}] (${arr.length} item${arr.length > 1 ? 's' : ''}):`);
-      console.log(fmtJson(arr[0]?.json));
+      console.log(fmtJson(redactDeep(arr[0]?.json, null)));
     });
   }
 }
