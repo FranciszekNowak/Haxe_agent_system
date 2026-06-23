@@ -37,9 +37,80 @@
           "values": [
             {
               "name": "clickup_task_id"
+            },
+            {
+              "name": "as_user_token"
             }
           ]
         }
+      }
+    },
+    {
+      "id": "r-as-user",
+      "name": "As User?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-32, 176],
+      "notes": "ADR-054 Block 4a: route by whether a per-user ClickUp token was supplied on the When Called input. TRUE (main[0]): as_user_token non-empty -> Get Task (as U) fetches the task with the CALLER's OAuth token so ClickUp enforces the caller's permissions (the as-U extraction path, Block 4b). FALSE (main[1]): no token -> the existing bot Get Task (Stage-A pre-gather, unchanged). as_user_token is set ONLY by the When Called caller (the extraction handler resolves it from caller_user_id), never by the agent -> unspoofable. The Form Trigger path bypasses this node (it wires straight to the bot Get Task), so the manual test harness is unaffected.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-as-user",
+              "leftValue": "={{ $json.as_user_token }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "r-get-task-asu",
+      "name": "Get Task (as U)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [192, 16],
+      "notes": "ADR-054 Block 4a: self-fetch the task AS THE CALLER. ClickUp REST takes the raw OAuth token in Authorization with NO 'Bearer ' prefix (proven live by the onboarding webhook's GET /api/v2/user). There is deliberately NO predefined credential here -> NO bot fallback in as-U mode: if the caller cannot see the task, ClickUp returns 401/403/404 and onError:continueErrorOutput routes to Build Access Denied (never the bot's broad view) -> the permission boundary holds even on a prompt-injected out-of-scope task id. retryOnFail(2) smooths a transient blip; a deterministic 4xx still routes to denied after the retry. Success (main[0]) -> Explode Attachments + Lookup File Processing Config, identical downstream to the bot Get Task.",
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v2/task/{{ $json.clickup_task_id }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $json.as_user_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "r-access-denied",
+      "name": "Build Access Denied",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [192, 320],
+      "notes": "ADR-054 Block 4a: the as-U Get Task failed -> the caller cannot see the task (401/403/404) OR a transient 5xx/network fault after retry. Emit ONE block-carrying item with needs_alert so Aggregate Blocks surfaces a 'clickup-asU/access-denied' warning AND returns blocks=[the BRAK marker]. The extraction handler (Block 4b) keys off warn_source to answer the agent with an explicit access-denied tool result; an access-denied is EXPECTED (the boundary working) so the handler does NOT alert on it. NEVER falls back to the bot token. The real HTTP status + message ride in `err` so the operator can tell a true denial from a transient fault.",
+      "parameters": {
+        "jsCode": "const e = $json || {};\nlet taskId = '';\ntry { taskId = $('When Called').first().json.clickup_task_id || ''; } catch (err) {}\nconst statusCode = (e.error && (e.error.httpCode || e.error.status || e.error.code)) || e.statusCode || '';\nconst msg = (e.error && (e.error.message || e.error)) || e.message || 'access_denied';\nreturn [{ json: {\n  block: { type: 'text', order: -1, md: '[BRAK: dostep_odmowiony zadanie ' + taskId + ' poza zakresem uprawnien uzytkownika]' },\n  clickup_task_id: taskId,\n  needs_alert: true,\n  has_embedded: false,\n  warn_source: 'clickup-asU/access-denied',\n  err: ('HTTP ' + statusCode + ' ' + String(msg)).slice(0, 300)\n} }];"
       }
     },
     {
@@ -216,9 +287,9 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
       "position": [2336, 352],
-      "notes": "Converge the image-passthrough branch (input 0) and the Docling-extract branch (input 1) into ONE stream so Aggregate keeps a SINGLE input (a run-once-for-all-items node with N input connections runs once per connection and drops items - Block 2 trap, CLAUDE.md). Append = concat all items. VERIFY at build: must not stall when one branch is empty (all-text OR all-image task); if it stalls, apply ADR-036 fallback (alwaysOutputData on tails / single run-once-for-each builder).",
+      "notes": "Converge the image-passthrough branch (input 0) and the Docling-extract branch (input 1) into ONE stream so Aggregate keeps a SINGLE input (a run-once-for-all-items node with N input connections runs once per connection and drops items - Block 2 trap, CLAUDE.md). Append = concat all items. ADR-054 Block 4a added input 5 (Build Access Denied) for the as-U denied path; like every other input it is empty on a normal run and append tolerates empty inputs. VERIFY at build: must not stall when one branch is empty (all-text OR all-image task); if it stalls, apply ADR-036 fallback (alwaysOutputData on tails / single run-once-for-each builder).",
       "parameters": {
-        "numberInputs": 5
+        "numberInputs": 6
       }
     },
     {
@@ -667,9 +738,61 @@
       "main": [
         [
           {
+            "node": "As User?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "As User?": {
+      "main": [
+        [
+          {
+            "node": "Get Task (as U)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Get Task",
             "type": "main",
             "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Task (as U)": {
+      "main": [
+        [
+          {
+            "node": "Explode Attachments",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Lookup File Processing Config",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Access Denied",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Access Denied": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 5
           }
         ]
       ]
