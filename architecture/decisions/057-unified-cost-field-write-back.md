@@ -72,15 +72,60 @@ no real benefit, since the `SUM` is at least as accurate and reuses one query.
 - One field-write path for both lanes; a future change to how the field is computed/written is made
   once. `Post Reply (v1)` no longer owns the cost-field write (it never actually did on either lane;
   the docs that said so were corrected).
-- **Known limitation (tracked):** managed **image-gen** cost rows are logged with a `null`
-  `clickup_task_id` because the in-harness image MCP tool has no session/task context (ADR-055), so
-  they are excluded from the per-task `SUM`. The field/footer reflect the **text/session** cost (the
-  dominant component); the image sub-cost lives in `agent_runs` but is not task-attributed. Closing
-  this needs the task id threaded through the managed image MCP path — a separate change.
+- **Known limitation — CLOSED 2026-06-24 (see Amendment below):** managed **image-gen** cost rows were
+  logged with a `null` `clickup_task_id` because the in-harness image MCP tool has no session/task
+  context (ADR-055), so they were excluded from the per-task `SUM`. This is now fixed: the task id is
+  threaded through the managed image MCP path as an agent-supplied tool argument. Image-gen cost rows
+  carry the real `clickup_task_id` and are included in the field/footer `SUM`.
 - The bare lane is the dormant failover; its success path was validated structurally + by the shared
   sub-workflow's live proof (a live bare-lane firing hit a transient LiteLLM 429 on `Invoke Model`,
   upstream of the changed nodes, and its untouched failure path handled it correctly).
 
+## Amendment (2026-06-24) — close the image-gen attribution gap
+
+The managed image-gen cost is now attributed to the task. Mechanism and the trap hit while building it:
+
+**The fix (task id threaded as a tool argument).** Block 5.1 established that the n8n **MCP Server
+Trigger does not expose the inbound request (headers/body) to the tool handler** — the handler sees
+only the tool arguments the model fills via `$fromAI`. The `mcp_servers` URL is also baked into the
+**agent definition** (static, shared across sessions), so there is no per-session/out-of-band channel.
+Therefore the **only** way to get the task id to the cost writer is as an **agent-supplied tool
+argument**. This is acceptable because image generation is identity-neutral (ADR-055 §5): a wrong/missing
+id only mis-attributes a cost row — never a data leak (unlike ADR-054's user-id spoofing concern). Wiring:
+
+- `Haxe Image MCP (v1)` — `generate_image` gains a `clickup_task_id` `$fromAI` param.
+- `Agent Orchestrator (v1)` — the managed `user_message` is prefixed with `# Identyfikator zadania
+  ClickUp (clickup_task_id): <id>` so the model has the value to copy (kept out of the shared bare-lane
+  prompt).
+- `Sync Agent Definitions (v1)` — `generate_image`'s description instructs the agent to copy that id;
+  `CONV` bumped 7→8 to force a re-sync.
+- `Image MCP Tool Handler (v1)` — accepts `clickup_task_id`, passes it to `Image Tool Handler (v1)` →
+  `Generate Images Parallel (v1)` → per-image `Log Model Run` row. **Silent-degradation guard:** if the
+  arg arrives empty (model omitted it), the row falls back to a `null` id (the old behaviour) **and** a
+  `WARN` (`image-mcp/missing-task-id`) fires through `Post Alert (v1)` — so the degradation is visible,
+  not silent. Verified live: the WARN fired on the broken runs; the good run was clean.
+- Verified live (2026-06-24) on a disposable task: the agent passed `clickup_task_id`, the image cost
+  row carried the real task id, and the cost field + footer `SUM` included the image cost.
+- **Residual:** attribution depends on the model copying the id. If it omits it, that one image's cost is
+  un-attributed and a WARN fires (no regression vs. the old always-null behaviour). A fully unspoofable
+  channel would require a standalone MCP host that reads a per-session correlation header — the R4-scale
+  build ADR-055 deferred; disproportionate for cost accounting.
+
+**The trap — `toolWorkflow.workflowInputs.schema` is repo↔live drift the tools don't catch.** A
+`toolWorkflow` node feeding an MCP Server Trigger carries a `parameters.workflowInputs.schema[]` array
+(one entry per declared input) that n8n uses to **map the `$fromAI` values to the sub-workflow's inputs**.
+**`export-workflows.mjs` strips this array** (the public-API GET it uses does not return it) and
+**`check-workflow-drift.mjs` does not compare it**, so the repo copy of `haxe-image-mcp.json` had silently
+been missing it since it was first exported (the workflow was originally built via n8n-MCP `partial_update`,
+which set the array; it had never been round-tripped through the public-API PUT). Importing that
+schema-less file via `import-workflow.mjs` (public-API PUT) **stripped the array from live**, after which
+the MCP tool advertised/mapped **no** arguments — every `$fromAI` value (including `prompt`) arrived
+`null` at the handler, breaking **all** image generation, not just the new field. Recovery: hand-restore
+the full `schema[]` array (now 6 fields incl. `clickup_task_id`) into the repo file and re-import. The repo
+file is now the master that carries the array; **do not let `export-workflows.mjs` overwrite
+`haxe-image-mcp.json`** (it will re-strip `schema[]`), and prefer editing this workflow via n8n-MCP
+`partial_update` / the UI over a public-API PUT.
+
 ## Date
 
-2026-06-24
+2026-06-24 (amended 2026-06-24)

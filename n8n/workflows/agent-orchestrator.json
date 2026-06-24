@@ -488,7 +488,7 @@
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
-            "user_message": "={{ $json.prompt }}",
+            "user_message": "={{ '# Identyfikator zadania ClickUp (clickup_task_id): ' + ($json.clickup_task_id || '') + '\\nPrzekaż tę wartość DOKŁADNIE jako parametr clickup_task_id przy każdym wywołaniu narzędzia generate_image (do rozliczenia kosztu obrazu).\\n\\n' + $json.prompt }}",
             "impact": "={{ $json.impact }}",
             "input_images_json": "={{ $json.image_blocks_json || '[]' }}",
             "clickup_task_id": "={{ $json.clickup_task_id }}",

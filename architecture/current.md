@@ -1273,10 +1273,12 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   (idempotent, drift-free) via the shared **`Write Cost Field (v1)`** sub-workflow, called by **both**
   Stage-B lanes — the bare lane in-workflow, the managed lane from the orchestrator after the session
   (ADR-057; before that the managed lane wrote neither the field nor the footer, so moodboard/image
-  runs showed `0.0000`/blank). The managed lane's footer reuses the same `SUM`. ⚠ Known gap: managed
-  **image-gen** cost rows carry a `null` `clickup_task_id` (the MCP boundary strips task context,
-  ADR-055), so they are **not** in this per-task SUM yet — the field/footer reflect the text/session
-  cost; the image sub-cost is in `agent_runs` but un-attributed (ADR-057, tracked). ⚠ This uses the
+  runs showed `0.0000`/blank). The managed lane's footer reuses the same `SUM`. Managed **image-gen**
+  cost rows are now attributed to the task: the agent passes `clickup_task_id` as a `generate_image` MCP
+  tool argument (the only channel — the MCP boundary exposes no session context, ADR-055/Block 5.1), so
+  the image cost is included in this per-task SUM. If the model omits the id, that image's cost falls back
+  to a `null` task id and an `image-mcp/missing-task-id` WARN fires (ADR-057 Amendment, closed 2026-06-24).
+  ⚠ This uses the
   edit-capable agent **Member** token via a fixed deterministic node (never an LLM-exposed capability,
   per ADR-026) — flagged for the ADR-026 identity split.
 - **Reliability:** post-back, cost-sync, and session-upsert failures fire a WARN on a side

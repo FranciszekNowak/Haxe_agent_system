@@ -27,9 +27,9 @@
       "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
       "typeVersion": 2.2,
       "position": [320, 300],
-      "notes": "The generate_image MCP tool. Tool params (advertised to the harness via $fromAI): prompt (required), reference_file_ids (optional array of input-image file_ids), count (1-4), aspect_ratio, size. Delegates to Image MCP Tool Handler (v1) (zxY41zZWRbXon2Eq), which resolves reference_file_ids -> signed URLs via agent_input_file_map then runs the shared Image Tool Handler (v1) image-gen+upload+cost core. Returns {status, file_ids[], message, count_*, warnings[]}; the agent embeds the file_ids in its output. reference_file_ids is JSON.stringify'd into the handler's reference_file_ids_json string input.",
+      "notes": "The generate_image MCP tool. Tool params (advertised to the harness via $fromAI): prompt (required), reference_file_ids (optional array of input-image file_ids), count (1-4), aspect_ratio, size, clickup_task_id (the triggering task id, for cost attribution — ADR-057 follow-up). Delegates to Image MCP Tool Handler (v1) (zxY41zZWRbXon2Eq), which resolves reference_file_ids -> signed URLs via agent_input_file_map then runs the shared Image Tool Handler (v1) image-gen+upload+cost core. Returns {status, file_ids[], message, count_*, warnings[]}; the agent embeds the file_ids in its output. reference_file_ids is JSON.stringify'd into the handler's reference_file_ids_json string input. clickup_task_id is the ONLY channel to attribute image cost to a task: the n8n MCP Server Trigger does not expose inbound headers/body to the handler (Block 5.1), so the harness-passed (agent-supplied) tool arg is the only way the task id can reach the cost writer.",
       "parameters": {
-        "description": "Generate one or more images from a text prompt and return their file_ids. Use this when the user asks for an image, illustration, picture, graphic, or visual. Optionally pass reference_file_ids (file_ids of input images already attached to this task) to visually anchor the generation. Returns file_ids you must embed in your output to show the images.",
+        "description": "Generate one or more images from a text prompt and return their file_ids. Use this when the user asks for an image, illustration, picture, graphic, or visual. Always pass clickup_task_id (the id of THIS task, given in your message) so the image cost is billed to the right task. Optionally pass reference_file_ids (file_ids of input images already attached to this task) to visually anchor the generation. Returns file_ids you must embed in your output to show the images.",
         "workflowId": {
           "__rl": true,
           "value": "zxY41zZWRbXon2Eq",
@@ -42,9 +42,72 @@
             "reference_file_ids_json": "={{ $fromAI('reference_file_ids', 'Optional JSON array string of input-image file_id strings to anchor the generation, e.g. [\"file_abc\"]. Omit if there are none.', 'string', '') }}",
             "count": "={{ $fromAI('count', 'Optional number of images to generate, 1 to 4 (default 1).', 'number', 1) }}",
             "aspect_ratio": "={{ $fromAI('aspect_ratio', 'Optional aspect ratio, e.g. 1:1, 16:9, 4:3.', 'string', '') }}",
-            "size": "={{ $fromAI('size', 'Optional pixel size, e.g. 1024x1024.', 'string', '') }}"
+            "size": "={{ $fromAI('size', 'Optional pixel size, e.g. 1024x1024.', 'string', '') }}",
+            "clickup_task_id": "={{ $fromAI('clickup_task_id', 'REQUIRED for cost accounting. The ClickUp task id of THIS task, shown in your message under the heading that starts with Identyfikator zadania ClickUp. Copy it exactly as given; do not invent one and do not use a different task id.', 'string', '') }}"
           },
           "matchingColumns": [],
+          "schema": [
+            {
+              "id": "prompt",
+              "displayName": "prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "reference_file_ids_json",
+              "displayName": "reference_file_ids_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "count",
+              "displayName": "count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "aspect_ratio",
+              "displayName": "aspect_ratio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "size",
+              "displayName": "size",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "clickup_task_id",
+              "displayName": "clickup_task_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            }
+          ],
           "attemptToConvertTypes": false,
           "convertFieldsToString": false
         },
