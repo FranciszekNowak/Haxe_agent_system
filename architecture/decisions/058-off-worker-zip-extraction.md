@@ -138,8 +138,48 @@ returned `warnings`. Zero CRITICAL, every node `status=success` with no `isArtif
 markers (i.e. no worker crash), and `Zip Caps` emitted `caps_source=config` (live config honored). A
 separate **non-zip** run (a task with only a loose image) was checked after adding `Await Caps` to confirm
 the barrier did not regress that path: it returned the single loose-image block with no spurious zip drop.
-Block 3 (extend the bucket purge to zip-inner *documents*) remains open.
+
+## Block 3 — retention coverage for zip-inner documents (verified, closed 2026-06-24)
+
+Block 3 was scoped as "extend the bucket purge to zip-inner *documents*." Investigation showed the
+extension is **already in place by construction — no purge code change is needed** — and the real
+deliverable is bringing the compliance and architecture records into line with what the bucket now
+holds. Reasoning and evidence:
+
+- **Documents and images share one bucket.** The extractor (`services/zip-extractor/app.mjs`) uploads
+  **every** accepted entry — image *and* document — to `zip-inner-images` (the `BUCKET` env, set to
+  `zip-inner-images` in `docker-compose.snippet.yml`), with an identical, extension-less key shape
+  `<task_id>/<sanitized att_id>`. Image vs document is therefore **indistinguishable by object key**.
+- **The purge has no type predicate.** `purge_zip_inner_images(p_force boolean)` (migration 030) selects
+  `from storage.objects where bucket_id = 'zip-inner-images' and created_at < now() - interval '12h'` and
+  deletes each by `name` via the Storage REST API. There is no extension/mime/route filter anywhere in the
+  path, and the keys carry no type marker — so the purge **cannot** delete an image yet skip a document;
+  they are the same kind of row. Coverage of documents is a logical certainty, not a probabilistic claim,
+  which is why no destructive live test was run (it could only re-confirm what the code makes impossible to
+  violate).
+- **Live verification (2026-06-24).** The cron job `purge-zip-inner-images` is `active`, schedule
+  `0 3,4 * * *`, running `select public.purge_zip_inner_images()`; the live function signature is the
+  migration-030 `(p_force boolean)` overload; the bucket is `public=false` with `allowed_mime_types = null`
+  (no MIME allowlist — document uploads are accepted, as Block 2's live DOCX/CSV test already proved); the
+  daily run logs `nothing to purge` cleanly in `storage_purge_runs`. The independent n8n
+  `Zip Image Purge Watchdog (v1)` watches the **bucket** (not a type), so it covers documents too.
+
+**Retention decision for documents (unified, not split).** Zip-inner documents inherit the **same**
+retention as images — purged daily ~05:00 Europe/Warsaw, >12h, ≤~36h max. A separate, *shorter* purge for
+documents was considered and rejected: (1) the bucket keys carry no type marker, so a key-based selective
+purge is impossible without a side index — added surface for no real gain; (2) it would fork one pg_cron
+job + one watchdog into two, against the project's unification default (CLAUDE.md), for a path that does
+not need it — documents are fetched by Docling *within the same agent run* (minutes), so the 12h floor is
+already a large safety margin; (3) ~36h for EU-private, signed-URL-only files is the same documented
+data-minimization posture already accepted for images. The one substantive consequence is that the bucket
+now also holds **documents** (PDF/DOCX/XLSX/CSV), which can carry more concentrated personal data than a
+photo — so the GDPR processing record (§6) and `architecture/current.md` are updated from "images" to
+"images **and** documents," which is the actual write-back this block lands.
+
+**Definition of Done (this block):** purge demonstrably covers document objects (closed by the no-type-
+predicate argument + live function/bucket/cron checks above); the GDPR record and `current.md` accurately
+describe the bucket as holding images *and* documents with the unified retention; ADR closed. ✅
 
 ## Date
 
-2026-06-24 (Block 1); 2026-06-24 (Block 2 reader rewiring)
+2026-06-24 (Block 1); 2026-06-24 (Block 2 reader rewiring); 2026-06-24 (Block 3 — document retention coverage verified + records reconciled)

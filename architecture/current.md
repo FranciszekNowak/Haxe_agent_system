@@ -1253,9 +1253,11 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   image ref. File limits live in the **global `file_processing_config`** keys (migration 027): `zip_max_entries`
   50, `zip_max_file_mb` 25, `zip_max_total_uncompressed_mb` **250** (migration 028 lowered it 500 → 250 when extraction
   was in-memory; now a forwarded bound the off-worker extractor enforces per-entry, so the value is a policy
-  cap, no longer a memory constraint). **Retention (Block 4):** zip-inner images are purged by the
-  **pg_cron job `purge-zip-inner-images`** (migrations 029 → 030) that deletes through the **Storage REST API so
-  the bytes are freed, not orphaned** — a bare `delete from storage.objects` would drop the metadata row but
+  cap, no longer a memory constraint). **Retention (Block 4; ADR-058 Block 3):** the bucket holds **both**
+  zip-inner images **and** zip-inner documents (same extension-less key shape, indistinguishable by key), and
+  both are purged by the **pg_cron job `purge-zip-inner-images`** (migrations 029 → 030) — which selects by
+  bucket + age with **no object-type filter**, so documents and images are covered identically — that deletes
+  through the **Storage REST API so the bytes are freed, not orphaned** — a bare `delete from storage.objects` would drop the metadata row but
   leave the S3 object (and the personal data) behind. The job reads its key from **Supabase Vault** (a legacy
   `service_role` JWT or a new `sb_secret_…` key both work); a missing/invalid key writes a `SKIPPED` row to
   `storage_purge_runs` rather than silently no-op'ing. Schedule (operator decision, 2026-06-15): runs **once
