@@ -231,11 +231,15 @@ Images Parallel (v1)`); the client-side `generate_image` custom tool is the docu
 image generation (MCP → carrier → inline ClickUp image), image input / vision (Files API), and
 office-document output (xlsx via a Skill → ClickUp attachment, attachment id recorded on `agent_runs`). One
 session `agent_runs` cost row per run (plus per-image rows); `Log Model Run (v1)` keeps sole FX/PLN
-ownership. The output adapter repairs models' common JSON defects (unescaped control characters **and**
-unescaped double-quotes inside the block-array's string values — the latter via a structural lookahead)
-before any plain-text fallback, and supports `embed_input` (re-embedding an image already attached to the
-task) by resolving the agent's attachment ref against the input image refs into a `{type:attachment}` op
-inline — no re-upload, mirroring the bare lane's `Image Resolver`.
+ownership. The output adapter repairs models' common JSON defects via a shared `parseBlockArray` helper
+(```json fence strip → prose preamble/suffix narrowing → JSON parse → **schema-aware** quote/control-char
+repair) before any plain-text fallback: an unescaped double-quote inside a string value is treated as the
+real terminator only when the next token is grammar-consistent with the **known block-key set** — this fixes
+the typographic-quote-before-comma misfire that previously collapsed a valid block array to raw text
+(ADR-059). The identical helper runs in the managed lane (`Render Agent Output (v1)` → *Parse Blocks*) and
+the bare lane (`Image Resolver (v1)` → *Resolve & Explode Blocks*; KEEP IN SYNC). The adapter also supports
+`embed_input` (re-embedding an image already attached to the task) by resolving the agent's attachment ref
+against the input image refs into a `{type:attachment}` op inline — no re-upload, mirroring the bare lane.
 
 **Reliability:** an auth dead-man's-switch (`Managed Agents Auth Monitor (v1)`), the CU-rules sync +
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the
@@ -1142,7 +1146,7 @@ failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent S
 | **`Write Cost Field (v1)`** (id `GoFPwWsSQOHnrClH`, ADR-057) | Shared cost-field writer called by **both** Stage-B lanes: `SUM(agent_runs.cost_pln)` for the task → write CU `[AI] Koszt akcji [PLN]` → return `{total}` (used for the managed footer). Fail-soft (DB/CU error → WARN, returns 0) | **LIVE** |
 | **`Sync Agent Definitions (v1)`** (id `4K1w78hJ7JhsUwdN`) + **`Agent Rules Freshness Check (v1)`** (id `7lakbgmrH93ygiyZ`) | Bake CU global-rules into the four tier agents' `system` (idempotent create/version-update) + a freshness dead-man's-switch (stale rules → WARN/CRITICAL). Both every 6h | **LIVE** |
 | **`Upload Input Images (v1)`** (id `2VkZN5UeqVk6MDLW`) | Fetch task/zip-inner image refs → Anthropic Files API (`purpose=agent`) → `{file_id→url}` map; upserts `agent_input_file_map` for MCP reference resolution | **LIVE** |
-| **`Haxe Image MCP (v1)`** (id `c4vnNLb9usfHJWg3`) → **`Image MCP Tool Handler (v1)`** (id `zxY41zZWRbXon2Eq`) → **`Image Tool Handler (v1)`** (id `vpGswBj2kR2D85hl`) | Self-hosted image MCP (n8n MCP Server Trigger, bearer) the agents call in-harness for `generate_image` (ADR-055) → resolves references → `Generate Images Parallel (v1)` unchanged → Files-API upload + carrier persist + per-image cost. Client-side `generate_image` custom tool is the dormant rollback | **LIVE** |
+| **`Haxe Image MCP (v1)`** (id `c4vnNLb9usfHJWg3`) → **`Image MCP Tool Handler (v1)`** (id `zxY41zZWRbXon2Eq`) → **`Image Tool Handler (v1)`** (id `vpGswBj2kR2D85hl`) | Self-hosted image MCP (n8n MCP Server Trigger, bearer) the agents call in-harness for `generate_image` (ADR-055) → resolves `reference_file_ids` against `agent_input_file_map` by **`file_id` OR `source_ref`** (the agent is only ever shown `source_ref`s, incl. zip-inner `<uuid>.zip:N` — ADR-059) → `Generate Images Parallel (v1)` unchanged → Files-API upload + carrier persist + per-image cost. Client-side `generate_image` custom tool is the dormant rollback | **LIVE** |
 | **`Managed Agents Auth Monitor (v1)`** (id `X3GEjMgmByZgDJnt`) + **`Image MCP Health Monitor (v1)`** (id `Er1JlLYAQLkIk7yB`) + **`Fable 5 Access Monitor (v1)`** (id `Moh1coo5pPmuSTmD`) | Dead-man's-switches: Anthropic auth probe (6h), image-MCP `initialize` probe (6h), bare-lane Fable reachability (daily) — all alert via `Post Alert (v1)` | **LIVE** |
 | **`Assemble Parent Context (v1)`** | Assemble labelled task context (task + ancestor chain + fields) | **LIVE** |
 | **`Invoke Model (v1)`** | Centralized model-call seam: route → LiteLLM → exact PLN cost → log. **Text + multimodal-INPUT only** since ADR-051 Block 5 (image generation moved to `Generate Images Parallel`) | **LIVE** |

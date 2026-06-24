@@ -55,7 +55,7 @@
       "notes": "Resolve the requested reference_file_ids -> their original signed URLs via agent_input_file_map (ADR-055 §4; written by Upload Input Images (v1)). Returns 0..N rows {file_id,url,mime,source_ref}. alwaysOutputData so the common no-refs / not-found case still emits an item and the chain runs. onError=continueRegularOutput + retry so a DB hiccup degrades fail-soft (generate without references + WARN) instead of throwing into the harness. Reference NOT-found warnings are emitted downstream by Image Tool Handler itself (it gets only the resolved rows as its file_map).",
       "parameters": {
         "operation": "executeQuery",
-        "query": "select file_id, url, mime, source_ref from public.agent_input_file_map where file_id in (select jsonb_array_elements_text($1::jsonb));",
+        "query": "select file_id, url, mime, source_ref from public.agent_input_file_map where file_id in (select jsonb_array_elements_text($1::jsonb)) or source_ref in (select jsonb_array_elements_text($1::jsonb));",
         "options": {
           "queryReplacement": "={{ [ $json.ref_ids_json ] }}"
         }
