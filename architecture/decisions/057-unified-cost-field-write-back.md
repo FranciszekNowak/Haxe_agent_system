@@ -59,6 +59,14 @@ session workflow) was chosen deliberately: surfacing a per-run PLN would mean re
 `Execute Agent Session`'s branch-free return path — the documented return-determinism trap — for
 no real benefit, since the `SUM` is at least as accurate and reuses one query.
 
+> **Superseded by ADR-060 (2026-06-24).** This "managed footer = cumulative `SUM`" decision was
+> reversed: on multi-run tasks it made every reply show the climbing running total instead of the
+> cost of that reply. ADR-060 sources the managed footer from the session's **own** PLN cost
+> (surfacing `cost_pln` from `Execute Agent Session` turned out to be a one-line `Final Return`
+> change, not the return-path restructuring feared here) **plus** the per-execution image cost
+> (a `created_at`-windowed `SUM` over the run's `image_mcp` rows). `Write Cost Field`'s `total`
+> still writes the cumulative CU field; the footer no longer reads it.
+
 **Reliability:** the sub-workflow is internally fail-soft (a DB or CU error fires a WARN through
 `Post Alert (v1)` and still returns `{ total: 0 }`); both call sites also set
 `onError: continueRegularOutput`, so a cost-sync hiccup never blocks the comment or the run.

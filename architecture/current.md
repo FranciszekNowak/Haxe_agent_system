@@ -1179,7 +1179,7 @@ failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent S
 | **`Render Agent Output (v1)`** (id `vPbbN4UQj0LAAtiV`, managed) | Output adapter: parse the agent's fenced block-array → `rendered_delta` + `image_manifest` (produced-image bytes from the `agent-output-images` carrier); control-char JSON repair before fallback | **LIVE** |
 | **`Execute LLM Call (v1)`** (id `9qdJA4xnAGbxqkt9`, Stage B — **bare failover**) | Invoke Model → drafted reply + cost (LiteLLM lane; selected by `config.agent_lane='bare'`) | **LIVE (dormant failover)** |
 | **`Post Reply (v1)`** (Stage C) | Post draft comment, status flip, office-doc + image attachments (owns CU side-effects). The cost-field write moved to the shared `Write Cost Field (v1)` (ADR-057) | **LIVE** |
-| **`Write Cost Field (v1)`** (id `GoFPwWsSQOHnrClH`, ADR-057) | Shared cost-field writer called by **both** Stage-B lanes: `SUM(agent_runs.cost_pln)` for the task → write CU `[AI] Koszt akcji [PLN]` → return `{total}` (used for the managed footer). Fail-soft (DB/CU error → WARN, returns 0) | **LIVE** |
+| **`Write Cost Field (v1)`** (id `GoFPwWsSQOHnrClH`, ADR-057) | Shared cost-field writer called by **both** Stage-B lanes: `SUM(agent_runs.cost_pln)` for the task → write CU `[AI] Koszt akcji [PLN]` → return `{total}` (the cumulative task total for the CU field; the managed footer no longer uses it — it shows the per-execution cost, ADR-060). Fail-soft (DB/CU error → WARN, returns 0) | **LIVE** |
 | **`Sync Agent Definitions (v1)`** (id `4K1w78hJ7JhsUwdN`) + **`Agent Rules Freshness Check (v1)`** (id `7lakbgmrH93ygiyZ`) | Bake CU global-rules into the four tier agents' `system` (idempotent create/version-update) + a freshness dead-man's-switch (stale rules → WARN/CRITICAL). Both every 6h | **LIVE** |
 | **`Upload Input Images (v1)`** (id `2VkZN5UeqVk6MDLW`) | Fetch task/zip-inner image refs → Anthropic Files API (`purpose=agent`) → `{file_id→url}` map; upserts `agent_input_file_map` for MCP reference resolution | **LIVE** |
 | **`Haxe Image MCP (v1)`** (id `c4vnNLb9usfHJWg3`) → **`Image MCP Tool Handler (v1)`** (id `zxY41zZWRbXon2Eq`) → **`Image Tool Handler (v1)`** (id `vpGswBj2kR2D85hl`) | Self-hosted image MCP (n8n MCP Server Trigger, bearer) the agents call in-harness for `generate_image` (ADR-055) → resolves `reference_file_ids` against `agent_input_file_map` by **`file_id` OR `source_ref`** (the agent is only ever shown `source_ref`s, incl. zip-inner `<uuid>.zip:N` — ADR-059) → `Generate Images Parallel (v1)` unchanged → Files-API upload + carrier persist + per-image cost. Client-side `generate_image` custom tool is the dormant rollback | **LIVE** |
@@ -1207,9 +1207,11 @@ lane-resolution + managed-branch nodes). Entry is
 either a Form Trigger (`taskId`, manual testing) or a `When Called` Execute-Workflow trigger (from
 the webhook producer). After Stage A + the `Context OK?` guard, **`Read Agent Lane` → `Resolve Lane` →
 `Lane = managed?`** routes Stage B: **true** → the managed chain (`Call Execute Agent Session` → `Session
-OK?` → `Call Render Agent Output` → `Call Write Cost Field` → `Call Post Reply (Managed)`, passing
-`doc_attachments`/`session_id` through to Post Reply's office-doc branch and the task cost `total` into the
-comment footer — ADR-057 closed the gap where the managed footer + cost field were never written); **false**
+OK?` → `Call Render Agent Output` → `Call Write Cost Field` → `Sum Execution Image Cost` → `Call Post Reply
+(Managed)`, passing `doc_attachments`/`session_id` through to Post Reply's office-doc branch; the comment
+footer shows the **per-execution** cost — the session's text cost plus the windowed per-execution image cost
+from `Sum Execution Image Cost` (ADR-060), while `Call Write Cost Field` still writes the cumulative CU cost
+field (ADR-057 closed the gap where the managed footer + cost field were never written); **false**
 → the bare `Call Execute LLM`. An unreadable/invalid
 flag fails safe to bare + `Alert Lane Unreadable` (WARN); an empty managed session → `Alert Session Empty`
 (WARN, no empty post); adapter degradation → `Alert Render Warnings` (WARN) — all via `Post Alert (v1)`. It sets status **W trakcie** on a **parallel fire-and-forget side-branch off
@@ -1331,11 +1333,21 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   (idempotent, drift-free) via the shared **`Write Cost Field (v1)`** sub-workflow, called by **both**
   Stage-B lanes — the bare lane in-workflow, the managed lane from the orchestrator after the session
   (ADR-057; before that the managed lane wrote neither the field nor the footer, so moodboard/image
-  runs showed `0.0000`/blank). The managed lane's footer reuses the same `SUM`. Managed **image-gen**
+  runs showed `0.0000`/blank). Managed **image-gen**
   cost rows are now attributed to the task: the agent passes `clickup_task_id` as a `generate_image` MCP
   tool argument (the only channel — the MCP boundary exposes no session context, ADR-055/Block 5.1), so
   the image cost is included in this per-task SUM. If the model omits the id, that image's cost falls back
   to a `null` task id and an `image-mcp/missing-task-id` WARN fires (ADR-057 Amendment, closed 2026-06-24).
+- **Comment footer (per-execution, ADR-060):** the managed footer shows **this execution's** cost,
+  not the task cumulative. It is `cost_pln` (the session's own text/runtime/web-search PLN cost, surfaced
+  out of `Execute Agent Session`) **plus** the per-execution image cost — a windowed
+  `SUM(agent_runs.cost_pln)` over `triggered_by='image_mcp'` rows for the task with `created_at >= since_ts`
+  (a timestamp the orchestrator captures in `Resolve Lane` **before** the session runs), computed by the
+  `Sum Execution Image Cost` node and passed to Post Reply as `total_image_cost_pln`. This **supersedes**
+  ADR-057's choice to source the managed footer from the cumulative task `SUM` (which made every reply show
+  the running total). A reliability guard (`Img Cost Missing?` → `agent-orchestrator/image-cost` WARN) fires
+  if images were delivered but the windowed image cost summed to 0. Known limit: two concurrent runs on the
+  **same** task overlap windows and can cross-count (rare; ADR-060).
   ⚠ This uses the
   edit-capable agent **Member** token via a fixed deterministic node (never an LLM-exposed capability,
   per ADR-026) — flagged for the ADR-026 identity split.

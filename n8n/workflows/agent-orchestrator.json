@@ -381,7 +381,7 @@
       "typeVersion": 2,
       "position": [752, 192],
       "parameters": {
-        "jsCode": "// Block 8: resolve the managed|bare lane flag, fail-safe to bare. Preserves the full Stage A\n// context (spread from Call Assemble Context) so the bare lane's Call Execute LLM mapping ($json.prompt etc.)\n// still resolves downstream. On a DB error (onError=continueRegularOutput passes the input item through) or\n// a missing/malformed flag, agent_lane is absent -> lane_unreadable=true -> bare + a WARN (Lane Unreadable?).\nconst ctx = $('Call Assemble Context').first().json || {};\nconst row = ($input.first() && $input.first().json) || {};\nlet lane = String(row.agent_lane || '').trim().toLowerCase();\nlet lane_unreadable = false;\nif (lane !== 'managed' && lane !== 'bare') { lane_unreadable = true; lane = 'bare'; }\nreturn [{ json: Object.assign({}, ctx, { agent_lane: lane, lane_unreadable: lane_unreadable }) }];"
+        "jsCode": "// Block 8: resolve the managed|bare lane flag, fail-safe to bare. Preserves the full Stage A\n// context (spread from Call Assemble Context) so the bare lane's Call Execute LLM mapping ($json.prompt etc.)\n// still resolves downstream. On a DB error (onError=continueRegularOutput passes the input item through) or\n// a missing/malformed flag, agent_lane is absent -> lane_unreadable=true -> bare + a WARN (Lane Unreadable?).\nconst ctx = $('Call Assemble Context').first().json || {};\nconst row = ($input.first() && $input.first().json) || {};\nlet lane = String(row.agent_lane || '').trim().toLowerCase();\nlet lane_unreadable = false;\nif (lane !== 'managed' && lane !== 'bare') { lane_unreadable = true; lane = 'bare'; }\n// ADR-060: capture a lower-bound timestamp BEFORE the session runs so the managed footer can sum\n// only THIS execution's image-gen cost rows (triggered_by='image_mcp', clickup_task_id, created_at>=since_ts).\n// 5s buffer absorbs any n8n<->DB clock skew; prior runs' image rows are minutes+ older so the window excludes them.\nconst since_ts = new Date(Date.now() - 5000).toISOString();\nreturn [{ json: Object.assign({}, ctx, { agent_lane: lane, lane_unreadable: lane_unreadable, since_ts: since_ts }) }];"
       }
     },
     {
@@ -586,7 +586,7 @@
             "image_manifest": "={{ $('Call Render Agent Output').first().json.image_manifest }}",
             "rendered_delta": "={{ $('Call Render Agent Output').first().json.rendered_delta }}",
             "image_models": "={{ $('Call Render Agent Output').first().json.image_models }}",
-            "total_image_cost_pln": "={{ $('Call Render Agent Output').first().json.total_image_cost_pln }}",
+            "total_image_cost_pln": "={{ $('Sum Execution Image Cost').first().json.image_total }}",
             "doc_attachments": "={{ $('Call Execute Agent Session').first().json.doc_files }}",
             "session_id": "={{ $('Call Execute Agent Session').first().json.session_id }}"
           },
@@ -690,7 +690,7 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [1888, 96],
-      "notes": "Managed lane cost write-back (parity with the bare lane's in-workflow field write). Sums agent_runs.cost_pln for the task and writes CU '[AI] Koszt akcji [PLN]'; returns {total} used for the comment footer. Runs AFTER the session logged its cost row so the SUM includes it. onError=continueRegularOutput + the sub-workflow is internally fail-soft, so a cost-sync hiccup never blocks Post Reply. NOTE: the managed image-gen cost row carries a null task id (MCP boundary strips task context, ADR-055) so it is NOT yet in this SUM — tracked as a follow-up.",
+      "notes": "Managed lane cost write-back (parity with the bare lane's in-workflow field write). Sums agent_runs.cost_pln for the task and writes CU '[AI] Koszt akcji [PLN]'; returns {total} used for the comment footer. Runs AFTER the session logged its cost row so the SUM includes it. onError=continueRegularOutput + the sub-workflow is internally fail-soft, so a cost-sync hiccup never blocks Post Reply. NOTE: managed image-gen cost rows now carry the real clickup_task_id (agent-supplied tool arg, ADR-057 amendment) so they ARE included in this cumulative per-task SUM. The PER-EXECUTION image cost for the comment footer is computed separately by the downstream Sum Execution Image Cost node (windowed by since_ts, ADR-060) — this SUM stays the all-time task total for the CU field.",
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -701,6 +701,101 @@
           "mappingMode": "defineBelow",
           "value": {
             "clickup_task_id": "={{ $('Call Assemble Context').first().json.clickup_task_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "8e897586-8e79-4521-b06a-563289c3b0ee",
+      "name": "Sum Execution Image Cost",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1976, 136],
+      "notes": "ADR-060: per-execution image cost for the managed footer. SUMs agent_runs.cost_pln for THIS task over the managed image-gen rows (triggered_by='image_mcp', migration 036) created since Resolve Lane's since_ts (captured before the session ran), i.e. only THIS execution's images. Feeds Call Post Reply (Managed).total_image_cost_pln so the footer = session text cost + this run's images. Cumulative CU field (Write Cost Field, by task, all-time) is unchanged. onError=continueRegularOutput + alwaysOutputData so a transient DB miss falls back to image_total 0 (Build/Post still run). Known limit: two concurrent runs on the SAME task overlap windows and can cross-count (rare; ADR-060).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select coalesce(sum(cost_pln), 0) as image_total, count(*) as image_count\nfrom agent_runs\nwhere clickup_task_id = $1\n  and triggered_by = 'image_mcp'\n  and created_at >= coalesce(nullif($2, '')::timestamptz, now());",
+        "options": {
+          "queryReplacement": "={{ [ $('Call Assemble Context').first().json.clickup_task_id, $('Resolve Lane').first().json.since_ts ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "411de750-a64c-4b3e-aa86-c8f943332748",
+      "name": "Img Cost Missing?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [2208, 320],
+      "notes": "ADR-060 reliability guard: TRUE when images WERE delivered this execution (render image_manifest non-empty) but the windowed image cost summed to 0 -> the per-execution image cost (footer + this-run attribution) is understated. Causes not already caught by the generation-time image-mcp/missing-task-id WARN: clock skew on since_ts, a triggered_by/filter mismatch, or all image rows landing null-task. Side branch -> Alert Image Cost Missing (WARN), never blocks Post Reply.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "imgc1",
+              "leftValue": "={{ (function(){ const m = $('Call Render Agent Output').first().json.image_manifest; const a = Array.isArray(m) ? m : (function(){ try { return JSON.parse(m || '[]'); } catch(e){ return []; } })(); return a.length; })() }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            },
+            {
+              "id": "imgc2",
+              "leftValue": "={{ Number($('Sum Execution Image Cost').first().json.image_total || 0) }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "fe0867b9-fb40-4c26-b2d4-ad9e847d6ef3",
+      "name": "Alert Image Cost Missing",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [2432, 320],
+      "notes": "ADR-060 WARN via Post Alert (v1): images were delivered in the comment but no per-execution image cost was attributed (footer/this-run cost understated). Complements the generation-time image-mcp/missing-task-id WARN by catching the since_ts-window/skew/filter failure modes. onError=continueRegularOutput so the alert can't break the run.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-orchestrator/image-cost",
+            "message": "Obrazy dostarczono w komentarzu, ale nie przypisano kosztu obrazów do tego przebiegu — stopka/koszt przebiegu może być zaniżony.",
+            "details": "=task={{ $('Call Assemble Context').first().json.clickup_task_id }}; since_ts={{ $('Resolve Lane').first().json.since_ts }}; image_rows={{ $('Sum Execution Image Cost').first().json.image_count }}; sprawdź czy wiersze agent_runs (triggered_by=image_mcp) mają poprawny clickup_task_id i created_at w oknie."
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,
@@ -930,7 +1025,34 @@
       "main": [
         [
           {
+            "node": "Sum Execution Image Cost",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sum Execution Image Cost": {
+      "main": [
+        [
+          {
             "node": "Call Post Reply (Managed)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Img Cost Missing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Img Cost Missing?": {
+      "main": [
+        [
+          {
+            "node": "Alert Image Cost Missing",
             "type": "main",
             "index": 0
           }
