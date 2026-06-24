@@ -266,6 +266,16 @@ Date
   processing only that branch's items and dropping the rest — give aggregators
   exactly **one** input (merge upstream into a single stream first). Both traps were
   hit building `read-input-text` (ADR-036, Block 2).
+- **MCP-tool `toolWorkflow` nodes carry a hidden `workflowInputs.schema[]` that the repo tooling drops.**
+  A `toolWorkflow` node feeding an MCP Server Trigger uses `parameters.workflowInputs.schema[]` (one entry
+  per input) to map the model's `$fromAI` arguments to the called sub-workflow. `export-workflows.mjs`
+  strips this array and `check-workflow-drift.mjs` ignores it, so the repo copy silently lacks it;
+  deploying that file via `import-workflow.mjs` (public-API PUT) strips it from live and breaks **all**
+  argument binding (every `$fromAI` value arrives `null`, including `prompt`). Hand-maintain `schema[]` in
+  the repo file for these workflows (e.g. `haxe-image-mcp.json`), never let `export-workflows.mjs`
+  overwrite them, and prefer editing via n8n-MCP `partial_update`/the UI over a PUT. Recover a lost live
+  array from n8n version history (`n8n_workflow_versions get`). Cost us a long debugging cycle (ADR-057
+  amendment).
 - **ClickUp threaded replies: reply to the comment's own `id`, never `comment.parent`.**
   To reply in-thread, POST to `/api/v2/comment/{comment.id}/reply`. For a **top-level**
   comment ClickUp populates `parent` with the **task id**, so replying to `parent` targets a
