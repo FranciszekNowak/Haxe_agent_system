@@ -1138,7 +1138,8 @@ failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent S
 | **`Execute Agent Session (v1)`** (id `Rtb1cZbmUqmfGD98`, Stage B — **managed**) | Anthropic Managed Agents session: resolve tier agent (`agent_routing`) + env → upload input images (Files API) → create/send → poll to idle → service custom-tool loop → session USD cost + enumerate produced docs | **LIVE — default Stage B** |
 | **`Render Agent Output (v1)`** (id `vPbbN4UQj0LAAtiV`, managed) | Output adapter: parse the agent's fenced block-array → `rendered_delta` + `image_manifest` (produced-image bytes from the `agent-output-images` carrier); control-char JSON repair before fallback | **LIVE** |
 | **`Execute LLM Call (v1)`** (id `9qdJA4xnAGbxqkt9`, Stage B — **bare failover**) | Invoke Model → drafted reply + cost (LiteLLM lane; selected by `config.agent_lane='bare'`) | **LIVE (dormant failover)** |
-| **`Post Reply (v1)`** (Stage C) | Post draft comment, cost field, status flip, office-doc + image attachments (owns CU side-effects) | **LIVE** |
+| **`Post Reply (v1)`** (Stage C) | Post draft comment, status flip, office-doc + image attachments (owns CU side-effects). The cost-field write moved to the shared `Write Cost Field (v1)` (ADR-057) | **LIVE** |
+| **`Write Cost Field (v1)`** (id `GoFPwWsSQOHnrClH`, ADR-057) | Shared cost-field writer called by **both** Stage-B lanes: `SUM(agent_runs.cost_pln)` for the task → write CU `[AI] Koszt akcji [PLN]` → return `{total}` (used for the managed footer). Fail-soft (DB/CU error → WARN, returns 0) | **LIVE** |
 | **`Sync Agent Definitions (v1)`** (id `4K1w78hJ7JhsUwdN`) + **`Agent Rules Freshness Check (v1)`** (id `7lakbgmrH93ygiyZ`) | Bake CU global-rules into the four tier agents' `system` (idempotent create/version-update) + a freshness dead-man's-switch (stale rules → WARN/CRITICAL). Both every 6h | **LIVE** |
 | **`Upload Input Images (v1)`** (id `2VkZN5UeqVk6MDLW`) | Fetch task/zip-inner image refs → Anthropic Files API (`purpose=agent`) → `{file_id→url}` map; upserts `agent_input_file_map` for MCP reference resolution | **LIVE** |
 | **`Haxe Image MCP (v1)`** (id `c4vnNLb9usfHJWg3`) → **`Image MCP Tool Handler (v1)`** (id `zxY41zZWRbXon2Eq`) → **`Image Tool Handler (v1)`** (id `vpGswBj2kR2D85hl`) | Self-hosted image MCP (n8n MCP Server Trigger, bearer) the agents call in-harness for `generate_image` (ADR-055) → resolves references → `Generate Images Parallel (v1)` unchanged → Files-API upload + carrier persist + per-image cost. Client-side `generate_image` custom tool is the dormant rollback | **LIVE** |
@@ -1166,8 +1167,10 @@ lane-resolution + managed-branch nodes). Entry is
 either a Form Trigger (`taskId`, manual testing) or a `When Called` Execute-Workflow trigger (from
 the webhook producer). After Stage A + the `Context OK?` guard, **`Read Agent Lane` → `Resolve Lane` →
 `Lane = managed?`** routes Stage B: **true** → the managed chain (`Call Execute Agent Session` → `Session
-OK?` → `Call Render Agent Output` → `Call Post Reply (Managed)`, passing `doc_attachments`/`session_id`
-through to Post Reply's office-doc branch); **false** → the bare `Call Execute LLM`. An unreadable/invalid
+OK?` → `Call Render Agent Output` → `Call Write Cost Field` → `Call Post Reply (Managed)`, passing
+`doc_attachments`/`session_id` through to Post Reply's office-doc branch and the task cost `total` into the
+comment footer — ADR-057 closed the gap where the managed footer + cost field were never written); **false**
+→ the bare `Call Execute LLM`. An unreadable/invalid
 flag fails safe to bare + `Alert Lane Unreadable` (WARN); an empty managed session → `Alert Session Empty`
 (WARN, no empty post); adapter degradation → `Alert Render Warnings` (WARN) — all via `Post Alert (v1)`. It sets status **W trakcie** on a **parallel fire-and-forget side-branch off
 the trigger itself** — so the requester sees "W trakcie" within ~1 s of webhook receipt, not after the
@@ -1203,12 +1206,13 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   agent's block-array into the Post Reply contract (`rendered_delta` + `image_manifest`, fetching produced
   images from the carrier). Verified live across text / web-research / image-gen / vision / office-doc (Block 9).
 - **Stage B (bare, dormant failover) — `Execute LLM Call (v1)`** (`n8n/workflows/execute-llm-call.json`, id `9qdJA4xnAGbxqkt9`,
-  12 nodes): `Invoke Model (v1)` → drafted reply + cost; forwards `image_blocks_json` to Invoke Model.
+  10 nodes): `Invoke Model (v1)` → drafted reply + cost; forwards `image_blocks_json` to Invoke Model.
   **Multimodal output (Block 12, 2026-06-13):** the drafting model now returns the **output-block list**, so
   Stage B runs `Call Invoke Model → Parse Output Blocks (tolerant JSON parse; un-parseable → single text block)
-  → Call Image Resolver (znDqcfgXK6CNte20) → Sum Task Cost → Update CU Cost Field → [Has Warnings? → Alert
-  Resolver Warnings] → Return LLM Result` (sole terminal). The resolver is called **before** the cost sum so
-  per-`generate` `image_gen` rows are counted; `Return LLM Result` carries `rendered_delta` / `image_manifest` /
+  → Call Image Resolver (znDqcfgXK6CNte20) → Call Write Cost Field (GoFPwWsSQOHnrClH, the shared field writer) →
+  [Has Warnings? → Alert Resolver Warnings] → Return LLM Result` (sole terminal). The resolver is called
+  **before** the cost write so per-`generate` `image_gen` rows are counted; `Return LLM Result` carries
+  `rendered_delta` / `image_manifest` /
   `image_models` / `total_image_cost_pln` to Stage C; resolver `warnings[]` fire a WARN (`multimodal/resolver`)
   on a reconverging branch. A resolver throw propagates to the global Error Handler (CRITICAL, no partial post).
   The return path stays a single branch-free terminal (fixes the ADR-036 Block-5 return-determinism bug, where
@@ -1266,9 +1270,15 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   status on the task itself nor writes
   `[AI] Finalny, zaakceptowany efekt`.
 - **Cost field:** writes `[AI] Koszt akcji [PLN]` = `SUM(agent_runs.cost_pln)` for the task
-  (idempotent, drift-free). ⚠ This uses the edit-capable agent **Member** token via a fixed
-  deterministic node (never an LLM-exposed capability, per ADR-026) — flagged for the ADR-026
-  identity split.
+  (idempotent, drift-free) via the shared **`Write Cost Field (v1)`** sub-workflow, called by **both**
+  Stage-B lanes — the bare lane in-workflow, the managed lane from the orchestrator after the session
+  (ADR-057; before that the managed lane wrote neither the field nor the footer, so moodboard/image
+  runs showed `0.0000`/blank). The managed lane's footer reuses the same `SUM`. ⚠ Known gap: managed
+  **image-gen** cost rows carry a `null` `clickup_task_id` (the MCP boundary strips task context,
+  ADR-055), so they are **not** in this per-task SUM yet — the field/footer reflect the text/session
+  cost; the image sub-cost is in `agent_runs` but un-attributed (ADR-057, tracked). ⚠ This uses the
+  edit-capable agent **Member** token via a fixed deterministic node (never an LLM-exposed capability,
+  per ADR-026) — flagged for the ADR-026 identity split.
 - **Reliability:** post-back, cost-sync, and session-upsert failures fire a WARN on a side
   branch and **do not abort the run** (the completion is still returned). `Error Handler (v1)`
   is set as the `errorWorkflow` on the orchestrator and each stage subworkflow.

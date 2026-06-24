@@ -1,0 +1,179 @@
+{
+  "name": "Write Cost Field (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "notes": "Shared cost-field writer (extracted from Execute LLM Call's Sum Task Cost + Update CU Cost Field so both lanes write the field via ONE path; unification per CLAUDE.md). Input: clickup_task_id. Returns {total} = SUM(agent_runs.cost_pln) for the task (the value just written to CU field ca7a3874). Fail-soft: a DB or CU error WARNs and still returns (total falls back to 0).",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "clickup_task_id"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "sum-task-cost",
+      "name": "Sum Task Cost",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [220, 300],
+      "notes": "Authoritative task cost = SUM(agent_runs.cost_pln) over all rows for the task (gate + research + text + image rows that carry the task id). onError=continueErrorOutput so a transient DB miss routes to the WARN and the call still returns.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select coalesce(sum(cost_pln), 0) as total\nfrom agent_runs\nwhere clickup_task_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [ $('When Called').first().json.clickup_task_id ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "update-cu-cost",
+      "name": "Update CU Cost Field",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300],
+      "notes": "Writes running total to CU '[AI] Koszt akcji [PLN]' (field ca7a3874). On success -> Build Return; on error -> Alert Cost Sync Failed (reconverges to Build Return), so a cost-sync failure never blocks the caller.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}/field/ca7a3874-b83d-403c-8266-426935e38eae",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ value: Number($json.total) }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "alert-cost-failed",
+      "name": "Alert Cost Sync Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [660, 460],
+      "notes": "WARN (ADR-025 seam) when the SUM query or the CU field POST fails. Non-blocking: reconverges into Build Return so the caller still gets a (fallback 0) total.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "write-cost-field/cost-sync",
+            "message": "Nie udało się zsynchronizować kosztu zadania do pola CU '[AI] Koszt akcji [PLN]'.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "build-return",
+      "name": "Build Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 300],
+      "notes": "SOLE branch-free TERMINAL. Re-reads Sum Task Cost via absolute ref (so the incoming item — Update success or Alert — doesn't matter). Returns {total} = the written SUM (0 if the SUM errored). Caller uses it for the comment footer (managed lane).",
+      "parameters": {
+        "jsCode": "const s = $('Sum Task Cost').first().json;\nconst total = (s && s.total != null && !isNaN(Number(s.total))) ? Number(s.total) : 0;\nreturn [{ json: { total: total } }];"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Sum Task Cost",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sum Task Cost": {
+      "main": [
+        [
+          {
+            "node": "Update CU Cost Field",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Cost Sync Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update CU Cost Field": {
+      "main": [
+        [
+          {
+            "node": "Build Return",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Cost Sync Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Cost Sync Failed": {
+      "main": [
+        [
+          {
+            "node": "Build Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}
