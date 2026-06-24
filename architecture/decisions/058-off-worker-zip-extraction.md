@@ -104,15 +104,25 @@ were removed: the in-workflow `Fetch Zip Binary → Stamp Zip Filename → Decom
 Entries` chain and the now-redundant `Zip Image Key → Upload Zip Image → Sign Zip Image URL → Compose
 Signed URL` (the extractor does upload+sign server-side).
 
-Two nodes beyond the original wiring sketch proved necessary:
+Three nodes beyond the original wiring sketch proved necessary:
 
-- **`Zip Caps`** — the caps must be resolved in a Code node, not inline in the `Call Extractor` HTTP
-  body. Referencing `$('Lookup File Processing Config').first()` from an n8n *expression* **throws**
-  (`Node … hasn't been executed`) because n8n's v1 order runs the zip branch depth-first *before* the
-  parallel `Lookup` node; `onError` caught the throw and silently degraded every zip to a false
-  `zip_extraction_failed` drop (exec 3571). `Zip Caps` reads the config defensively in a `try/catch`
-  with a 50/25/250 fallback — exactly what the old `Explode Zip Entries` did, which means the zip path
-  already fell back to defaults (not live config) under the same race before this change.
+- **`Zip Caps` + `Await Caps` (honoring live `config`)** — the caps must be resolved in a Code node, not
+  inline in the `Call Extractor` HTTP body: referencing `$('Lookup File Processing Config').first()` from
+  an n8n *expression* **throws** (`Node … hasn't been executed`) because n8n's v1 order defers the parallel
+  `Lookup` side-branch until *after* the whole zip branch; `onError` caught the throw and silently degraded
+  every zip to a false `zip_extraction_failed` drop (exec 3571). The first fix (a defensive `try/catch →
+  50/25/250` in `Zip Caps`, mirroring the old `Explode Zip Entries`) stopped the crash but kept using
+  defaults, **not** live config — which is what the old zip path did too, and which the operator flagged as
+  wrong (config is the single source of truth). Reordering `Get Task`'s outputs did **not** help (verified:
+  `Lookup` still ran last, `caps_source=default`, exec 3575). The working fix is **`Await Caps`**, a `Merge`
+  (chooseBranch, output Input 1) on the spine — `Explode Attachments → Await Caps → Zip? Switch`, with
+  `Lookup` as its second input — that **waits for both inputs**, forcing `Lookup` to execute before the zip
+  branch. It sits on the *main* spine (after `Explode`, which always emits ≥1 item) rather than the
+  conditional `Zip? Switch[zip]` output, because a barrier on the conditional output **hangs** when there
+  is no zip (input never delivers → the whole convergence stalled and the sub-workflow returned the raw
+  config row, exec 3579). With the spine barrier, `Zip Caps` reads live config (`caps_source=config`,
+  verified exec 3583); the `'default'` fallback remains only for a genuine DB-read failure and is visible
+  in the execution data via `caps_source`.
 - **`Stamp Zip Doc Filename`** — a zip-inner document is fetched from its Supabase signed URL, whose
   object key is the sanitized `att_id` with **no file extension**, so the downloaded binary lacks the
   filename Docling uses for format detection. This node restores `fileName`/`fileExtension`/`mimeType`
@@ -125,7 +135,10 @@ mixed zip (PNG, CSV, a real 10 KB DOCX, a nested zip, a junk dotfile): `Call Ext
 CSV and DOCX Docling text blocks at 0.002/0.003, nested-zip `[BRAK]` drop at 0.004), the junk dotfile
 was silently skipped, and only the expected `multimodal/zip-nested-skipped` WARN rode the reader's
 returned `warnings`. Zero CRITICAL, every node `status=success` with no `isArtificialRecoveredEventItem`
-markers (i.e. no worker crash). Block 3 (extend the bucket purge to zip-inner *documents*) remains open.
+markers (i.e. no worker crash), and `Zip Caps` emitted `caps_source=config` (live config honored). A
+separate **non-zip** run (a task with only a loose image) was checked after adding `Await Caps` to confirm
+the barrier did not regress that path: it returned the single loose-image block with no spurious zip drop.
+Block 3 (extend the bucket purge to zip-inner *documents*) remains open.
 
 ## Date
 

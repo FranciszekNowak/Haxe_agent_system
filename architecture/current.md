@@ -1233,9 +1233,12 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   extractor uploads each accepted entry to the bucket and returns a manifest; `Fan Manifest` fans it into one
   item per entry at the parent zip's interleaved ordinal, feeding the **unchanged** `Classify Zip Entry`
   three-way fan; everything else (including the no-attachment sentinel) flows to `Classify Attachment`
-  unchanged. `Zip Caps` resolves the caps for the request defensively (the old `Explode Zip Entries`
-  try/catch → 50/25/250, since reading the parallel `Lookup File Processing Config` inline in the HTTP body
-  throws when it hasn't executed yet). Inner **images** become a **private EU Supabase Storage bucket
+  unchanged. The caps come from **live `config`**: an `Await Caps` merge barrier on the spine
+  (`Explode Attachments → Await Caps → Zip? Switch`, with `Lookup File Processing Config` as its second
+  input) forces `Lookup` to execute before the zip branch — n8n's v1 order otherwise defers that parallel
+  side-branch to last, so `Zip Caps` would read an unexecuted node, throw, and silently fall back to
+  defaults. `Zip Caps` reads the now-guaranteed config (emitting `caps_source: 'config'`; a `'default'`
+  50/25/250 fallback remains only for a genuine DB-read failure, and is visible in the execution data). Inner **images** become a **private EU Supabase Storage bucket
   `zip-inner-images`** (`haxe-agent-prod` / `eu-west-1`) object referenced **only by a short-TTL signed
   URL** — the heavy bytes never enter execution data (the rejected v1 inlined base64). Inner **documents**
   are fetched from their signed URL one at a time (`Fetch Zip Doc Binary → Stamp Zip Doc Filename`, the

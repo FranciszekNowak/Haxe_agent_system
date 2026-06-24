@@ -645,7 +645,19 @@
       "notes": "ADR-058 Block 2: resolve the file-processing caps for the extractor request defensively, then carry the Call Extractor request fields on the item. Reading $('Lookup File Processing Config').first() directly inside the Call Extractor HTTP body THROWS when Lookup hasn't executed yet (n8n v1 runs this zip branch depth-first BEFORE the parallel Lookup node) -> onError caught it -> the whole zip degraded to a false zip_extraction_failed drop (exec 3571). The old Explode Zip Entries hit the same race but swallowed it in a try/catch and fell back to 50/25/250 (so the zip path already used defaults, not live config). This node replicates that defensive read (try/catch -> defaults) and emits { url, task_id, attachment_id, parent_title, caps } so Call Extractor references only $json and can never throw on an unexecuted node.",
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const m = $json || {};\nlet cfg = {};\ntry { cfg = $('Lookup File Processing Config').first().json || {}; } catch (e) { cfg = {}; }\nconst caps = {\n  max_entries: Number(cfg.zip_max_entries) || 50,\n  max_file_mb: Number(cfg.zip_max_file_mb) || 25,\n  max_total_mb: Number(cfg.zip_max_total_uncompressed_mb) || 250\n};\nreturn { json: {\n  clickup_task_id: m.clickup_task_id,\n  att_id: m.att_id,\n  title: m.title,\n  order: m.order,\n  url: m.url,\n  task_id: m.clickup_task_id,\n  attachment_id: m.att_id,\n  parent_title: m.title,\n  caps: caps\n} };"
+        "jsCode": "const m = $json || {};\nlet cfg = {};\ntry { cfg = $('Lookup File Processing Config').first().json || {}; } catch (e) { cfg = {}; }\nconst hasCfg = cfg && cfg.zip_max_entries != null && cfg.zip_max_file_mb != null && cfg.zip_max_total_uncompressed_mb != null;\nconst caps = {\n  max_entries: Number(cfg.zip_max_entries) || 50,\n  max_file_mb: Number(cfg.zip_max_file_mb) || 25,\n  max_total_mb: Number(cfg.zip_max_total_uncompressed_mb) || 250\n};\nreturn { json: {\n  clickup_task_id: m.clickup_task_id,\n  att_id: m.att_id,\n  title: m.title,\n  order: m.order,\n  url: m.url,\n  task_id: m.clickup_task_id,\n  attachment_id: m.att_id,\n  parent_title: m.title,\n  caps: caps,\n  caps_source: hasCfg ? 'config' : 'default'\n} };"
+      }
+    },
+    {
+      "id": "cd72b8b4-1555-4ce7-8318-fddc791ad521",
+      "name": "Await Caps",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [352, -80],
+      "notes": "ADR-058 Block 2 fix: synchronization barrier on the main spine so NOTHING past Explode Attachments runs until Lookup File Processing Config has executed. n8n's v1 order otherwise defers the parallel Lookup (a side branch) until after the whole zip branch, so reading $('Lookup').first() in Zip Caps threw -> fell back to default caps, silently ignoring live config (exec 3575 caps_source=default). This Merge (chooseBranch, output Input 1 = input 0 = the Explode items) waits for BOTH Explode (input 0, always >=1 item incl. the no-attachment sentinel) and the Lookup row (input 1) before emitting, then passes the attachment items through UNCHANGED to Zip? Switch. Because Explode never emits 0 items, the barrier never hangs (an earlier version sat on the conditional Zip? Switch[zip] output and stalled every non-zip run -> exec 3579). Forcing Lookup first means Zip Caps reads live config (caps_source=config). Lineage to Explode Attachments is preserved for Fan Manifest's itemMatching.",
+      "parameters": {
+        "mode": "chooseBranch",
+        "outputDataFrom": "input1"
       }
     }
   ],
@@ -724,22 +736,6 @@
         ]
       ]
     },
-    "Get Task": {
-      "main": [
-        [
-          {
-            "node": "Explode Attachments",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Lookup File Processing Config",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Classify Attachment": {
       "main": [
         [
@@ -798,17 +794,11 @@
             "node": "Merge Branches",
             "type": "main",
             "index": 3
-          }
-        ]
-      ]
-    },
-    "Explode Attachments": {
-      "main": [
-        [
+          },
           {
-            "node": "Zip? Switch",
+            "node": "Await Caps",
             "type": "main",
-            "index": 0
+            "index": 1
           }
         ]
       ]
@@ -1011,6 +1001,44 @@
         [
           {
             "node": "Call Extractor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Task": {
+      "main": [
+        [
+          {
+            "node": "Explode Attachments",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Lookup File Processing Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Await Caps": {
+      "main": [
+        [
+          {
+            "node": "Zip? Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Explode Attachments": {
+      "main": [
+        [
+          {
+            "node": "Await Caps",
             "type": "main",
             "index": 0
           }
