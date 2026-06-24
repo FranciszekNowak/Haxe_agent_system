@@ -578,7 +578,7 @@
           "value": {
             "completion": "={{ $('Call Execute Agent Session').first().json.output_message }}",
             "model": "={{ $('Call Execute Agent Session').first().json.model_used }}",
-            "cost_pln": "={{ $('Call Write Cost Field').first().json.total }}",
+            "cost_pln": "={{ $('Call Execute Agent Session').first().json.cost_pln }}",
             "clickup_task_id": "={{ $('Call Assemble Context').first().json.clickup_task_id }}",
             "reviewer_user_id": "={{ $('Call Assemble Context').first().json.reviewer_user_id }}",
             "triggering_comment_id": "={{ $('Call Assemble Context').first().json.triggering_comment_id }}",

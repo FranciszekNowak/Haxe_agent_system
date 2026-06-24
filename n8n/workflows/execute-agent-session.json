@@ -725,7 +725,7 @@
       "position": [3960, 440],
       "notes": "SOLE non-recursive TERMINAL. Re-reads the canonical output object from Merge Final (NOT its direct input, which Post Alert would have replaced) — the research-the-web return-determinism idiom. Returns the Agent Session contract object the caller (orchestrator / Block 6 output adapter) consumes.",
       "parameters": {
-        "jsCode": "return [{ json: $('Merge Final').first().json }];"
+        "jsCode": "// SOLE non-recursive TERMINAL. Re-reads the canonical output object from Merge Final (NOT its direct\n// input, which Post Alert would have replaced) — the research-the-web return-determinism idiom — and folds\n// in cost_pln = THIS session's own PLN cost from Log Session Cost (Log Model Run's cost_pln_total). The\n// orchestrator's managed-lane comment footer uses cost_pln so it shows the PER-EXECUTION cost, NOT the\n// task's cumulative total (the cumulative figure is what Write Cost Field writes to the CU 'Koszt akcji'\n// field). Image-gen cost is logged separately per-image (Generate Images Parallel) and is intentionally\n// NOT folded in here. Log Session Cost only runs on the normal terminal (Build Final Output) path; on the\n// create/send-failed paths it never runs, so cost_pln falls back to null.\nconst out = $('Merge Final').first().json;\nlet cost_pln = null;\ntry { const c = $('Log Session Cost').first().json; if (c && c.cost_pln_total != null && !isNaN(Number(c.cost_pln_total))) cost_pln = Number(c.cost_pln_total); } catch (e) {}\nreturn [{ json: Object.assign({}, out, { cost_pln: cost_pln }) }];"
       }
     },
     {
