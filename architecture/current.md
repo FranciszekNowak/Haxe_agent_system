@@ -353,10 +353,19 @@ proven deterministic-pre-gather floor). No dedicated scoping flag was built (ope
 new code path is unjustified for a 5-person system already covered by two proven levers). **Revoke ops:** revoke
 = delete the user's Anthropic Vault credential/vault + delete the Supabase REST token (`clickup_rest_token_<id>`)
 + flip the `user_clickup_credentials` row to `revoked`; the next session then degrades + WARNs (the proven Block-2
-path). Documented as a runbook; no revoke script built (operator decision 2026-06-24). **Deliberately NOT built
-(silent-failure modes knowingly left to the existing per-session degrade WARN):** a proactive onboarding-coverage
-dead-man's-switch (a member silently never onboarded surfaces only when they actually trigger the agent, via the
-Block-2/3a degrade WARN — acceptable for a 5-person team, operator decision 2026-06-24). **Google deferred** to a
+path). Documented as a runbook; no revoke script built (operator decision 2026-06-24). **Proactive onboarding-coverage dead-man's-switch (built 2026-06-24):**
+`ClickUp Onboarding Coverage Monitor (v1)` (`0hj3LDSEe1R3JJ5w`) runs weekly (Mon 08:00 Europe/Warsaw) and WARNs
+via `Post Alert (v1)` for any ClickUp member who is (1) a **full member** (`role_key` owner/admin/member — guests
+and `limited_member` excluded), (2) **active in the last 30 days** (ClickUp's `last_active`), and (3) **missing
+either** per-user token (MCP discovery and/or REST extraction), naming which token each person lacks; the agent
+bot account is hard-excluded. It reads onboarding state via `get_clickup_onboarding_state()` (migration 044,
+SECURITY DEFINER, ids only — never token values). This catches a member who would otherwise be silently
+un-scoped, since the per-session degrade WARN (Block 2/3a) only fires once they actually trigger the agent. Note
+`last_active` reflects any ClickUp activity, not comment-posting specifically (ClickUp exposes no per-user comment
+history without the Enterprise audit log); an exact comment-activity signal would require capturing
+`taskCommentPosted` events into a table, deferred. **Deliberately NOT built** (operator decision 2026-06-24): the
+revoke script and the rollback scoping flag (revoke is a runbook; rollback uses the two existing levers above).
+**Google deferred** to a
 follow-up ADR (Drive + Gmail per-user scoping out of scope). Per-block build history:
 `architecture/Build plans/adr-054-clickup-scoped-retrieval/`.
 
