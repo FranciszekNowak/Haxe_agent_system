@@ -97,10 +97,10 @@
         },
         "options": {}
       },
+      "onError": "continueErrorOutput",
       "retryOnFail": true,
       "maxTries": 2,
-      "waitBetweenTries": 2000,
-      "onError": "continueErrorOutput"
+      "waitBetweenTries": 2000
     },
     {
       "id": "r-access-denied",
@@ -278,7 +278,7 @@
       "notes": "Extractable branch per-item: success -> { type:text, order, md }; any failure (fetch error, Docling error, or 200/status=failure/empty md) -> [BRAK: extraction_failed <file>] + needs_alert + warn_source. Flags has_embedded on placeholder markers (embedded in-doc images dropped+warned - hosting is Block 10). warn_source/needs_alert/has_embedded drive the `warnings` Aggregate hands to Stage A.",
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "let meta;\ntry { meta = $('Explode Zip Entries').item.json; } catch (e) { try { meta = $('Explode Attachments').item.json; } catch (e2) { meta = {}; } }\nif (!meta || meta.order === undefined) { meta = { order: 0, title: (meta && meta.title) || 'unknown', clickup_task_id: (meta && meta.clickup_task_id) || null }; }\nconst doc = ($json && $json.document) || {};\nconst md = doc.md_content || '';\nconst ok = !!md;\nlet err = '';\nif (!ok) {\n  if ($json && $json.error) { err = $json.error.message || (typeof $json.error === 'string' ? $json.error : JSON.stringify($json.error)); }\n  else if ($json && $json.status && $json.status !== 'success') { err = 'docling status=' + $json.status; }\n  else { err = 'no md_content'; }\n}\nconst block = ok\n  ? { type: 'text', order: meta.order, md }\n  : { type: 'text', order: meta.order, md: '[BRAK: extraction_failed ' + meta.title + ']' };\nreturn { json: {\n  block,\n  clickup_task_id: meta.clickup_task_id,\n  title: meta.title,\n  needs_alert: !ok,\n  has_embedded: ok && (md.includes('<!-- image -->') || md.includes('<!-- missing-image -->')),\n  warn_source: !ok ? 'multimodal/extraction-failed' : '',\n  err: err || ''\n} };"
+        "jsCode": "let meta;\ntry { meta = $('Fan Manifest').item.json; } catch (e) { try { meta = $('Explode Attachments').item.json; } catch (e2) { meta = {}; } }\nif (!meta || meta.order === undefined) { meta = { order: 0, title: (meta && meta.title) || 'unknown', clickup_task_id: (meta && meta.clickup_task_id) || null }; }\nconst doc = ($json && $json.document) || {};\nconst md = doc.md_content || '';\nconst ok = !!md;\nlet err = '';\nif (!ok) {\n  if ($json && $json.error) { err = $json.error.message || (typeof $json.error === 'string' ? $json.error : JSON.stringify($json.error)); }\n  else if ($json && $json.status && $json.status !== 'success') { err = 'docling status=' + $json.status; }\n  else { err = 'no md_content'; }\n}\nconst block = ok\n  ? { type: 'text', order: meta.order, md }\n  : { type: 'text', order: meta.order, md: '[BRAK: extraction_failed ' + meta.title + ']' };\nreturn { json: {\n  block,\n  clickup_task_id: meta.clickup_task_id,\n  title: meta.title,\n  needs_alert: !ok,\n  has_embedded: ok && (md.includes('<!-- image -->') || md.includes('<!-- missing-image -->')),\n  warn_source: !ok ? 'multimodal/extraction-failed' : '',\n  err: err || ''\n} };"
       }
     },
     {
@@ -327,103 +327,6 @@
       "alwaysOutputData": true
     },
     {
-      "id": "r-zip-img-key",
-      "name": "Zip Image Key",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [720, 144],
-      "notes": "ADR-048 Block 2: ENTRY of the 'Store Zip Image' step (zip-inner image branch ONLY - loose images never touch this; they keep their ClickUp URL ref). Computes the Supabase object key <clickup_task_id>/<sanitized att_id> and carries entry meta (title, order, mime) + the image binary forward. att_id arrives as `<parentAttId>:<i>` (Block 3) - sanitized to a safe key ([^A-Za-z0-9._-] -> '_'); the original att_id is preserved in json for source_ref. Binary must arrive in property `data` (Block 3's Explode Zip Entries normalizes it). The internal chain Key->Upload->Sign->Compose is wired now (Block 2); Block 3 connects Classify-inner-image -> here and Compose -> zip image block -> Merge Branches. Until then this chain has no trigger path, so it never executes - the live reader is unchanged.",
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const m = $input.item.json || {};\nconst b = $input.item.binary;\nconst taskId = m.clickup_task_id;\nconst attId = m.att_id;\nconst mime = m.mime || (b && b.data && b.data.mimeType) || 'image/jpeg';\nconst safe = String(attId == null ? '' : attId).replace(/[^a-zA-Z0-9._-]/g, '_');\nreturn { json: { clickup_task_id: taskId, att_id: attId, title: m.title, order: m.order, mime: mime, storage_path: taskId + '/' + safe }, binary: b };"
-      }
-    },
-    {
-      "id": "r-zip-img-upload",
-      "name": "Upload Zip Image",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [944, 144],
-      "notes": "ADR-048 Block 2: upload the ORIGINAL zip-inner image bytes to the private EU bucket `zip-inner-images` at <storage_path> via Supabase Storage REST (POST /storage/v1/object/{bucket}/{path}, x-upsert:true). Auth = predefined supabaseApi cred (service_role; bypasses RLS on the private bucket). Original size, NEVER base64 (ADR-048 Decision 3 - the heavy bytes stay out of execution data, which is the whole OOM fix). cache-control max-age=3600 (objects are purged at 24h by Block 4's pg_cron, so caching is short). continueRegularOutput: a failed upload returns no Key, so Sign/Compose yield an empty ref and Block 3 degrades that entry to a dropped block + warn rather than throwing. Gate D verified the full upload->sign->provider-fetch path end-to-end 2026-06-15.",
-      "parameters": {
-        "method": "POST",
-        "url": "=https://hkeslnosxibeuesxndnz.supabase.co/storage/v1/object/zip-inner-images/{{ $json.storage_path }}",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "supabaseApi",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "x-upsert",
-              "value": "true"
-            },
-            {
-              "name": "cache-control",
-              "value": "max-age=3600"
-            },
-            {
-              "name": "Content-Type",
-              "value": "={{ $json.mime }}"
-            }
-          ]
-        },
-        "sendBody": true,
-        "contentType": "binaryData",
-        "inputDataFieldName": "data",
-        "options": {}
-      },
-      "credentials": {
-        "supabaseApi": {
-          "id": "54fKsl6xiVi9NhV1",
-          "name": "Supabase account"
-        }
-      },
-      "onError": "continueRegularOutput",
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 2000
-    },
-    {
-      "id": "r-zip-img-sign",
-      "name": "Sign Zip Image URL",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1184, 144],
-      "notes": "ADR-048 Block 2: mint a signed URL (expiresIn 21600s = 6h) for the just-uploaded object (POST /storage/v1/object/sign/{Key}; Key comes from the upload response, e.g. `zip-inner-images/<task>/<att>`). The private bucket means only a signed URL is fetchable. 6h TTL outlives the reader->invoke-model gap, which in queue mode includes inter-stage queue latency, yet stays well under the 24h cleanup (ADR-048 Consequences). The provider fetches this URL through LiteLLM - gate D confirmed Gemini read the image (1089 image_tokens, correct description) 2026-06-15. continueRegularOutput + retry so a transient sign failure degrades to an empty ref rather than throwing.",
-      "parameters": {
-        "method": "POST",
-        "url": "=https://hkeslnosxibeuesxndnz.supabase.co/storage/v1/object/sign/{{ $json.Key }}",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "supabaseApi",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ expiresIn: 21600 }) }}",
-        "options": {}
-      },
-      "credentials": {
-        "supabaseApi": {
-          "id": "54fKsl6xiVi9NhV1",
-          "name": "Supabase account"
-        }
-      },
-      "onError": "continueRegularOutput",
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 2000
-    },
-    {
-      "id": "r-zip-img-compose",
-      "name": "Compose Signed URL",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1376, 144],
-      "notes": "ADR-048 Block 2: assemble the absolute signed URL (HOST + /storage/v1 + signedURL) into `ref`, and re-attach the entry meta (clickup_task_id, att_id, title, order, mime) via pairedItem from Zip Image Key (verified to survive the two HTTP hops in gate D). `ref` is the zip-inner image's downstream reference and a DROP-IN for the loose-image URL ref - Resolve Routing passes it verbatim into image_url.url, so a Supabase signed URL needs no contract change. stored=false (empty ref) signals an upload/sign failure for Block 3 to drop+warn. NEVER base64. Block 3 wraps this into the zip image block (same envelope as Build Image Block) and feeds Merge Branches.",
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const k = $('Zip Image Key').item.json;\nconst r = $json || {};\nconst signed = r.signedURL || (r.body && r.body.signedURL) || '';\nconst HOST = 'https://hkeslnosxibeuesxndnz.supabase.co';\nconst ref = signed ? (HOST + '/storage/v1' + signed) : '';\nreturn { json: { clickup_task_id: k && k.clickup_task_id, att_id: k && k.att_id, title: k && k.title, order: k && k.order, mime: k && k.mime, ref: ref, stored: !!ref } };"
-      }
-    },
-    {
       "id": "r-zip-switch",
       "name": "Zip? Switch",
       "type": "n8n-nodes-base.switch",
@@ -464,49 +367,6 @@
           "fallbackOutput": "extra",
           "renameFallbackOutput": "not-zip"
         }
-      }
-    },
-    {
-      "id": "r-fetch-zip",
-      "name": "Fetch Zip Binary",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [672, -80],
-      "notes": "ADR-048 Block 3: zip branch only. Download the .zip bytes to binary property `data` (responseFormat file -> no base64 in JSON; off-heap under binaryMode:separate). ClickUp url is pre-signed (auth:none). Mirrors Fetch Attachment Binary. continueRegularOutput: a fetch failure leaves no binary, so Decompress yields an empty/error item that Explode Zip Entries turns into one zip-extraction-failed drop+WARN rather than throwing.",
-      "parameters": {
-        "url": "={{ $json.url }}",
-        "options": {
-          "response": {
-            "response": {
-              "responseFormat": "file"
-            }
-          }
-        }
-      },
-      "onError": "continueRegularOutput",
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 2000
-    },
-    {
-      "id": "r-decompress",
-      "name": "Decompress",
-      "type": "n8n-nodes-base.compression",
-      "typeVersion": 1.1,
-      "position": [1120, -80],
-      "notes": "ADR-048 Block 3, gate B: compression decompress. Input binary `data` (the fetched .zip) -> ONE output item carrying every inner file as a separate binary property file_0,file_1,... (outputPrefix 'file_'); original name/ext/mime live in each binary's metadata. adm-zip extracts the WHOLE archive in memory (gate B), so the total-uncompressed cap is 250MB (migration 028), not 500. continueRegularOutput so a corrupt archive degrades to a zip-extraction-failed drop in Explode Zip Entries instead of throwing the run.",
-      "parameters": {},
-      "onError": "continueRegularOutput"
-    },
-    {
-      "id": "r-explode-zip",
-      "name": "Explode Zip Entries",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1328, -80],
-      "notes": "ADR-048 Block 3: fan the single Decompress item (binary props file_0..file_N) into one item per inner entry. Recovers parent zip meta via $('Explode Attachments').itemMatching(z) (paired across Fetch Zip Binary+Decompress) -> interleaved order = parentOrder+(i+1)/1000, att_id <parentAttId>:<i>, source 'zip'. GLOBAL guards (migration 027/028 via Lookup File Processing Config): junk (dirs, __MACOSX, dotfiles) silently skipped; nested zip -> drop (zip-nested-skipped); per-file>zip_max_file_mb -> drop (zip-too-large); >zip_max_entries -> drop (zip-too-large); cumulative>zip_max_total_uncompressed_mb -> drop (zip-too-large); corrupt/empty archive -> one zip-extraction-failed drop. Image vs document by mime/ext; route in {image,document,drop}. Sizes via this.helpers.getBinaryDataBuffer (uncompressed bytes); entry binary forwarded BY REFERENCE in `data` (no buffers held in JSON -> no OOM). pairedItem=z set so Build Text Block can resolve $('Explode Zip Entries').item for zip docs.",
-      "parameters": {
-        "jsCode": "const IMG_EXT = ['png','jpg','jpeg','gif','webp','bmp','svg','tiff','tif','heic','heif'];\nlet cfg = {};\ntry { cfg = $('Lookup File Processing Config').first().json || {}; } catch (e) { cfg = {}; }\nconst maxEntries = Number(cfg.zip_max_entries) || 50;\nconst maxFileMb = Number(cfg.zip_max_file_mb) || 25;\nconst maxTotalMb = Number(cfg.zip_max_total_uncompressed_mb) || 250;\nconst MB = 1024 * 1024;\nconst items = $input.all();\nconst out = [];\nfor (let z = 0; z < items.length; z++) {\n  const bin = items[z].binary || {};\n  const failed = !!(items[z].json && items[z].json.error);\n  let parent = {};\n  try { parent = $('Explode Attachments').itemMatching(z).json || {}; } catch (e) { try { parent = $('Explode Attachments').first().json || {}; } catch (e2) { parent = {}; } }\n  const taskId = parent.clickup_task_id || (items[z].json && items[z].json.clickup_task_id) || null;\n  const parentAttId = parent.att_id || 'zip';\n  const parentOrder = (parent.order !== undefined && parent.order !== null) ? Number(parent.order) : 0;\n  const parentTitle = parent.title || 'archive.zip';\n  const keys = Object.keys(bin).sort((a, b) => {\n    const na = parseInt(String(a).replace(/\\D+/g, ''), 10);\n    const nb = parseInt(String(b).replace(/\\D+/g, ''), 10);\n    return (isNaN(na) ? 0 : na) - (isNaN(nb) ? 0 : nb);\n  });\n  if (failed || keys.length === 0) {\n    out.push({ json: { clickup_task_id: taskId, att_id: parentAttId + ':x', title: parentTitle, order: parentOrder + 0.001, route: 'drop', drop_reason: 'zip_extraction_failed', warn_source: 'multimodal/zip-extraction-failed' }, pairedItem: z });\n    continue;\n  }\n  let accepted = 0;\n  let totalBytes = 0;\n  for (let i = 0; i < keys.length; i++) {\n    const prop = keys[i];\n    const meta = bin[prop] || {};\n    const name = meta.fileName || prop;\n    const lname = String(name).toLowerCase();\n    const base = lname.split('/').pop();\n    const ext = String(meta.fileExtension || (base.indexOf('.') >= 0 ? base.split('.').pop() : '')).toLowerCase();\n    const mime = String(meta.mimeType || '').toLowerCase();\n    const order = parentOrder + (i + 1) / 1000;\n    const attId = parentAttId + ':' + i;\n    if (lname.endsWith('/') || lname.indexOf('__macosx') >= 0 || base.charAt(0) === '.' || base === '') continue;\n    if (ext === 'zip' || ((mime === 'application/zip' || mime === 'application/x-zip-compressed') && (ext === '' || ext === 'zip'))) {\n      out.push({ json: { clickup_task_id: taskId, att_id: attId, title: name, order: order, route: 'drop', drop_reason: 'nested_zip', warn_source: 'multimodal/zip-nested-skipped' }, pairedItem: z });\n      continue;\n    }\n    if (accepted >= maxEntries) {\n      out.push({ json: { clickup_task_id: taskId, att_id: attId, title: name, order: order, route: 'drop', drop_reason: 'too_many_entries', warn_source: 'multimodal/zip-too-large' }, pairedItem: z });\n      continue;\n    }\n    let bytes = 0;\n    try {\n      const h = (typeof $helpers !== 'undefined' && $helpers) ? $helpers : ((typeof this !== 'undefined' && this && this.helpers) ? this.helpers : null);\n      if (h && h.getBinaryDataBuffer) { const buf = await h.getBinaryDataBuffer(z, prop); bytes = buf.length; }\n    } catch (e) { bytes = 0; }\n    if (!bytes) {\n      const fsz = meta.fileSize;\n      if (typeof fsz === 'number') bytes = fsz;\n      else if (typeof fsz === 'string') { const mm = fsz.trim().match(/^([\\d.]+)\\s*([kKmMgG]?)/); if (mm) { const n = parseFloat(mm[1]); const u = (mm[2] || '').toLowerCase(); bytes = n * (u === 'g' ? 1073741824 : u === 'm' ? 1048576 : u === 'k' ? 1024 : 1); } }\n    }\n    if (bytes > maxFileMb * MB) {\n      out.push({ json: { clickup_task_id: taskId, att_id: attId, title: name, order: order, route: 'drop', drop_reason: 'oversize_' + Math.round(bytes / MB) + 'mb', warn_source: 'multimodal/zip-too-large' }, pairedItem: z });\n      continue;\n    }\n    if (totalBytes + bytes > maxTotalMb * MB) {\n      out.push({ json: { clickup_task_id: taskId, att_id: attId, title: name, order: order, route: 'drop', drop_reason: 'over_total_uncompressed', warn_source: 'multimodal/zip-too-large' }, pairedItem: z });\n      continue;\n    }\n    accepted++;\n    totalBytes += bytes;\n    const isImage = mime.indexOf('image/') === 0 || IMG_EXT.indexOf(ext) >= 0;\n    out.push({ json: { clickup_task_id: taskId, att_id: attId, title: name, ext: ext, mime: mime, order: order, source: 'zip', route: isImage ? 'image' : 'document' }, binary: { data: bin[prop] }, pairedItem: z });\n  }\n}\nreturn out;"
       }
     },
     {
@@ -609,18 +469,6 @@
       }
     },
     {
-      "id": "r-stamp-zip",
-      "name": "Stamp Zip Filename",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [912, -80],
-      "notes": "ADR-048 Block 3 hardening: the n8n compression node refuses a binary whose fileName/fileExtension does not identify it as a zip ('File extension not found for binary data data') - and Fetch Zip Binary's fileName depends on whatever content-disposition ClickUp returns. Since Zip? Switch already PROVED this is a zip (ext/mime gate), stamp fileExtension='zip' + mimeType='application/zip' (and a .zip fileName from the parent title, else 'archive.zip') so Decompress never fails on a VALID archive for lack of metadata. Without this, a valid zip would silently degrade to a zip_extraction_failed drop+WARN (the exact silent-degradation trap). No binary present (fetch failed, continueRegularOutput) -> passes through untouched -> Decompress/Explode degrade as designed. Proven necessary in host exec 2142 (no filename -> decompress failed) vs 2143 (filename stamped -> 6 entries extracted).",
-      "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const item = $input.item;\nif (item.binary && item.binary.data) {\n  const b = item.binary.data;\n  let title = '';\n  try { title = String($('Explode Attachments').item.json.title || ''); } catch (e) { title = ''; }\n  if (!b.fileName || !/\\.zip$/i.test(b.fileName)) {\n    b.fileName = /\\.zip$/i.test(title) ? title : 'archive.zip';\n  }\n  b.fileExtension = 'zip';\n  b.mimeType = 'application/zip';\n}\nreturn item;"
-      }
-    },
-    {
       "id": "r-ocr-empty",
       "name": "OCR Empty?",
       "type": "n8n-nodes-base.if",
@@ -720,6 +568,85 @@
       "position": [1856, 832],
       "notes": "ADR-048 Block 5: converge the no-OCR-OK branch (OCR Empty? false) and the OCR-retry branch (Docling OCR Retry) into ONE stream so Build Text Block keeps a SINGLE input. Two input connections on Build Text Block made it (and Aggregate Blocks downstream) run once PER connection, splitting the reply into two partial Aggregate outputs (CLAUDE.md trap). Append concats and tolerates an empty input (all-digital -> retry side empty; all-scanned -> false side empty), same as Merge Extractable / Merge Branches.",
       "parameters": {}
+    },
+    {
+      "id": "fa09ef73-5252-45c1-bfec-45d3e80540df",
+      "name": "Call Extractor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [672, -80],
+      "notes": "ADR-058 Block 2: POST the parent zip's pre-signed ClickUp URL to the off-worker zip-extractor (http://zip-extractor:8080/extract) with the caps from Lookup File Processing Config. The service streams the zip to disk, walks it entry-by-entry (never the whole archive in heap), uploads each accepted entry to the Supabase bucket, and returns a manifest { ok, entries[] }. REPLACES the old Fetch Zip Binary -> Stamp -> Decompress (adm-zip) -> Explode chain that OOM-killed the worker (2026-06-24 cascade). onError:continueRegularOutput so a 502/unreachable degrades to an item with no `entries`, which Fan Manifest turns into one zip_extraction_failed drop+WARN instead of throwing. timeout 600000 covers a large-archive extraction within the 840s turn.",
+      "parameters": {
+        "method": "POST",
+        "url": "http://zip-extractor:8080/extract",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $json.url, task_id: $json.task_id, attachment_id: $json.attachment_id, parent_title: $json.parent_title, caps: $json.caps }) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "7f6744f5-2734-4dbd-a2d6-227a5c5ab60a",
+      "name": "Fan Manifest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [896, -80],
+      "notes": "ADR-058 Block 2: fan the extractor's manifest (one { ok, entries[] } item per parent zip) into one item per entry, in the SAME envelope the downstream Classify Zip Entry switch + Build Zip Image Block / Build Dropped Zip Block already consume. Recovers parent-zip meta (clickup_task_id, att_id, order, title) from Explode Attachments via paired item (the HTTP response replaced the item json). Interleaved order = parentOrder + (entry.index+1)/1000, mirroring the old Explode Zip Entries. ref = signed_url (image branch); signed_url also carried for Fetch Zip Doc Binary (doc branch). Call Extractor failure (no entries array) -> ONE zip_extraction_failed drop so the run continues + a WARN fires. pairedItem=z so Build Text Block resolves $('Fan Manifest').item for zip docs (replaces the deleted Explode Zip Entries reference).",
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst out = [];\nfor (let z = 0; z < items.length; z++) {\n  const resp = items[z].json || {};\n  let parent = {};\n  try { parent = $('Explode Attachments').itemMatching(z).json || {}; } catch (e) { try { parent = $('Explode Attachments').first().json || {}; } catch (e2) { parent = {}; } }\n  const taskId = parent.clickup_task_id || null;\n  const parentAttId = parent.att_id || 'zip';\n  const parentOrder = (parent.order !== undefined && parent.order !== null) ? Number(parent.order) : 0;\n  const parentTitle = parent.title || 'archive.zip';\n  const entries = Array.isArray(resp.entries) ? resp.entries : null;\n  if (!entries || resp.ok === false) {\n    out.push({ json: { clickup_task_id: taskId, att_id: parentAttId + ':x', title: parentTitle, order: parentOrder + 0.001, route: 'drop', drop_reason: 'zip_extraction_failed', warn_source: 'multimodal/zip-extraction-failed' }, pairedItem: z });\n    continue;\n  }\n  for (let i = 0; i < entries.length; i++) {\n    const e = entries[i] || {};\n    const idx = (e.index !== undefined && e.index !== null) ? Number(e.index) : i;\n    const order = parentOrder + (idx + 1) / 1000;\n    const attId = e.att_id || (parentAttId + ':' + idx);\n    if (e.route === 'drop') {\n      out.push({ json: { clickup_task_id: taskId, att_id: attId, title: e.name || parentTitle, order: order, route: 'drop', drop_reason: e.drop_reason || 'zip_entry_dropped', warn_source: e.warn_source || 'multimodal/zip-dropped' }, pairedItem: z });\n      continue;\n    }\n    out.push({ json: { clickup_task_id: taskId, att_id: attId, title: e.name || '', ext: e.ext || '', mime: e.mime || '', order: order, source: 'zip', route: e.route, ref: e.signed_url || '', signed_url: e.signed_url || '', stored: !!e.stored, storage_path: e.storage_path || '' }, pairedItem: z });\n  }\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "bcbaef52-3bb2-4a59-90dc-02e0bb240930",
+      "name": "Fetch Zip Doc Binary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1360, 320],
+      "notes": "ADR-058 Block 2: zip-inner DOCUMENT branch. GET the entry's Supabase signed_url to binary `data` (responseFormat file -> no base64 in JSON), ONE doc at a time so peak memory is one document, not the archive. Mirrors Fetch Attachment Binary (loose docs). Feeds Merge Extractable input 1 -> the shared Docling Convert path, unchanged. continueRegularOutput + retry: a fetch failure leaves no binary so Docling/Build Text Block degrade that entry to [BRAK: extraction_failed] + WARN rather than throwing.",
+      "parameters": {
+        "url": "={{ $json.signed_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "cb7d393e-9440-45d7-9a5a-847ce08048b5",
+      "name": "Stamp Zip Doc Filename",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1360, 480],
+      "notes": "ADR-058 Block 2 hardening: a zip-inner doc is fetched from its Supabase signed URL, whose object key is the sanitized att_id with NO file extension, so the downloaded binary lacks a filename Docling can use for format detection (the same class of bug Stamp Zip Filename fixed for the old compression node, host exec 2142 vs 2143). Restore fileName/fileExtension/mimeType from the Fan Manifest entry (title/ext/mime) so Docling Convert reliably detects PDF/DOCX/XLSX/HTML. No binary present (fetch failed, continueRegularOutput) -> passes through untouched -> Docling/Build Text Block degrade that entry to [BRAK: extraction_failed] + WARN as designed. mimeType is also corrected so content-type-based detection agrees.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nif (item.binary && item.binary.data) {\n  const b = item.binary.data;\n  let meta = {};\n  try { meta = $('Fan Manifest').item.json || {}; } catch (e) { meta = {}; }\n  const raw = String(meta.title || b.fileName || 'document');\n  const base = raw.split('/').pop() || 'document';\n  const ext = String(meta.ext || (base.includes('.') ? base.split('.').pop() : '')).toLowerCase();\n  b.fileName = base.includes('.') ? base : (ext ? base + '.' + ext : base);\n  if (ext) b.fileExtension = ext;\n  if (meta.mime) b.mimeType = meta.mime;\n}\nreturn item;"
+      }
+    },
+    {
+      "id": "1cd1ea73-cb07-494d-9871-9d26662be408",
+      "name": "Zip Caps",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [592, -224],
+      "notes": "ADR-058 Block 2: resolve the file-processing caps for the extractor request defensively, then carry the Call Extractor request fields on the item. Reading $('Lookup File Processing Config').first() directly inside the Call Extractor HTTP body THROWS when Lookup hasn't executed yet (n8n v1 runs this zip branch depth-first BEFORE the parallel Lookup node) -> onError caught it -> the whole zip degraded to a false zip_extraction_failed drop (exec 3571). The old Explode Zip Entries hit the same race but swallowed it in a try/catch and fell back to 50/25/250 (so the zip path already used defaults, not live config). This node replicates that defensive read (try/catch -> defaults) and emits { url, task_id, attachment_id, parent_title, caps } so Call Extractor references only $json and can never throw on an unexecuted node.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const m = $json || {};\nlet cfg = {};\ntry { cfg = $('Lookup File Processing Config').first().json || {}; } catch (e) { cfg = {}; }\nconst caps = {\n  max_entries: Number(cfg.zip_max_entries) || 50,\n  max_file_mb: Number(cfg.zip_max_file_mb) || 25,\n  max_total_mb: Number(cfg.zip_max_total_uncompressed_mb) || 250\n};\nreturn { json: {\n  clickup_task_id: m.clickup_task_id,\n  att_id: m.att_id,\n  title: m.title,\n  order: m.order,\n  url: m.url,\n  task_id: m.clickup_task_id,\n  attachment_id: m.att_id,\n  parent_title: m.title,\n  caps: caps\n} };"
+      }
     }
   ],
   "connections": {
@@ -875,39 +802,6 @@
         ]
       ]
     },
-    "Zip Image Key": {
-      "main": [
-        [
-          {
-            "node": "Upload Zip Image",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Upload Zip Image": {
-      "main": [
-        [
-          {
-            "node": "Sign Zip Image URL",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Sign Zip Image URL": {
-      "main": [
-        [
-          {
-            "node": "Compose Signed URL",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Explode Attachments": {
       "main": [
         [
@@ -923,7 +817,7 @@
       "main": [
         [
           {
-            "node": "Fetch Zip Binary",
+            "node": "Zip Caps",
             "type": "main",
             "index": 0
           }
@@ -937,42 +831,20 @@
         ]
       ]
     },
-    "Decompress": {
-      "main": [
-        [
-          {
-            "node": "Explode Zip Entries",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Explode Zip Entries": {
-      "main": [
-        [
-          {
-            "node": "Classify Zip Entry",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Classify Zip Entry": {
       "main": [
         [
           {
-            "node": "Zip Image Key",
+            "node": "Build Zip Image Block",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Merge Extractable",
+            "node": "Fetch Zip Doc Binary",
             "type": "main",
-            "index": 1
+            "index": 0
           }
         ],
         [
@@ -1006,17 +878,6 @@
         ]
       ]
     },
-    "Compose Signed URL": {
-      "main": [
-        [
-          {
-            "node": "Build Zip Image Block",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Build Zip Image Block": {
       "main": [
         [
@@ -1033,28 +894,6 @@
         [
           {
             "node": "Merge Branches",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Fetch Zip Binary": {
-      "main": [
-        [
-          {
-            "node": "Stamp Zip Filename",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Stamp Zip Filename": {
-      "main": [
-        [
-          {
-            "node": "Decompress",
             "type": "main",
             "index": 0
           }
@@ -1117,6 +956,61 @@
         [
           {
             "node": "Build Text Block",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Extractor": {
+      "main": [
+        [
+          {
+            "node": "Fan Manifest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fan Manifest": {
+      "main": [
+        [
+          {
+            "node": "Classify Zip Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Zip Doc Binary": {
+      "main": [
+        [
+          {
+            "node": "Stamp Zip Doc Filename",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Zip Doc Filename": {
+      "main": [
+        [
+          {
+            "node": "Merge Extractable",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Zip Caps": {
+      "main": [
+        [
+          {
+            "node": "Call Extractor",
             "type": "main",
             "index": 0
           }

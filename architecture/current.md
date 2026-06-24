@@ -1224,20 +1224,33 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
 
 - **Input file handling v2 — `.zip` unpacking + zip-inner-image object storage (ADR-048; all blocks
   landed 2026-06-15).** `Read Input (v1)` now unpacks a `.zip` attachment
-  instead of degrading it to `[BRAK]` (supersedes the ADR-036 `.zip`-unsupported note). After
-  `Explode Attachments` a `Zip?` switch routes archives down a decompress branch
-  (`Fetch Zip Binary → Stamp Zip Filename → Decompress → Explode Zip Entries`) that fans inner files out,
-  interleaved at the parent zip's ordinal position; everything else (including the no-attachment sentinel)
-  flows to `Classify Attachment` unchanged. Inner **images** are uploaded to a **private EU Supabase
-  Storage bucket `zip-inner-images`** (`haxe-agent-prod` / `eu-west-1`) and referenced **only by a
-  short-TTL signed URL** — the heavy bytes never enter execution data (the OOM fix; the rejected v1 inlined
-  base64). Inner **documents** join the shared Docling path; junk is silently skipped; nested-zip / oversize /
-  too-many / over-total degrade to `[BRAK]` blocks carrying `multimodal/zip-*` WARNs through `Post Alert (v1)`.
+  instead of degrading it to `[BRAK]` (supersedes the ADR-036 `.zip`-unsupported note). **Extraction runs
+  off the n8n worker (ADR-058, rewired 2026-06-24).** After `Explode Attachments` a `Zip?` switch routes
+  archives through `Zip Caps → Call Extractor → Fan Manifest`: `Call Extractor` POSTs the zip's pre-signed
+  URL to the **`zip-extractor` container** (`http://zip-extractor:8080/extract`), which streams the archive
+  to disk and walks it **one entry at a time** — the n8n worker never decompresses anything, so the
+  in-memory-decompress OOM (the 2026-06-24 07:30 worker-kill cascade) is impossible by construction. The
+  extractor uploads each accepted entry to the bucket and returns a manifest; `Fan Manifest` fans it into one
+  item per entry at the parent zip's interleaved ordinal, feeding the **unchanged** `Classify Zip Entry`
+  three-way fan; everything else (including the no-attachment sentinel) flows to `Classify Attachment`
+  unchanged. `Zip Caps` resolves the caps for the request defensively (the old `Explode Zip Entries`
+  try/catch → 50/25/250, since reading the parallel `Lookup File Processing Config` inline in the HTTP body
+  throws when it hasn't executed yet). Inner **images** become a **private EU Supabase Storage bucket
+  `zip-inner-images`** (`haxe-agent-prod` / `eu-west-1`) object referenced **only by a short-TTL signed
+  URL** — the heavy bytes never enter execution data (the rejected v1 inlined base64). Inner **documents**
+  are fetched from their signed URL one at a time (`Fetch Zip Doc Binary → Stamp Zip Doc Filename`, the
+  latter restoring the extension-less object's filename so Docling detects PDF/DOCX/XLSX/HTML) and join the
+  shared Docling path; junk is silently skipped; nested-zip / oversize / too-many / over-total degrade to
+  `[BRAK]` blocks carrying `multimodal/zip-*` WARNs through `Post Alert (v1)`. The old in-workflow chain
+  (`Fetch Zip Binary → Stamp Zip Filename → Decompress → Explode Zip Entries`) and the per-image
+  upload/sign nodes (`Zip Image Key → Upload Zip Image → Sign Zip Image URL → Compose Signed URL`) were
+  **removed** — the extractor does upload+sign server-side.
   **Loose images and loose documents are byte-for-byte unchanged** (loose images keep their ClickUp URL — no
   Supabase involvement), and **`invoke-model.json` is untouched**: a Supabase URL is a drop-in for the existing
   image ref. File limits live in the **global `file_processing_config`** keys (migration 027): `zip_max_entries`
-  50, `zip_max_file_mb` 25, `zip_max_total_uncompressed_mb` **250** (migration 028 lowered it 500 → 250 because
-  the compression node decompresses in-memory). **Retention (Block 4):** zip-inner images are purged by the
+  50, `zip_max_file_mb` 25, `zip_max_total_uncompressed_mb` **250** (migration 028 lowered it 500 → 250 when extraction
+  was in-memory; now a forwarded bound the off-worker extractor enforces per-entry, so the value is a policy
+  cap, no longer a memory constraint). **Retention (Block 4):** zip-inner images are purged by the
   **pg_cron job `purge-zip-inner-images`** (migrations 029 → 030) that deletes through the **Storage REST API so
   the bytes are freed, not orphaned** — a bare `delete from storage.objects` would drop the metadata row but
   leave the S3 object (and the personal data) behind. The job reads its key from **Supabase Vault** (a legacy

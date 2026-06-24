@@ -94,6 +94,39 @@ managed option cleanly covers the size + the ClickUp-URL/Supabase-upload glue.
 - **Memory note**: `/tmp` in the container must stay on the disk-backed overlay; mounting it as
   tmpfs (RAM-backed) would reintroduce the exact OOM this ADR removes.
 
+## Block 2 — reader rewiring (landed 2026-06-24)
+
+The `read-input.json` zip branch (workflow `zgGpONulGMohQQqI`) now reads
+`Zip? Switch[zip] → Zip Caps → Call Extractor → Fan Manifest → Classify Zip Entry`, with
+`Classify Zip Entry` unchanged (image → `Build Zip Image Block`; document → `Fetch Zip Doc Binary →
+Stamp Zip Doc Filename → Merge Extractable → Docling`; drop → `Build Dropped Zip Block`). Eight nodes
+were removed: the in-workflow `Fetch Zip Binary → Stamp Zip Filename → Decompress → Explode Zip
+Entries` chain and the now-redundant `Zip Image Key → Upload Zip Image → Sign Zip Image URL → Compose
+Signed URL` (the extractor does upload+sign server-side).
+
+Two nodes beyond the original wiring sketch proved necessary:
+
+- **`Zip Caps`** — the caps must be resolved in a Code node, not inline in the `Call Extractor` HTTP
+  body. Referencing `$('Lookup File Processing Config').first()` from an n8n *expression* **throws**
+  (`Node … hasn't been executed`) because n8n's v1 order runs the zip branch depth-first *before* the
+  parallel `Lookup` node; `onError` caught the throw and silently degraded every zip to a false
+  `zip_extraction_failed` drop (exec 3571). `Zip Caps` reads the config defensively in a `try/catch`
+  with a 50/25/250 fallback — exactly what the old `Explode Zip Entries` did, which means the zip path
+  already fell back to defaults (not live config) under the same race before this change.
+- **`Stamp Zip Doc Filename`** — a zip-inner document is fetched from its Supabase signed URL, whose
+  object key is the sanitized `att_id` with **no file extension**, so the downloaded binary lacks the
+  filename Docling uses for format detection. This node restores `fileName`/`fileExtension`/`mimeType`
+  from the manifest entry (the same class of fix as the old `Stamp Zip Filename` for the compression
+  node), so PDF/DOCX/XLSX/HTML are detected reliably.
+
+Verified end-to-end via `scripts/test-subworkflow.mjs` against a disposable ClickUp task carrying a
+mixed zip (PNG, CSV, a real 10 KB DOCX, a nested zip, a junk dotfile): `Call Extractor` returned a
+4-entry manifest, the reader produced correctly interleaved blocks (image signed-URL block at 0.001,
+CSV and DOCX Docling text blocks at 0.002/0.003, nested-zip `[BRAK]` drop at 0.004), the junk dotfile
+was silently skipped, and only the expected `multimodal/zip-nested-skipped` WARN rode the reader's
+returned `warnings`. Zero CRITICAL, every node `status=success` with no `isArtificialRecoveredEventItem`
+markers (i.e. no worker crash). Block 3 (extend the bucket purge to zip-inner *documents*) remains open.
+
 ## Date
 
-2026-06-24
+2026-06-24 (Block 1); 2026-06-24 (Block 2 reader rewiring)
