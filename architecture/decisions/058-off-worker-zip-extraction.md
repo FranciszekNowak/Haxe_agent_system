@@ -1,0 +1,99 @@
+# ADR-058: Zip extraction moved off the n8n worker (dedicated container)
+
+## Context
+
+On 2026-06-24 at 07:30 a chain of four CRITICAL alerts fired — `Read Input (v1)`,
+`Assemble Context and Build Prompt (v1)`, `Agent Orchestrator (v1)`, `CU Webhook Producer (v1)`
+— all reading *"Workflow did not finish, possible out-of-memory issue."* Investigation showed
+this was **one failure, not four**:
+
+- `Read Input` execution 3428 ran for ~1.5 s and crashed at the **`Decompress`** node (an
+  out-of-memory kill, not a timeout). Every other node in the four executions carried
+  `isArtificialRecoveredEventItem` — n8n crash-recovery markers written because the worker
+  *process* died mid-run.
+- The other three executions had no bug of their own. In n8n **queue mode many executions share
+  one worker process**, so when `Decompress` exhausted the worker heap the kernel OOM-killer
+  killed the whole worker and took every co-running execution down with it (the cascade).
+
+Root cause: the reader's zip path (added in ADR-048 Block 3) used
+`n8n-nodes-base.compression` (`Decompress`), which wraps **adm-zip — and adm-zip inflates the
+*entire* archive into in-memory Buffers at once**. The size guards (`zip_max_entries`,
+`zip_max_file_mb`, `zip_max_total_uncompressed_mb`, migrations 027/028) run *downstream* in
+`Explode Zip Entries`, so they bound what is forwarded to Docling/Supabase but **cannot bound
+the decompress-time spike**. ADR-048 Decision 4 / migration 028 explicitly *accepted* that
+spike, sizing the total-uncompressed cap to 250 MB to "keep it survivable" — but on two wrong
+premises: (1) the cap is checked after extraction, so it never bounds the spike, and (2) it
+assumed an "8 GB box" when the n8n worker is actually capped at **1 GiB container /
+`--max-old-space-size=768`**, runs `N8N_CONCURRENCY_PRODUCTION_LIMIT=5`, with **0 swap**. A
+single >500 MB zip (or a few concurrent mid-size ones) blows the heap in ~1 second.
+
+The operator confirmed the real-world workload these zips represent: **regular, large
+(>500 MB), mixed images + documents, expected to be read within the agent's turn.** So the fix
+must actually *process* big zips, not reject them.
+
+Two in-n8n alternatives were ruled out:
+- A Code-node per-entry `require('zlib')` inflation: the Code sandbox blocks `require`
+  (`NODE_FUNCTION_ALLOW_BUILTIN` is unset), and even per-entry the *compressed* bytes of a
+  >500 MB archive won't fit in 768 MB heap.
+- Raising the worker memory: the box has ~2.9 GB free and 0 swap; throwing RAM at an unbounded
+  input is fragile (a bigger zip still OOMs, and concurrency multiplies it) and risks trading a
+  zip OOM for a whole-box OOM that takes down Docling too.
+
+## Decision
+
+**Move zip extraction off the n8n worker onto a dedicated, isolated container**
+(`services/zip-extractor/`, deployed at `/opt/haxe-agents/zip-extractor/`, on the
+`n8n-internal` network next to `docling`).
+
+The service exposes `POST /extract { url, task_id, attachment_id, parent_title?, caps? }`. It:
+1. streams the zip to local disk (never the whole archive in RAM),
+2. walks it **entry-by-entry** with `yauzl`, applying the same caps + junk-skip + nested-zip-drop
+   taxonomy as the old `Explode Zip Entries` node (caps are single-sourced — n8n passes them from
+   the `config` table),
+3. uploads each accepted entry to the existing private Supabase bucket `zip-inner-images`
+   (service_role key, mirroring the reader's `Zip Image Key`/upload/sign nodes, 6 h signed URLs),
+4. returns a **manifest** (`[{ index, name, ext, mime, size, route, att_id, storage_path,
+   signed_url, stored, drop_reason?, warn_source? }]`).
+
+n8n's reader then fans the manifest into its **existing** image / document / drop paths (Block 2);
+it never decompresses anything. Peak heap on the extractor is ~one entry (bounded by the per-file
+cap), **flat in archive size**.
+
+This placement follows the project's build-vs-buy gate: generic zip extraction is a **commodity**,
+so it runs on its own isolated compute, not the scarce shared orchestration worker. A managed
+Supabase Edge Function was considered and rejected for this scale: its ~256 MB memory cap, wall-
+clock limit, and the need for HTTP range reads on the (directory-at-the-end) zip — which ClickUp
+signed URLs may not support — make a self-hosted container that streams to real disk the robust
+choice for ">500 MB, regularly." A self-hosted container is the justified exception because no
+managed option cleanly covers the size + the ClickUp-URL/Supabase-upload glue.
+
+## Consequences
+
+- **The OOM is eliminated by construction**, not merely made less likely: the worker no longer
+  holds any archive bytes. Verified live — processing a 176 KB archive that inflates to 180 MB
+  uncompressed (the dangerous tiny-compressed/huge-uncompressed case), peak extractor RSS held at
+  ~184 MiB / 512 MiB and did not grow with content size. The collateral cascade is resolved by the
+  same fix (no worker death → no co-execution kills).
+- **Supersedes ADR-048 Block 3 "Gate B" / Decision 4**: zip extraction is no longer in-workflow
+  adm-zip, and migration 028's "accepted in-memory spike" no longer applies (the spike is now off
+  the worker and bounded). The 250 MB total cap remains as a forwarded-content bound, enforced in
+  the extractor and re-checkable downstream.
+- **New operational surface**: one more container to run/patch, and two new `.env` keys
+  (`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`) on the VPS. The service holds a service_role key — it
+  must stay server-side (it already lives in n8n's `supabaseApi` credential for the same reason).
+- **Failure modes** route through the existing seam: a corrupt/unreadable archive returns a single
+  `zip_extraction_failed` drop (graceful, WARN, run continues); an infra failure (download/
+  unexpected) returns 502 so the reader's `onError: continueRegularOutput` degrades to a drop and
+  escalates the alert. The container has a healthcheck; if it is down, the reader's call fails →
+  CRITICAL via `Post Alert (v1)`.
+- **Latency is unchanged for the synchronous read** but is *not* solved by this ADR: a
+  document-heavy >500 MB zip can still exceed the agent's 840 s soft-deadline because each document
+  goes through Docling. If that proves regular, a two-phase **async** design (job table + out-of-
+  band Docling drain + deferred re-invocation) layers on this container foundation — deferred to a
+  future ADR, gated on evidence. Images are cheap (signed URLs) and are never the latency sink.
+- **Memory note**: `/tmp` in the container must stay on the disk-backed overlay; mounting it as
+  tmpfs (RAM-backed) would reintroduce the exact OOM this ADR removes.
+
+## Date
+
+2026-06-24

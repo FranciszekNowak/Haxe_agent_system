@@ -194,6 +194,37 @@ services:
       retries: 5
       start_period: 90s   # layout models take ~60–90 s to load on first start
 
+  # Zip extraction service (ADR-058). Moves zip unpacking OFF the n8n worker: the reader's
+  # in-workflow adm-zip Decompress inflated a whole archive into the 768 MB worker heap at once,
+  # so a >500 MB zip OOM-killed the worker and cascaded to every co-running execution
+  # (2026-06-24 07:30 CRITICAL). This service streams the zip to disk and walks it entry-by-entry
+  # (yauzl), uploading each entry to Supabase and returning a manifest — peak heap ~= one entry,
+  # flat in archive size. n8n reaches it at http://zip-extractor:8080 (internal). Needs
+  # SUPABASE_URL + SUPABASE_SERVICE_KEY in .env (service_role; private-bucket upload bypasses RLS).
+  # NOTE: do NOT mount /tmp as tmpfs — tmpfs is RAM-backed and would reintroduce the OOM.
+  zip-extractor:
+    build:
+      context: ./zip-extractor
+    container_name: zip-extractor
+    restart: unless-stopped
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      BUCKET: zip-inner-images
+      PORT: "8080"
+      SIGN_TTL: "21600"
+    expose:
+      - "8080"                 # internal only; reachable at http://zip-extractor:8080
+    networks:
+      - n8n-internal
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
 volumes:
   n8n-postgres-data:
   n8n-redis-data:

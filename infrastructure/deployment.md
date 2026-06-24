@@ -230,6 +230,59 @@ container's own OpenAPI at `/openapi.json`): `/health`, `/ready`, `/v1/convert/f
 
 ---
 
+## Zip extraction service (ADR-058)
+
+A small Node service that unpacks zip attachments **off** the n8n worker (the in-workflow
+adm-zip `Decompress` OOM-killed the worker on a >500 MB zip and cascaded to every co-running
+execution — 2026-06-24 07:30 CRITICAL). It streams the zip to disk, walks it entry-by-entry,
+uploads each entry to the `zip-inner-images` Supabase bucket, and returns a manifest. Runs on
+`n8n-internal`; n8n reaches it at `http://zip-extractor:8080`.
+
+### Source ↔ deploy layout
+
+Authored in the repo at `services/zip-extractor/`. On the VPS the source lives **flat** at
+`/opt/haxe-agents/zip-extractor/` (sibling of `docker-compose.yml`), so the compose
+`build: context: ./zip-extractor` resolves there — same convention as `./litellm-config.yaml`.
+
+### Required `.env` keys
+
+```
+SUPABASE_URL=https://hkeslnosxibeuesxndnz.supabase.co
+SUPABASE_SERVICE_KEY=<service_role key>   # private-bucket upload bypasses RLS — server-side only
+```
+
+The `service_role` key bypasses Supabase row-level security; it must never leave the server
+(it also lives in n8n's encrypted `supabaseApi` credential for the same reason).
+
+### First deploy
+
+```
+# 1. get the source onto the VPS (scp services/zip-extractor/* or git pull)
+#    -> /opt/haxe-agents/zip-extractor/   (do NOT copy node_modules; the build runs npm install)
+# 2. add the two SUPABASE_* keys to /opt/haxe-agents/.env
+# 3. ensure the zip-extractor service block is in docker-compose.yml (mastered in n8n/docker-compose.yml)
+cd /opt/haxe-agents && docker compose up -d --build zip-extractor
+docker compose logs zip-extractor          # expect: "zip-extractor listening on :8080"
+docker inspect zip-extractor --format '{{.State.Health.Status}}'   # expect: healthy
+# reachability from the worker:
+docker exec n8n-worker node -e "fetch('http://zip-extractor:8080/health').then(r=>r.json()).then(console.log)"
+```
+
+### Memory note (important)
+
+`mem_limit: 512m`, and the service stays well under it because it streams to disk and holds only
+one entry (≤ per-file cap) at a time. **Do NOT mount `/tmp` as tmpfs** — tmpfs is RAM-backed and
+would reintroduce the exact OOM this service removes. Leave `/tmp` on the disk-backed overlay.
+
+### Status: verified live (2026-06-24, ADR-058 Block 1)
+
+Built, running, `healthy`, reachable from `n8n-worker` by service name. Real Supabase round-trip
+confirmed (upload + 6 h signed URL + object re-downloaded at exact byte size). Memory bound proven:
+a 176 KB archive inflating to 180 MB uncompressed processed at ~184 MiB / 512 MiB peak RSS, flat in
+archive size. Not yet wired into the reader (that is ADR-058 Block 2).
+
+---
+
 ## Applying migrations
 
 Migrations live in `supabase/migrations/` (append-only). Apply via Supabase MCP from the
