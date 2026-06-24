@@ -1,0 +1,33 @@
+# Add this service to /opt/haxe-agents/docker-compose.yml (under `services:`) and re-export the
+# repo copy. Deploy with `docker compose up -d zip-extractor` (ADR-033 prefers up -d for config).
+#
+# IMPORTANT: do NOT mount /tmp as tmpfs — tmpfs is RAM-backed, and a 500 MB streamed download in
+# RAM would reintroduce the exact OOM this service exists to avoid. Leave /tmp on the disk-backed
+# overlay (74 GB free); mem_limit stays small because the service streams to disk and only ever
+# holds one entry (<= per-file cap) in memory.
+#
+# Source must be present on the VPS at /opt/haxe-agents/zip-extractor/ (git pull or scp the
+# services/zip-extractor/ dir there) for the build context below.
+
+  zip-extractor:
+    build:
+      context: ./zip-extractor
+    container_name: zip-extractor
+    restart: unless-stopped
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}            # e.g. https://hkeslnosxibeuesxndnz.supabase.co
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}  # service_role key (private-bucket upload, bypasses RLS)
+      BUCKET: zip-inner-images
+      PORT: "8080"
+      SIGN_TTL: "21600"
+    expose:
+      - "8080"                                 # internal only; reachable at http://zip-extractor:8080
+    networks:
+      - n8n-internal
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
