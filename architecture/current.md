@@ -245,8 +245,8 @@ against the input image refs into a `{type:attachment}` op inline — no re-uplo
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the
 image-MCP health monitor (`Image MCP Health Monitor (v1)`), all every 6h via `Post Alert (v1)`.
 
-**ADR-054 — permission-scoped context retrieval (accepted; in progress — ClickUp-only, Block 4 landed:
-caller-scoped discovery + as-U attachment extraction live).** The direction: the managed agent gathers context **under the triggering user's identity, enforced
+**ADR-054 — permission-scoped context retrieval (built + cutover landed 2026-06-24 — ClickUp-only:
+caller-scoped discovery + as-U attachment extraction live; scope-correctness gate passed).** The direction: the managed agent gathers context **under the triggering user's identity, enforced
 by n8n at the executor** (scope lives in the credential, never trusted to the agent). This build is **scoped
 to ClickUp only** (operator decision 2026-06-22); Google (Drive + Gmail) is deferred to a follow-up ADR.
 **Architecture locked to Option A** after three live probes proved the tokens are not interchangeable: ClickUp's
@@ -330,8 +330,35 @@ Block 4a (a bogus token → ClickUp 401 → access-denied, not the bot's blocks)
 source raster image still terminates the session (Managed Agents `"Could not process image"` is a terminal
 error — a pre-existing fragility shared with the input-image path; the mime filter catches bad *formats*, not
 corruption). **Residual:** Read Input's own success executions still record the `as_user_token` input — a
-log-hygiene follow-up. **Still pending:** the cross-department scope-correctness matrix (Block 5, the mandatory
-acceptance gate — needs 1 Marketing + 1 Purchasing onboarded test user) and cutover/ops/GDPR write-back (Block 6).
+log-hygiene follow-up. **Built (Block 5 — scope-correctness gate passed, 2026-06-24):** the mandatory
+cross-department negative matrix ran across **both** paths with two real cross-dept users (Patryk Marzec /
+Marketing `2604220`; Beniamin Gawlik / Purchasing `8722303`). Discovery: an agent driven as Patryk cannot see
+Purchasing data — the hosted MCP returns only his 3 Spaces (enforcement on the credential, not the model).
+Extraction: `ClickUp Extract Tool Handler (v1)` driven as Patryk on an out-of-scope Purchasing task id returns
+`denied` + a `managed-agents/extract-access-denied` audit WARN. A mis-mapped credential fails **loud**
+(a bogus `vault_id` → `sessions.create` HTTP 400 → the `Create Session` CRITICAL path; there is **no** broad
+fallback, since Block 3b retired the bot path) — "silently broad" is architecturally precluded, not merely
+tested. See `block-5-findings.md`. **Built (Block 6 — cutover landed, 2026-06-24):** the per-user-scoped path
+is the live default for the managed lane (it has been since Block 3a — there was no flag to flip, so cutover is
+the documentation/ops reconciliation, not a switch). **Onboarding (operator-gated, browser consent):** 3 of 5
+members onboarded for discovery (Franciszek/CEO, Patryk, Beniamin); REST/extraction tokens for 2 (Franciszek,
+Patryk — Beniamin is discovery-only / half-onboarded). Onboarding the remaining members runs via
+`scripts/onboard-clickup-mcp-user.mjs` (discovery) + `scripts/onboard-clickup-rest-token.mjs` (extraction),
+one browser consent each. **Rollback (reconciled — the plan's "config flag → bot-only" is moot):** Block 3b
+deleted the bot-broad path, so there is nothing bot-broad to revert to. Two existing levers cover incident
+rollback: the **whole-lane** switch `config.agent_lane='bare'` (reverts to the LiteLLM gateway lane, which has
+no managed-lane scoped tools at all — fast/nuclear, but drops images/Skills/web-search), and a **targeted**
+re-run of `Sync Agent Definitions (v1)` with ClickUp removed (CONV bump → every managed user degrades to the
+proven deterministic-pre-gather floor). No dedicated scoping flag was built (operator decision 2026-06-24 — a
+new code path is unjustified for a 5-person system already covered by two proven levers). **Revoke ops:** revoke
+= delete the user's Anthropic Vault credential/vault + delete the Supabase REST token (`clickup_rest_token_<id>`)
++ flip the `user_clickup_credentials` row to `revoked`; the next session then degrades + WARNs (the proven Block-2
+path). Documented as a runbook; no revoke script built (operator decision 2026-06-24). **Deliberately NOT built
+(silent-failure modes knowingly left to the existing per-session degrade WARN):** a proactive onboarding-coverage
+dead-man's-switch (a member silently never onboarded surfaces only when they actually trigger the agent, via the
+Block-2/3a degrade WARN — acceptable for a 5-person team, operator decision 2026-06-24). **Google deferred** to a
+follow-up ADR (Drive + Gmail per-user scoping out of scope). Per-block build history:
+`architecture/Build plans/adr-054-clickup-scoped-retrieval/`.
 
 Per-block build history: `architecture/Build plans/adr-053-managed-agents/` (`master-plan.md` +
 `block-*-findings.md`).

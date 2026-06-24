@@ -3,7 +3,8 @@
 Accountability record (GDPR Art 5(2)) for the agent pipeline. Drafted 2026-06-11 from
 ADR-040 (PD-blind global routing) and ADR-041 (erasure & retention); updated 2026-06-22 for the
 Anthropic Managed Agents cutover (ADR-053/054/055 — Managed Agents runtime, Files API, sandbox, Skills,
-in-harness web search, the self-hosted image MCP endpoint, and the `agent-output-images` carrier). This is an internal
+in-harness web search, the self-hosted image MCP endpoint, and the `agent-output-images` carrier);
+updated 2026-06-24 for the ADR-054 cutover (ClickUp accessed under per-user OAuth — §3.1). This is an internal
 engineering/processing record, not legal advice; figures marked **confirm with counsel**
 must be verified before being relied on. Language: English (technical-docs convention); a
 Polish version can be produced if a supervisory authority (UODO) requests it.
@@ -52,6 +53,27 @@ Two self-hosted processing surfaces sit on our EU VPS and Supabase (no new non-E
 image providers in §4) and the **`agent-output-images` carrier** (a private EU Supabase Storage bucket
 holding agent-produced image bytes for ClickUp delivery — see §6). Input images uploaded to the Anthropic
 Files API are also indexed in `agent_input_file_map` (file_id → signed URL) for reference resolution, TTL-pruned.
+
+### 3.1 ClickUp access under per-user OAuth (ADR-054, cutover 2026-06-24)
+
+The managed agent reads ClickUp context **scoped to the triggering user's identity**, enforced by n8n at the
+executor — not by the agent and no longer by a post-hoc application-code filter (the former `Check Space Member`
+membership filter was retired). This is a **data-minimization and access-control** measure (Art 5(1)(c)): an
+agent run for a task triggered by user U can only retrieve what U is permitted to see in ClickUp (e.g. Marketing
+cannot reach Purchasing data), so personal/operational data does not cross the departmental boundary into a
+deliverable it should not reach. Scope is enforced by the **credential**, so it holds even under prompt
+injection. This is **not a new transfer or sub-processor** — ClickUp is the existing operational/process store;
+the change is *how tightly* access is scoped.
+
+Two non-expiring per-user ClickUp OAuth tokens are held per onboarded member (consented once each, via the
+onboarding flow): a **discovery (MCP-OAuth) token** stored as a `static_bearer` credential in the **Anthropic
+Vault** (proxied, outside the sandbox; attached to a session by `vault_ids` so the hosted ClickUp MCP runs as U),
+and a **classic REST token** for as-U attachment extraction stored in **Supabase Vault** (EU; read back by
+`caller_user_id` via a `SECURITY DEFINER` getter, never exposed to the agent). These tokens are personal
+access credentials; they are deletable on revocation (delete the Vault credential + the Supabase secret + flip
+the `user_clickup_credentials` row to `revoked`). No token-refresh processing occurs (the tokens do not expire).
+The mapping table `user_clickup_credentials` holds the ClickUp user id, username, email, vault id, and status —
+ordinary contact/identity data already processed under §2, no special-category data.
 
 - **Mechanism:** controller→processor **Data Processing Agreements** with each provider, incorporating
   the EU **Standard Contractual Clauses (SCCs)**; where the provider is **Data Privacy Framework
