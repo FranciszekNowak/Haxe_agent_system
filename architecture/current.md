@@ -1227,13 +1227,20 @@ empty completion (both added 2026-06-11 after a zero-attachment task silently pr
 ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the stages:
 
 - **Stage A — `Assemble Context and Build Prompt (v1)`** (`n8n/workflows/assemble-context-and-build-prompt.json`,
-  id `GGTBvFBgGSNbtUR6`, 11 nodes): `Assemble Parent Context (v1)` → Assemble Task Context
+  id `GGTBvFBgGSNbtUR6`, 12 nodes): **`Read Lane (Stage A)`** (reads `config.agent_lane`, fail-safe to `bare`) →
+  `Assemble Parent Context (v1)` → Assemble Task Context
   (now also fetches **threaded comment replies** — `GET /comment/{id}/reply` per top-30 comment with
   `reply_count>0` — and interleaves them under their parent in `task_comments`, ADR-040) →
   Load Agent Rules → **`Read Input (v1)`** → `Build Prompt` (the `Decide Research` web-research call was
   retired in ADR-053 Block 8 — web search is in-harness on the managed lane). Returns the prompt payload +
   assembled context, plus **`image_blocks_json`** (input image refs for the vision model, non-PD) and
-  `input_warnings_*`. Folds attachment **text** into the prompt and fires the reader's `warnings` via
+  `input_warnings_*`. **ADR-061 Block 1 — lane-aware floor (managed lane):** `Build Prompt` now emits only the
+  bounded **floor** (personal prefs + triggering comment + impact line + task title/description; input images stay
+  eager) and **drops the unbounded tail** — comment thread, ancestor bodies, linked-doc leaves, semantic-search
+  context, attachment **text**, and the per-run global-rules fold (which duplicated the rules already baked verbatim
+  into the cached agent `system`; the managed agent still gets them, kept current by Sync Agent Definitions + the
+  Freshness Check). The **bare** failover lane is unchanged (full assembly), gated on the lane read; the tail becomes
+  pull-on-demand tools in Block 2. Folds attachment **text** into the prompt (bare lane only) and fires the reader's `warnings` via
   `Post Alert (v1)` on a reconverging side branch (`Return Context` stays the sole terminal). Multimodal
   input (ADR-036/038/040 Block 5): images present → `modality='multimodal_input'` set on the context payload →
   routing returns the **Gemini** alias for all multimodal tasks (`haxe-gemini-flash`/`-pro` by tier; ADR-043
@@ -1316,14 +1323,23 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   PDFs still extract; `docling:5001` is pinned to a 2-worker × 2-thread concurrency bound (repo + VPS compose) so a
   multi-document zip burst can't saturate the box. See ADR-048.
 
-- **`Build Prompt`** (Code, stub assembler) composes one prompt string from, in order: the
-  **GLOBAL agent-rules doc + the caller's personal agent-preferences doc** (CU Docs v3,
-  `q7wz-16892`; core-model step 3, so output follows firm rules + person style); the
-  **triggering comment** ("Wiadomość wywołująca tę akcję", placed *before* task context so the
-  agent acts on what was written, not a cold re-run of the task description); the **`Assemble Task
-  Context (v1)`** context (the triggering task's own comments + threaded replies); then the **task context** (task + ancestor
-  chain). It emits a soft output structure — **Wyniki / Pytania / Decyzje / Sugestie**
-  (§13.1) — as guidance, not a hard template.
+- **`Build Prompt`** (Code, stub assembler) composes one prompt string, **lane-aware** (ADR-061 Block 1).
+  On the **bare** lane it folds, in order: the **GLOBAL agent-rules doc + the caller's personal
+  agent-preferences doc** (CU Docs v3, `q7wz-16892`); the **triggering comment** ("Wiadomość wywołująca tę
+  akcję", placed *before* task context so the agent acts on what was written, not a cold re-run of the task
+  description); the **`Assemble Task Context (v1)`** context (the triggering task's own comments + threaded
+  replies); then the **task context** (task + ancestor chain) and attachment text. On the **managed** lane it
+  folds only the **floor**: the **personal** prefs (per-caller — cannot be cached in the shared `system`), the
+  triggering comment, an **impact line** (`# Waga zadania`), the task title + description, and any input
+  **images** (still eager — vision blocks; image laziness moves to Block 2). The **global rules are dropped**
+  on the managed lane because Sync Agent Definitions already bakes the same `q7wz-44812` page verbatim into the
+  cached agent `system` (provenance `source=clickup:q7wz-44812`); folding them per-run was a pure ~3.5k-tok
+  duplicate. **Consequence:** post-ADR-061 the managed lane's rules currency relies entirely on Sync Agent
+  Definitions + the **Agent Rules Freshness Check (v1)** (which WARNs on doc↔`system` hash drift *or* a stalled
+  sync) — the per-run fold no longer provides a fresh-every-run safety net. The lane is read by the new
+  `Read Lane (Stage A)` Postgres node (fail-safe to `bare`/full on any DB error, so a managed run is never
+  starved of context). Measured floor on a real task (exec 3835, task `869dux9ne`): ~3.4k tok vs ~9.6k before.
+  It emits a soft output structure — **Wyniki / Pytania / Decyzje / Sugestie** (§13.1) — as guidance, not a hard template.
 - **Status lifecycle:** `[AI] Status agenta` flips **W trakcie → Zakończono** around the run —
   **W trakcie** is set immediately off the trigger (up-front feedback to the requester),
   **Zakończono** by Stage C on completion. The pipeline **never finalizes** — it never sets a done
