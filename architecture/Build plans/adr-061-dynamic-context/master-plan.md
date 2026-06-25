@@ -52,6 +52,39 @@ sub-workflows, the `agent_routing`/`config` tables), not against the ADR alone.
    impact line.** No separate "current checklist step" parsing — the description already carries the
    checklist; the agent reads the step from it. All users will be onboarded, so per-user discovery is
    universally available.
+5. **Block 2b = Option E (lazy attachments floor), not the "re-thread pulled refs" plan.** Exploration
+   (2026-06-25) found that Block 1 only removed the attachment *tokens* from the floor, not the
+   extraction *latency*: Stage A's chain is linear and ungated, so `Call Read Input` still runs on the
+   managed lane and Docling-extracts every document (12–20 s each), with `Build Prompt` then discarding
+   the text. **The only thing keeping `Call Read Input` on the managed lane is producing the eager image
+   blocks** — so eager input images are the last pin holding eager Docling in place. Both output paths
+   that the earlier note feared breaking need *only metadata*, never bytes: `embed_input` resolves a
+   `{source_ref,url}` ref list into a ClickUp `{type:attachment}` op (no re-upload, no file_id), and
+   `reference_refs` resolves the agent's ref to the original ClickUp **URL** (the Files-API `file_id` is
+   not used for it). The Files-API upload exists purely to give the model **vision**, which
+   `get_attachment` already serves on demand (Block 2). So Option E: on the managed lane, build the
+   image-metadata floor from the **ClickUp attachment index** (the same `GET /task` `list_attachments`
+   uses — no Docling, no upload), drop `Call Read Input`, populate `agent_input_file_map` (source_ref→url)
+   from that metadata so the MCP `reference_refs` path still resolves, keep the `# Załączone obrazy` ref
+   list so embed/reference are round-trip-free, and make vision fully lazy. **Accepted regression:**
+   images *inside ZIPs* are not in the ClickUp attachment index, so they lose eager embed/reference
+   metadata (they become vision-only via `get_attachment`); reading them is unaffected, and that
+   embed-of-zip-inner-image path was already shaky (a ClickUp inline `{type:attachment}` op needs a real
+   ClickUp attachment id+url, which a Supabase-url'd zip-inner image lacks). Chosen over Option A
+   (suppress vision blocks only) because A leaves eager Docling — the bigger latency prize — on the table
+   and adds a permanent double-upload wart.
+6. **Block 2c = progressive zip disclosure (the operator's requirement).** Whole-zip `get_attachment`
+   still dumps every inner file at once, which defies ADR-061's purpose. The `zip-extractor` microservice
+   (ADR-058, `services/zip-extractor/app.mjs`) already walks the archive entry-by-entry with `yauzl`
+   lazy-entries and returns a per-entry manifest (`index,name,ext,mime,size,route,att_id=<zip>:<idx>,
+   signed_url`); Docling/vision is applied **downstream per entry** in n8n. So the manifest is already
+   separable from the expensive work. Add (a) a **manifest-only mode** (central-directory walk — names/
+   sizes/types, no byte read, no upload, no sign — genuinely cheap) and (b) a **single-entry materialize**
+   (`only_index=N` — read+upload+sign just that entry), sharing one walk fn so indices match between the
+   two. Then `list_attachments` nests each zip's inner manifest inline, and `get_attachment("<zip>:<idx>")`
+   pulls exactly one inner file. This recovers the regression from decision 5 *and* makes zip-open itself
+   progressive. **Known minor cost:** the zip is downloaded once per distinct pull (manifest + each inner
+   pull re-fetch) — fine at Haxe's archive sizes; an extractor-side disk cache is an easy later optimization.
 
 ## Key files
 
@@ -81,7 +114,8 @@ sub-workflows, the `agent_routing`/`config` tables), not against the ADR alone.
 | 0 | Capability gates: prove lazy single-attachment extraction works mid-session (G2); measure floor size + one round-trip latency (G3) | ✅ **done 2026-06-25** — `block-0-findings.md`. **No reshape.** G2: extraction primitive live (Read Input Docling 12–20 s) + mid-session `user.custom_tool_result` delivery already proven by `extract_clickup_task` (Block 4b); single-attachment filter = one-line `att_id` skip in `Explode Attachments`. G3: floor ≈ 5–7k tok with rules in the uncached floor (real decomposition of exec 3767); the 100k→floor win is the removed tail (heavy doc text + 30+ comment thread). Latency: comments/parents <1 s, document extraction 12–20 s (lazy, one at a time). **Two carry-forwards to Block 1:** (a) verify CU doc `q7wz-16892` (per-run rules fold) vs `q7wz-44812` (cached `system` rules) overlap — if they overlap, drop the redundant per-run rules fold on the managed lane → floor falls to true low-thousands without Block 3; (b) lane-aware guard keeps the bare lane on full assembly. |
 | 1 | Floor assembler — shrink Stage A's prompt string to the floor; lane-aware guard (managed → floor, bare → full) | ✅ **done 2026-06-25** — `block-1-findings.md`. New `Read Lane (Stage A)` Postgres node (fail-safe to bare); `Build Prompt` rewritten lane-aware: managed → floor (personal prefs + triggering comment + new `# Waga zadania` impact line + title/desc + eager images), drops tail (comments, parent bodies, leaves, semantic ctx, attachment text) **and** the per-run global-rules fold (carry-forward (a): same `q7wz-44812` page already baked into cached `system`; verified current via freshness check 3819 — sha match, stale=0). Bare lane unchanged (gates are `!floorOnly`). Live: exec 3835 (task `869dux9ne`) floor = **~3.4k tok vs ~9.6k** before, floor-only sections confirmed; drift clean; validation passes. **Carry-forward to ADR consequences:** managed rules currency now depends on sync+freshness (no per-run net) — recorded in ADR-061 + current.md. **Op note:** freshness check WARNs sync hasn't run in 26h (content still matches) — pre-existing, flag the Sync schedule. **Images kept eager** (deferred to Block 2 with `get_attachment`, so no blind window). |
 | 2 | Triggering-task tail readers as bot-token custom tools (`get_task_comments`, `get_parent_chain`, `list_attachments`, lazy `get_attachment`) via one `Triggering Task Tail Handler (v1)`; register + steer (CONV→9) | ✅ **done 2026-06-25** — `block-2-findings.md`. New `Triggering Task Tail Handler (v1)` (`Ouo0BlYOw92DUXIh`): Switch on `tool_name` → reused `Assemble Task Context`/`Assemble Parent Context`/bot `GET /task` index/`Read Input` single-attachment (`only_att_id`) + `Upload Input Images`; side-branch `Post Alert` WARN; single branch-free `Return`. Routed in `Execute Agent Session` via new `Is tail tool?` beside `Is extract_clickup_task?` → `Call Tail Handler` → `Build Tail Result Text` → `Merge Result` (now 4 inputs), scope-pinned to the carried `clickup_task_id`. `Read Input` gained backward-compatible `only_att_id` filter. Registered + steered on 3 agents via `Sync` (CONV→9, `all_synced=true`). **Live-verified** all 4 tools on real task `869dux9ne` (5-attachment index; 7.3k-char DOCX; PNG→vision `file_id`; 11 comments w/ threaded replies; "no parents" no false WARN); bogus id → "not found" + 1 `tail-attachment-empty` WARN, no abort; missing id → guidance, no WARN. Drift clean (38/38). **Image laziness deferred to Block 2b (see below).** **Residual for Block 3:** the `Execute Agent Session` tail-routing is verified structurally (drift-clean, mirrors the proven extract path) but not yet by an agent-driven full-spine run — Block 3's e2e confirms the agent actually calls a tail tool. |
-| 2b | **Lazy input images** — make input images pull-on-demand while preserving `embed_input` (render) + `reference_refs` (image-gen): thread pulled-image refs into the session `file_map` + `Render Agent Output`'s embed lookup. Operator asked to explore a simpler architecture. | ⬜ **deferred** (new block, split from Block 2 on 2026-06-25 — naive zeroing of `image_blocks_json` silently breaks two output paths; see ADR-061 consequences) |
+| 2b | **Lazy attachments floor (Option E)** — drop eager `Call Read Input`/Docling from the managed floor; build the image-metadata floor from the ClickUp attachment index (no extraction, no eager Files-API upload); vision goes fully on-demand via `get_attachment`; populate `agent_input_file_map` (source_ref→url) from metadata so `reference_refs` resolves; keep the `# Załączone obrazy` ref list so `embed_input`/`reference_refs` work round-trip-free. n8n-only, no microservice risk. | ⬜ not started (design locked 2026-06-25, **Option E**; supersedes the old "thread pulled refs back into file_map" plan; zip-internal-image *output*-path regression accepted by operator) |
+| 2c | **Progressive zip disclosure** — extend the `zip-extractor` microservice with a cheap manifest mode (central-directory walk only — no read/upload/sign) + single-entry materialize (`only_index`); `list_attachments` nests each zip's inner manifest inline (`<zip>:<idx>` refs); `get_attachment("<zip>:<idx>")` pulls exactly one inner file. Removes the whole-zip over-fetch on zip-open. | ⬜ not started (design locked 2026-06-25; needs a `services/zip-extractor` change + VPS `docker compose up -d` redeploy — its own risk surface, sequenced after 2b) |
 | 3 | End-to-end + scope test (the 100k case rerun); write-backs (current.md §15, flip ADR Accepted, fix title typo, record deferred additive-prefix follow-up) | ⬜ not started |
 
 Each block ends with: write-back to `current.md` + ADR-061, status-table update, commit, handoff.
@@ -163,6 +197,73 @@ context it should is a quality risk no thrown error can detect — stated, not s
 **DoD:** each tool returns correctly for the triggering task on the bot token; a failed pull WARNs
 without aborting the run; `extract_clickup_task` + the scoped `clickup_*` MCP still work for
 other-task discovery; no cross-department leak (triggering-task tools are pinned to the supplied id).
+
+### Block 2b — Lazy attachments floor (Option E)
+
+Finish what Block 1 started: stop the managed floor paying for *any* attachment extraction. n8n-only —
+no microservice change.
+
+- **Drop `Call Read Input` on the managed lane.** Today it runs unconditionally and Doclings every
+  document just so `Build Prompt` can read its image blocks (then discards the text). Gate it by lane
+  (managed → skip; bare → keep, the failover needs full assembly). The lane is already read by
+  `Read Lane (Stage A)`.
+- **Build the image-metadata floor from the ClickUp attachment index** (the same `GET /task` that
+  `list_attachments` uses): for each **top-level** image attachment emit `{source_ref=attachment_id,
+  url, mime, alt=filename}` into `image_blocks_json`. No Docling, no eager Files-API upload.
+- **Keep the `# Załączone obrazy` ref list** in the floor prompt (cheap text) so the agent can
+  `embed_input`/`reference_refs` without a round-trip; reword it to say the images are *not* preloaded as
+  vision — call `get_attachment` to actually see one.
+- **Make vision lazy** — the eager Files-API upload of input images is dropped on the managed lane;
+  `get_attachment` (Block 2) already returns a Files-API vision block on demand.
+- **Keep `reference_refs` working** — populate `agent_input_file_map` (source_ref→url, mime) from the
+  same metadata (no upload; the MCP resolver matches `source_ref` and the external generator needs the
+  URL, not a `file_id`). Decide the write point (Stage A vs. Stage B `Build Setup`) during build; reuse
+  the existing `Upsert File Map` Postgres node shape with a synthetic/placeholder `file_id` if needed.
+- **`embed_input` is untouched** — `Render Agent Output`'s `input_image_refs_json` is still
+  `image_blocks_json`, now sourced from the attachment index.
+- **Steering** (`Sync Agent Definitions`, bump CONV): "attached images are listed but NOT preloaded as
+  vision — call `get_attachment(attachment_id)` to see one; their refs for embed/generate are in the
+  message." Re-sync the 3 agents.
+
+**Reliability:** attachment-index fetch failure → `Post Alert (v1)` WARN on a side branch, floor still
+emits (degrade, don't break). Bare lane unchanged. **Knowingly uncovered:** the agent not pulling an
+image it should — no thrown error detects it (same standing risk as Block 2).
+
+**DoD:** a trivial task with image+doc attachments produces a floor with **no Docling latency**, no eager
+upload, zero tail tools called, and a correct answer; the floor still lists the attachments; `embed_input`
+of a top-level image and `reference_refs` (packshot) both still render correctly when the agent uses them;
+bare lane still gets full assembly; drift clean; touched workflows re-exported.
+
+### Block 2c — Progressive zip disclosure
+
+Make zip contents progressively disclosed instead of whole-zip-at-once. Microservice + n8n; sequenced
+after 2b (separate risk surface).
+
+- **`zip-extractor` (`services/zip-extractor/app.mjs`):** refactor the entry-walk into one shared fn,
+  then expose: (a) **manifest mode** — walk the central directory and return
+  `[{index,name,ext,mime,size,route,att_id:"<zip>:<idx>"}]` with **no** `openReadStream`/upload/sign
+  (cheap); (b) **single-entry materialize** — `only_index=N` reads+uploads+signs just entry N and returns
+  its one-entry manifest. Keep the junk-skip/drop rules identical across both so `<zip>:<idx>` is stable
+  between list and pull. Preserve the `/extract` (materialize-all) contract for the bare lane / existing
+  callers. **Deploy:** `services/zip-extractor` change → VPS `docker compose up -d zip-extractor`
+  (ADR-033); `GET /health` after.
+- **`list_attachments` (Triggering Task Tail Handler):** for each attachment whose ext/mime is a zip,
+  also call the extractor manifest mode and nest its entries inline under the zip (indented, with their
+  `<zip>:<idx>` attachment_ids + sizes/types). One cheap call reveals the whole tree.
+- **`get_attachment("<zip>:<idx>")` (Read Input single mode):** detect the inner-ref form (the `:`),
+  route to the extractor single-entry materialize for that index, then Docling (doc) or vision-reference
+  (image) **only that one** file. Top-level `attachment_id` (no `:`) keeps Block 2's behavior.
+- **Steering:** note that zip attachments expand to inner files in `list_attachments` and one inner file
+  is pulled by its `<zip>:<idx>` id.
+
+**Reliability:** manifest-mode failure / corrupt archive → the existing `zip_extraction_failed` graceful
+drop + `Post Alert (v1)` WARN; a bad `only_index` → structured "not found" result (mirror Block 2's bogus-id
+path), no abort. Handler keeps its single branch-free return.
+
+**DoD:** `list_attachments` on a task with a multi-file zip shows the inner manifest (no extraction);
+`get_attachment("<zip>:<idx>")` returns exactly that one inner file (doc→text or image→vision), provably
+not touching the other entries; corrupt zip and bad index degrade with a WARN, no abort; bare-lane
+`/extract` path still works; drift clean; microservice redeployed and `services/zip-extractor` committed.
 
 ### Block 3 — End-to-end + scope test (was ADR-061 Block 4)
 
