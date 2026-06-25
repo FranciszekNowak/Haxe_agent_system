@@ -243,7 +243,13 @@ against the input image refs into a `{type:attachment}` op inline — no re-uplo
 
 **Reliability:** an auth dead-man's-switch (`Managed Agents Auth Monitor (v1)`), the CU-rules sync +
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the
-image-MCP health monitor (`Image MCP Health Monitor (v1)`), all every 6h via `Post Alert (v1)`.
+image-MCP health monitor (`Image MCP Health Monitor (v1)`), all every 6h via `Post Alert (v1)`. The
+freshness check's `>24h` liveness branch reads `agent_routing.synced_at` as a heartbeat, so the sync's
+idempotent **skip** path (the normal steady state when the doc is unchanged) also stamps `synced_at = now()`
+via its `Touch Checked` node — not only the writeback path. Without that, a doc stable for >24h left
+`synced_at` ageing and produced a false "sync nie wykonał się od ponad 24h" WARN every 6h even while sync
+ran fine and content matched; `synced_at` now means "last time sync confirmed agents current" (actual
+rewrites are still tracked by `agent_version` + Anthropic's version history).
 
 **ADR-054 — permission-scoped context retrieval (built + cutover landed 2026-06-24 — ClickUp-only:
 caller-scoped discovery + as-U attachment extraction live; scope-correctness gate passed).** The direction: the managed agent gathers context **under the triggering user's identity, enforced

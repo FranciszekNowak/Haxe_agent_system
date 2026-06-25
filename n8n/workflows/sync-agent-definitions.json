@@ -456,6 +456,30 @@
           "convertFieldsToString": true
         }
       }
+    },
+    {
+      "id": "touch-checked",
+      "name": "Touch Checked",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [2440, 460],
+      "notes": "ADR-053 freshness fix: the skip path means 'this model's agent already carries the current rules hash + conventions version'. Stamp synced_at = now() so the freshness dead-man's-switch reads it as a liveness heartbeat ('sync ran and CONFIRMED current'), not only as 'an agent was rewritten'. Without this, a stable doc made every scheduled skip leave synced_at untouched, so Agent Rules Freshness Check (v1) fired a false 'sync >24h' WARN even though sync ran every 6h and content matched. Keyed per model_id, mirroring Writeback Routing.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update agent_routing set synced_at = now(), updated_at = now() where active and model_id = $1;",
+        "options": {
+          "queryReplacement": "={{ $json.model_id }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
     }
   ],
   "connections": {
@@ -668,6 +692,17 @@
         [
           {
             "node": "Alert Sync Incomplete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skipped (current)": {
+      "main": [
+        [
+          {
+            "node": "Touch Checked",
             "type": "main",
             "index": 0
           }
