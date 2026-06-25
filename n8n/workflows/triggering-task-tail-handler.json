@@ -1,0 +1,734 @@
+{
+  "name": "Triggering Task Tail Handler (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 400],
+      "notes": "ADR-061 Block 2 — services the TRIGGERING task's tail as client-side custom tools from Execute Agent Session's poll loop. IN: tool_name (get_task_comments|get_parent_chain|list_attachments|get_attachment), clickup_task_id (the TRIGGERING task id, set by n8n from the trigger — the scope pin; the agent CANNOT widen it), tool_input_json (the agent's raw tool input — only limit/since/depth/attachment_id are read from it, never a task id). OUT: { status, tool_result_content_json (a user.custom_tool_result content[] the agent SEES), new_warnings_json:'[]', new_images_json:'[]' }. All reads are on the BOT token (the caller @-mentioned the agent here -> has access; bot has access; byte-identical — per-user scoping earns its keep only for OTHER-task discovery, which stays on the clickup_* MCP). Branch-free terminal (Return re-reads Merge Result). The handler SELF-ALERTS a WARN on a side branch (Should Warn? -> Post Alert) on its own failure modes and returns new_warnings_json='[]' so the session does NOT double-fire; reused sub-workflows (Assemble Task Context) keep their own side-branch alerts.",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "tool_name"
+            },
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "tool_input_json"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "route-tool",
+      "name": "Route Tool",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [220, 400],
+      "notes": "Route by tool_name to the right reused reader. 0 comments -> Assemble Task Context (v1); 1 parents -> Assemble Parent Context (v1); 2 attachments -> bot GET /task (native attachment index, NO extraction); 3 attachment -> Read Input (v1) single-attachment mode (only_att_id) + Upload Input Images (v1) for vision. Fallback (4 unknown) -> Build Unknown Result (defensive: Execute Agent Session only routes the 4 known names, so this is a routing-bug guard that still answers the agent + WARNs).",
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c-comments",
+                    "leftValue": "={{ $json.tool_name }}",
+                    "rightValue": "get_task_comments",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "comments"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c-parents",
+                    "leftValue": "={{ $json.tool_name }}",
+                    "rightValue": "get_parent_chain",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "parents"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c-attachments",
+                    "leftValue": "={{ $json.tool_name }}",
+                    "rightValue": "list_attachments",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "attachments"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c-attachment",
+                    "leftValue": "={{ $json.tool_name }}",
+                    "rightValue": "get_attachment",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "attachment"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "unknown"
+        }
+      }
+    },
+    {
+      "id": "call-task-context",
+      "name": "Call Assemble Task Context",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [520, 80],
+      "notes": "get_task_comments: reuse Assemble Task Context (v1) (eL3fJuRMpzVRuVUT) — the triggering task's comments + interleaved threaded replies on the bot token. It SELF-ALERTS on fetch/reply failure (its own side-branch Post Alert), so Build Comments Result only adds a WARN for a TOTAL sub-call failure (onError -> no task_comments key). onError=continueRegularOutput so a sub-call failure degrades to a structured tool result, never throws into the session.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "eL3fJuRMpzVRuVUT",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ $('When Called').first().json.clickup_task_id }}",
+            "triggering_comment_text": "",
+            "caller_user_id": ""
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "build-comments-result",
+      "name": "Build Comments Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [740, 80],
+      "notes": "Shape Assemble Task Context's task_comments into a user.custom_tool_result text block. Optional tool args: limit (cap most-recent N) + since (ms-epoch floor). An empty thread is LEGITIMATE (no WARN). WARN only when the sub-call returned no task_comments key at all (total failure caught by onError). new_warnings_json='[]' (handler self-alerts on the side branch).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet input = {}; try { input = JSON.parse(wc.tool_input_json || '{}') || {}; } catch (e) {}\nconst limit = Number(input.limit) > 0 ? Number(input.limit) : 0;\nconst since = input.since ? Number(input.since) : 0;\nlet sr = {}; try { sr = $('Call Assemble Task Context').first().json || {}; } catch (e) {}\nlet comments = Array.isArray(sr.task_comments) ? sr.task_comments : null;\nlet ws = '', wm = '', wd = '';\nif (comments === null) {\n  ws = 'managed-agents/tail-comments-failed';\n  wm = 'Pobranie komentarzy zadania ' + taskId + ' nie powiodlo sie (narzedzie get_task_comments).';\n  wd = 'task=' + taskId;\n  comments = [];\n}\nif (since) comments = comments.filter(function(c){ return Number((c && c.date) || 0) >= since; });\nlet used = comments;\nif (limit && comments.length > limit) used = comments.slice(0, limit);\nconst lines = [];\nlines.push('Komentarze zadania ' + taskId + ' (' + used.length + (limit && comments.length > limit ? ' z ' + comments.length : '') + '):');\nif (used.length === 0) lines.push('(brak komentarzy)');\nfor (const c of used) { lines.push(((c && c.author) || 'nieznany') + ': ' + ((c && c.text) || '')); }\nconst content = [{ type: 'text', text: lines.join('\\n') }];\nreturn [{ json: {\n  status: ws ? 'partial' : (used.length ? 'ok' : 'empty'),\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: ws, _warn_msg: wm, _warn_details: wd\n} }];"
+      }
+    },
+    {
+      "id": "call-parent-context",
+      "name": "Call Assemble Parent Context",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [520, 280],
+      "notes": "get_parent_chain: reuse Assemble Parent Context (v1) (qgM37HdQj78Rn090) — depth-bounded ancestor titles/descriptions on the bot token. Its Fetch L0 throws on a bad id; onError=continueRegularOutput here catches it -> Build Parents Result detects no current_task and WARNs. A task with NO parent legitimately returns ancestor_chain=[] (no WARN).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "qgM37HdQj78Rn090",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $('When Called').first().json.clickup_task_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "build-parents-result",
+      "name": "Build Parents Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [740, 280],
+      "notes": "Shape Assemble Parent Context's ancestor_chain (general -> nearest) into a text block. Optional tool arg depth caps to the nearest N ancestors. No parent -> a clear 'no parents' answer (no WARN). WARN only when current_task is absent (the sub-call failed). new_warnings_json='[]' (self-alert).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet input = {}; try { input = JSON.parse(wc.tool_input_json || '{}') || {}; } catch (e) {}\nconst depth = Number(input.depth) > 0 ? Number(input.depth) : 0;\nlet ctx = {}; try { ctx = $('Call Assemble Parent Context').first().json || {}; } catch (e) {}\nlet chain = Array.isArray(ctx.ancestor_chain) ? ctx.ancestor_chain : null;\nlet ws = '', wm = '', wd = '';\nif (chain === null || !ctx.current_task) {\n  ws = 'managed-agents/tail-parents-failed';\n  wm = 'Pobranie kontekstu nadrzednego zadania ' + taskId + ' nie powiodlo sie (narzedzie get_parent_chain).';\n  wd = 'task=' + taskId;\n  chain = chain || [];\n}\nlet used = chain.slice().reverse();\nif (depth && used.length > depth) used = used.slice(used.length - depth);\nconst lines = [];\nif (used.length === 0) {\n  lines.push('Zadanie ' + taskId + ' nie ma zadan nadrzednych (brak lancucha rodzicow).');\n} else {\n  lines.push('Lancuch zadan nadrzednych zadania ' + taskId + ' (od najogolniejszego do najblizszego), ' + used.length + ' poziom(ow):');\n  for (const a of used) { lines.push(''); lines.push('## ' + ((a && a.name) || '(bez nazwy)')); if (a && a.description) lines.push(a.description); }\n}\nconst content = [{ type: 'text', text: lines.join('\\n') }];\nreturn [{ json: {\n  status: ws ? 'partial' : 'ok',\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: ws, _warn_msg: wm, _warn_details: wd\n} }];"
+      }
+    },
+    {
+      "id": "get-attachment-list",
+      "name": "Get Attachment List",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 480],
+      "notes": "list_attachments: bot GET /api/v2/task/{id} for ClickUp's NATIVE attachment index (id/title/extension/mimetype/size) — NO bytes, NO Docling (cheap metadata-first, ADR-061 decision #3). Same endpoint Read Input's Get Task uses. onError=continueRegularOutput + retry so a transient ClickUp blip degrades to a structured 'list failed' tool result + WARN instead of throwing into the session.",
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "build-attachments-result",
+      "name": "Build Attachments Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [740, 480],
+      "notes": "Shape the task's attachments[] into a cheap index the agent reads to decide what to pull: one line per attachment with its attachment_id, title, mime/ext, size. Tells the agent to call get_attachment with a chosen attachment_id for content. No attachments -> legitimate empty (no WARN). WARN only when the GET failed (no attachments array). new_warnings_json='[]' (self-alert).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet task = {}; try { task = $('Get Attachment List').first().json || {}; } catch (e) {}\nlet atts = Array.isArray(task.attachments) ? task.attachments : null;\nlet ws = '', wm = '', wd = '';\nif (atts === null) {\n  ws = 'managed-agents/tail-attachments-failed';\n  wm = 'Pobranie listy zalacznikow zadania ' + taskId + ' nie powiodlo sie (narzedzie list_attachments).';\n  wd = 'task=' + taskId;\n  atts = [];\n}\nconst items = atts.map(function(a){ return { attachment_id: String((a && a.id) || ''), title: (a && a.title) || '', ext: String((a && a.extension) || '').toLowerCase(), mime: String((a && a.mimetype) || '').toLowerCase(), size_bytes: Number((a && a.size) || 0) }; });\nconst lines = [];\nlines.push('Zalaczniki zadania ' + taskId + ' (' + items.length + '):');\nif (items.length === 0) lines.push('(brak zalacznikow)');\nfor (const it of items) { lines.push('- attachment_id=\"' + it.attachment_id + '\" | ' + (it.title || '(bez nazwy)') + ' | ' + (it.mime || it.ext || '?') + ' | ' + (it.size_bytes ? Math.round(it.size_bytes / 1024) + ' KB' : '? KB')); }\nlines.push('');\nlines.push('Aby pobrac TRESC konkretnego zalacznika (dokument -> tekst, obraz -> wizja), wywolaj get_attachment z { attachment_id } wybranym z powyzszej listy.');\nconst content = [{ type: 'text', text: lines.join('\\n') }];\nreturn [{ json: {\n  status: ws ? 'partial' : (items.length ? 'ok' : 'empty'),\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: ws, _warn_msg: wm, _warn_details: wd\n} }];"
+      }
+    },
+    {
+      "id": "build-read-args",
+      "name": "Build Read Input Args",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 660],
+      "notes": "get_attachment: parse attachment_id from the agent's tool_input_json and emit { clickup_task_id, only_att_id } for Read Input single-attachment mode. _missing_id guards the Has Att Id? branch: an EMPTY only_att_id must NOT reach Read Input (empty = no filter = extract ALL attachments), so a missing id routes to Build Missing Id Result instead.",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet input = {}; try { input = JSON.parse(wc.tool_input_json || '{}') || {}; } catch (e) {}\nconst onlyAttId = String(input.attachment_id || input.att_id || '').trim();\nreturn [{ json: { clickup_task_id: taskId, only_att_id: onlyAttId, _missing_id: !onlyAttId } }];"
+      }
+    },
+    {
+      "id": "has-att-id",
+      "name": "Has Att Id?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [740, 660],
+      "notes": "TRUE: attachment_id present -> Read Input (single) extracts that ONE attachment. FALSE: no id -> Build Missing Id Result guides the agent to list_attachments first (and does NOT extract everything).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-has-id",
+              "leftValue": "={{ $json.only_att_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "call-read-input",
+      "name": "Call Read Input (single)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [960, 600],
+      "notes": "get_attachment: Read Input (v1) (zgGpONulGMohQQqI) on the BOT token (no as_user_token) with only_att_id set -> its Explode Attachments filters to that ONE attachment (ADR-061 Block 0 single-attachment mode). Returns { blocks, clickup_task_id, warnings } for just that attachment (Docling text for docs; an image block for images). No match -> the no-attachment passthrough -> blocks=[] -> Build Attachment Result answers 'not found' + WARN. onError=continueRegularOutput so an extraction failure degrades, never throws.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "zgGpONulGMohQQqI",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "only_att_id": "={{ $json.only_att_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "upload-tail-images",
+      "name": "Upload Tail Images",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1180, 600],
+      "notes": "If the pulled attachment is an IMAGE, upload it to the Files API via Upload Input Images (v1) (2VkZN5UeqVk6MDLW) so the agent SEES it as a vision block (file_id), mirroring the extract handler. input_images_json = Read Input's image-typed blocks. onError=continueRegularOutput so an upload failure degrades to a text marker per image (Build Attachment Result), never throws. For a document (no image blocks) Upload returns an empty file_map and this is a no-op.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "2VkZN5UeqVk6MDLW",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "input_images_json": "={{ JSON.stringify((((($('Call Read Input (single)').first()||{}).json||{}).blocks)||[]).filter(function(b){ return b && b.type === 'image' && ['image/png','image/jpeg','image/jpg','image/gif','image/webp'].indexOf(String(b.mime||'').toLowerCase()) >= 0; })) }}",
+            "clickup_task_id": "={{ $('When Called').first().json.clickup_task_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "build-attachment-result",
+      "name": "Build Attachment Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 600],
+      "notes": "Mirror of the extract handler's Build Extract Result (bot path, no as-U denial): blocks sorted by order -> text verbatim (incl. [BRAK..] markers) + image blocks resolved to {type:image,source:{type:file,file_id}} from the upload file_map (a failed upload -> a text marker). Empty (id not found / extraction empty) -> a clear 'not found, check list_attachments' result + WARN. [BRAK markers or failed images -> partial + WARN. new_warnings_json='[]' (self-alert); new_images_json='[]' (a pulled image is CONSUMED by the agent, not a produced output file).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet argsId = ''; try { argsId = $('Build Read Input Args').first().json.only_att_id || ''; } catch (e) {}\nconst ri = (($('Call Read Input (single)').first() || {}).json) || {};\nconst blocks = Array.isArray(ri.blocks) ? ri.blocks : [];\nconst up = (($('Upload Tail Images').first() || {}).json) || {};\nconst fileMap = Array.isArray(up.file_map) ? up.file_map : [];\nconst fileById = {};\nfor (const f of fileMap) { if (f && f.file_id) { if (f.order != null) fileById['o:' + f.order] = f.file_id; if (f.source_ref != null) fileById['s:' + f.source_ref] = f.file_id; if (f.url) fileById['r:' + f.url] = f.file_id; } }\nconst sorted = blocks.slice().sort(function(a, b){ return ((a && a.order) || 0) - ((b && b.order) || 0); });\nconst body = [];\nlet docCount = 0, imgCount = 0, imgFailed = 0, brak = 0;\nfor (const b of sorted) {\n  if (!b) continue;\n  if (b.type === 'text') { const md = b.md || ''; if (md) { body.push({ type: 'text', text: md }); if (md.indexOf('[BRAK') === 0) brak++; else docCount++; } }\n  else if (b.type === 'image') { const fid = fileById['o:' + b.order] || (b.source_ref != null ? fileById['s:' + b.source_ref] : null) || (b.ref ? fileById['r:' + b.ref] : null); if (fid) { body.push({ type: 'image', source: { type: 'file', file_id: fid } }); imgCount++; } else { imgFailed++; body.push({ type: 'text', text: '[obraz niedostepny: ' + (b.alt || b.source_ref || '') + ']' }); } }\n}\nconst found = body.length > 0;\nlet ws = '', wm = '', wd = '';\nif (!found) {\n  ws = 'managed-agents/tail-attachment-empty';\n  wm = 'Zalacznik ' + argsId + ' zadania ' + taskId + ' nie zwrocil tresci (get_attachment) - byc moze nie istnieje lub ekstrakcja zawiodla.';\n  wd = 'task=' + taskId + '; attachment=' + argsId;\n} else if (imgFailed > 0 || brak > 0) {\n  ws = 'managed-agents/tail-attachment-partial';\n  wm = 'Ekstrakcja zalacznika ' + argsId + ' zadania ' + taskId + ' czesciowa (get_attachment).';\n  wd = 'task=' + taskId + '; attachment=' + argsId + '; brak=' + brak + '; obrazy_niepobrane=' + imgFailed;\n}\nconst header = found\n  ? ('Tresc zalacznika ' + argsId + ' zadania ' + taskId + ': ' + docCount + ' dok., ' + imgCount + ' obr.' + (imgFailed ? (' (' + imgFailed + ' obr. nie pobrano)') : ''))\n  : ('Nie znaleziono tresci zalacznika ' + argsId + ' w zadaniu ' + taskId + '. Sprawdz attachment_id przez list_attachments.');\nconst content = [{ type: 'text', text: header }].concat(body);\nreturn [{ json: {\n  status: found ? ((imgFailed || brak) ? 'partial' : 'ok') : 'empty',\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: ws, _warn_msg: wm, _warn_details: wd\n} }];"
+      }
+    },
+    {
+      "id": "build-missing-id",
+      "name": "Build Missing Id Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 760],
+      "notes": "get_attachment called with no attachment_id: answer the agent with guidance (call list_attachments first) so the session resumes. This is the AGENT's input error, not a system failure -> NO WARN (avoid channel noise).",
+      "parameters": {
+        "jsCode": "const content = [{ type: 'text', text: 'Narzedzie get_attachment wymaga parametru attachment_id. Najpierw wywolaj list_attachments, aby poznac attachment_id zalacznikow tego zadania, a nastepnie wywolaj get_attachment z wybranym attachment_id.' }];\nreturn [{ json: {\n  status: 'error',\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: '', _warn_msg: '', _warn_details: ''\n} }];"
+      }
+    },
+    {
+      "id": "build-unknown",
+      "name": "Build Unknown Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 860],
+      "notes": "Defensive fallback: an unknown tool_name (Execute Agent Session only routes the 4 known names, so reaching here is a routing bug). Answer the agent 'not supported' so the session never stalls, and WARN (this should never fire in normal operation).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst name = wc.tool_name || 'unknown';\nconst content = [{ type: 'text', text: 'Narzedzie \"' + name + '\" nie jest obslugiwane przez ten handler. Pracuj na podstawie dostepnego kontekstu.' }];\nreturn [{ json: {\n  status: 'error',\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: 'managed-agents/tail-unknown-tool', _warn_msg: 'Tail handler otrzymal nieznane narzedzie: ' + name, _warn_details: 'tool=' + name\n} }];"
+      }
+    },
+    {
+      "id": "merge-result",
+      "name": "Merge Result",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [1700, 400],
+      "notes": "Converge the five mutually-exclusive branches (0 comments, 1 parents, 2 attachments, 3 get_attachment-ok, 4 errors=missing-id+unknown) into ONE stream. Append; exactly one branch executes per call. Return re-reads this node so the contract is deterministic (branch-free terminal rule).",
+      "parameters": {
+        "numberInputs": 5
+      }
+    },
+    {
+      "id": "should-warn",
+      "name": "Should Warn?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1920, 400],
+      "notes": "Side branch off the canonical result: TRUE when a Build node set _warn_source (a real handler failure mode: comments/parents/attachments/extraction failure, or unknown tool). TRUE -> Post Alert (one WARN). FALSE -> straight to Merge Tail. Both rejoin at Merge Tail -> Return; Return re-reads Merge Result so the alert side-trip can't corrupt the returned contract (mirrors Execute Agent Session).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-warn",
+              "leftValue": "={{ $json._warn_source }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "post-alert",
+      "name": "Post Alert",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [2140, 280],
+      "notes": "Centralized Post Alert (v1) seam (ADR-025, YSCdHlmdf3p9XEUx) — WARN, never post to ClickUp directly. Fires on the handler's own failure modes (the reused Assemble Task Context fires its OWN comment/reply alerts separately). onError=continueRegularOutput so an alert-channel hiccup never breaks the handler return. No loop risk: trigger is executeWorkflow (the session), not a webhook watching the Alerts task.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "={{ $json._warn_source }}",
+            "message": "={{ $json._warn_msg }}",
+            "details": "={{ $json._warn_details }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "merge-tail",
+      "name": "Merge Tail",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [2360, 400],
+      "notes": "Rejoin the alerted (input 0) and not-alerted (input 1) paths into the single terminal input. Append; exactly one executes.",
+      "parameters": {
+        "numberInputs": 2
+      }
+    },
+    {
+      "id": "return",
+      "name": "Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2580, 400],
+      "notes": "SOLE TERMINAL. Re-reads Merge Result's first item (the canonical result, NOT Merge Tail's direct input which Post Alert would have replaced — research-the-web return-determinism idiom) and returns the clean handler contract { status, tool_result_content_json, new_images_json, new_warnings_json } that Execute Agent Session's Build Tail Result Text consumes. Internal _warn_* fields are dropped here.",
+      "parameters": {
+        "jsCode": "const r = ($('Merge Result').first() || {}).json || {};\nreturn [{ json: {\n  status: r.status || 'ok',\n  tool_result_content_json: r.tool_result_content_json || JSON.stringify([{ type: 'text', text: 'Brak wyniku narzedzia.' }]),\n  new_images_json: r.new_images_json || '[]',\n  new_warnings_json: r.new_warnings_json || '[]'\n} }];"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Route Tool",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Tool": {
+      "main": [
+        [
+          {
+            "node": "Call Assemble Task Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Assemble Parent Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Attachment List",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Read Input Args",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Unknown Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Assemble Task Context": {
+      "main": [
+        [
+          {
+            "node": "Build Comments Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Comments Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Assemble Parent Context": {
+      "main": [
+        [
+          {
+            "node": "Build Parents Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Parents Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Get Attachment List": {
+      "main": [
+        [
+          {
+            "node": "Build Attachments Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Attachments Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Build Read Input Args": {
+      "main": [
+        [
+          {
+            "node": "Has Att Id?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Att Id?": {
+      "main": [
+        [
+          {
+            "node": "Call Read Input (single)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Missing Id Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Read Input (single)": {
+      "main": [
+        [
+          {
+            "node": "Upload Tail Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Tail Images": {
+      "main": [
+        [
+          {
+            "node": "Build Attachment Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Attachment Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Build Missing Id Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Build Unknown Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Merge Result": {
+      "main": [
+        [
+          {
+            "node": "Should Warn?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Warn?": {
+      "main": [
+        [
+          {
+            "node": "Post Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Tail",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Post Alert": {
+      "main": [
+        [
+          {
+            "node": "Merge Tail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Tail": {
+      "main": [
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "timezone": "Europe/Warsaw",
+    "executionOrder": "v1"
+  }
+}

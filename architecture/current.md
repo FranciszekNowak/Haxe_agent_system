@@ -1239,8 +1239,12 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   eager) and **drops the unbounded tail** — comment thread, ancestor bodies, linked-doc leaves, semantic-search
   context, attachment **text**, and the per-run global-rules fold (which duplicated the rules already baked verbatim
   into the cached agent `system`; the managed agent still gets them, kept current by Sync Agent Definitions + the
-  Freshness Check). The **bare** failover lane is unchanged (full assembly), gated on the lane read; the tail becomes
-  pull-on-demand tools in Block 2. Folds attachment **text** into the prompt (bare lane only) and fires the reader's `warnings` via
+  Freshness Check). The **bare** failover lane is unchanged (full assembly), gated on the lane read. **ADR-061 Block 2**
+  turned that dropped tail into four pull-on-demand custom tools the managed agent calls on the retained session loop
+  (`get_task_comments`, `get_parent_chain`, `list_attachments`, `get_attachment` — see Stage B). **Input images stay
+  eager** on both lanes: making them lazy is coupled to two output paths (`embed_input` at render and `reference_refs`
+  at image generation, both resolved from `image_blocks_json`), so the lazy-image re-threading is a **deferred
+  follow-up block**, not part of Block 2. Folds attachment **text** into the prompt (bare lane only) and fires the reader's `warnings` via
   `Post Alert (v1)` on a reconverging side branch (`Return Context` stays the sole terminal). Multimodal
   input (ADR-036/038/040 Block 5): images present → `modality='multimodal_input'` set on the context payload →
   routing returns the **Gemini** alias for all multimodal tasks (`haxe-gemini-flash`/`-pro` by tier; ADR-043
@@ -1250,8 +1254,16 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   resolve the tier agent from `agent_routing` (Niski→Haiku, Średni→Sonnet, Wysoki→Opus, Krytycznie ważne→Opus
   — Fable repointed) bound to the persistent environment; upload input images to the Files API; create + send
   the session; poll to idle (web search, code execution, Skills run in-harness; the client-side custom-tool
-  loop is retained for ADR-054's future Google tool, dormant for image since it runs via the MCP server);
-  compute the session USD cost; enumerate produced office-docs. `Render Agent Output (v1)` then turns the
+  loop services `extract_clickup_task` (ADR-054) and, **ADR-061 Block 2**, the four triggering-task **tail tools**
+  — `get_task_comments`, `get_parent_chain`, `list_attachments`, `get_attachment` — routed by a new `Is tail tool?`
+  branch to **`Triggering Task Tail Handler (v1)`** (`Ouo0BlYOw92DUXIh`). That one handler switches on the tool name
+  to the right reused reader (`Assemble Task Context`/`Assemble Parent Context`/a bot `GET /task` index/`Read Input`
+  single-attachment + `Upload Input Images`), all on the **bot token** and **pinned to the carried `clickup_task_id`**
+  (the agent supplies only `limit`/`since`/`depth`/`attachment_id`, never a task id — so it cannot widen scope past the
+  triggering task; other-task discovery stays on the per-user scoped `clickup_*` MCP). A failed pull WARNs via
+  `Post Alert (v1)` on a side branch and returns a structured error to the agent (never a silent empty); the handler's
+  return path is a single branch-free terminal. The image branch stays dormant (image generation runs via the MCP
+  server); compute the session USD cost; enumerate produced office-docs. `Render Agent Output (v1)` then turns the
   agent's block-array into the Post Reply contract (`rendered_delta` + `image_manifest`, fetching produced
   images from the carrier). Verified live across text / web-research / image-gen / vision / office-doc (Block 9).
 - **Stage B (bare, dormant failover) — `Execute LLM Call (v1)`** (`n8n/workflows/execute-llm-call.json`, id `9qdJA4xnAGbxqkt9`,

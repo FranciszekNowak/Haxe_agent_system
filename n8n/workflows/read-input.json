@@ -31,7 +31,7 @@
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
       "position": [-240, 176],
-      "notes": "Production entry (called by Stage A, Block 5). In: { clickup_task_id } ONLY - the reader SELF-FETCHES the task (router retired, ADR-036 'Input readers unified'). Out: { blocks, clickup_task_id, warnings }. PURE function: no side-effects - Stage A fires `warnings` via Post Alert (v1) (single alerting choke-point).",
+      "notes": "Production entry (called by Stage A, Block 5). In: { clickup_task_id } (+ optional as_user_token for the ADR-054 as-U path; + optional only_att_id, ADR-061 Block 2). The reader SELF-FETCHES the task (router retired, ADR-036 'Input readers unified'). only_att_id (when non-empty) makes Explode Attachments emit ONLY the matching attachment (single-attachment mode for the get_attachment tail tool); empty => all attachments (unchanged). Out: { blocks, clickup_task_id, warnings }. PURE function: no side-effects - Stage A fires `warnings` via Post Alert (v1) (single alerting choke-point).",
       "parameters": {
         "workflowInputs": {
           "values": [
@@ -40,6 +40,9 @@
             },
             {
               "name": "as_user_token"
+            },
+            {
+              "name": "only_att_id"
             }
           ]
         }
@@ -139,9 +142,9 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [256, -80],
-      "notes": "Pure NORMALIZER: explode the self-fetched ClickUp task's attachments[] into one item each, normalizing raw ClickUp {id,url_w_query,extension,mimetype}. Assigns GLOBAL order by index (the reader owns ordering now - router retired). 'url' serves BOTH as the image-block ref AND the fetch URL (verified downloadable, auth:none, Block 2). ZERO attachments -> emits one `_passthrough` sentinel (order -1) so the chain still reaches Aggregate Blocks; a 0-item Explode would skip every downstream node and silently null the whole pipeline (no reply/status/cost) - the bug fixed 2026-06-11.",
+      "notes": "Pure NORMALIZER: explode the self-fetched ClickUp task's attachments[] into one item each, normalizing raw ClickUp {id,url_w_query,extension,mimetype}. Assigns GLOBAL order by index (the reader owns ordering now - router retired). 'url' serves BOTH as the image-block ref AND the fetch URL (verified downloadable, auth:none, Block 2). ADR-061 Block 2: when When Called supplies a non-empty only_att_id, SKIP every attachment whose att_id/id does not match (single-attachment mode for the get_attachment tail tool) — the index still increments so the kept attachment keeps its global order; no match => 0 kept => the passthrough sentinel below => Read Input returns blocks:[] => the tail handler answers 'not found'. The Form Trigger path has no When Called node, so the try/catch leaves only_att_id empty (all attachments — unchanged). ZERO attachments -> emits one `_passthrough` sentinel (order -1) so the chain still reaches Aggregate Blocks; a 0-item Explode would skip every downstream node and silently null the whole pipeline (no reply/status/cost) - the bug fixed 2026-06-11.",
       "parameters": {
-        "jsCode": "const src = $input.first().json;\nconst taskId = src.id || src.clickup_task_id || src.taskId || null;\nconst atts = Array.isArray(src.attachments) ? src.attachments : [];\nconst out = [];\nlet i = 0;\nfor (const a of atts) {\n  const title = a.title || '';\n  const ext = String(a.ext || a.extension || title.split('.').pop() || '').toLowerCase();\n  out.push({ json: {\n    clickup_task_id: taskId,\n    att_id: a.att_id || a.id || null,\n    title: title || ('attachment.' + ext),\n    ext,\n    mime: String(a.mime || a.mimetype || '').toLowerCase(),\n    url: a.url || a.url_w_query || '',\n    order: (a.order !== undefined && a.order !== null ? a.order : i)\n  }});\n  i++;\n}\nif (out.length === 0) {\n  // No attachments: emit a single passthrough sentinel so the chain still\n  // reaches Aggregate Blocks. A zero-item Explode would skip every downstream\n  // node, return nothing, and silently null the whole pipeline (no reply/status/cost).\n  out.push({ json: { clickup_task_id: taskId, _passthrough: true, order: -1 } });\n}\nreturn out;"
+        "jsCode": "const src = $input.first().json;\nconst taskId = src.id || src.clickup_task_id || src.taskId || null;\nconst atts = Array.isArray(src.attachments) ? src.attachments : [];\nlet onlyAttId = '';\ntry { onlyAttId = String(($('When Called').first().json || {}).only_att_id || '').trim(); } catch (e) {}\nconst out = [];\nlet i = 0;\nfor (const a of atts) {\n  const thisId = String(a.att_id || a.id || '');\n  if (onlyAttId && thisId !== onlyAttId) { i++; continue; }\n  const title = a.title || '';\n  const ext = String(a.ext || a.extension || title.split('.').pop() || '').toLowerCase();\n  out.push({ json: {\n    clickup_task_id: taskId,\n    att_id: a.att_id || a.id || null,\n    title: title || ('attachment.' + ext),\n    ext,\n    mime: String(a.mime || a.mimetype || '').toLowerCase(),\n    url: a.url || a.url_w_query || '',\n    order: (a.order !== undefined && a.order !== null ? a.order : i)\n  }});\n  i++;\n}\nif (out.length === 0) {\n  // No attachments: emit a single passthrough sentinel so the chain still\n  // reaches Aggregate Blocks. A zero-item Explode would skip every downstream\n  // node, return nothing, and silently null the whole pipeline (no reply/status/cost).\n  out.push({ json: { clickup_task_id: taskId, _passthrough: true, order: -1 } });\n}\nreturn out;"
       }
     },
     {

@@ -510,14 +510,110 @@
       }
     },
     {
+      "id": "is-tail-tool",
+      "name": "Is tail tool?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [3080, 460],
+      "notes": "ADR-061 Block 2: route the non-image, non-extract pending custom tool. TRUE (main[0]): name is one of the four TRIGGERING-task tail tools (get_task_comments | get_parent_chain | list_attachments | get_attachment) -> Call Tail Handler (bot token, scoped to the carried clickup_task_id). FALSE (main[1]): a still-unregistered custom tool -> Build Error Result Text answers 'not available' so the session never stalls (the prior default destination of Is extract_clickup_task? FALSE, preserved).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "or",
+          "conditions": [
+            {
+              "id": "c-comments",
+              "leftValue": "={{ $json.pending_tool_name }}",
+              "rightValue": "get_task_comments",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c-parents",
+              "leftValue": "={{ $json.pending_tool_name }}",
+              "rightValue": "get_parent_chain",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c-attachments",
+              "leftValue": "={{ $json.pending_tool_name }}",
+              "rightValue": "list_attachments",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c-attachment",
+              "leftValue": "={{ $json.pending_tool_name }}",
+              "rightValue": "get_attachment",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "call-tail-handler",
+      "name": "Call Tail Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [3300, 420],
+      "notes": "ADR-061 Block 2: service a triggering-task tail tool via Triggering Task Tail Handler (v1). Forwards pending_tool_name, the agent's pending_tool_input_json (limit/since/depth/attachment_id only), and clickup_task_id taken from the CARRIED session state ($json.clickup_task_id, set by n8n from the trigger) — NOT from the agent's tool input, so the agent cannot widen scope past the triggering task (other-task discovery stays on the per-user scoped clickup_* MCP). All reads on the bot token. Returns { status, tool_result_content_json (text + image file_id blocks the agent SEES), new_warnings_json:'[]' (the handler self-alerts), new_images_json:'[]' }. onError=continueRegularOutput so a handler failure degrades to a tool result, never throws into the session.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "Ouo0BlYOw92DUXIh",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "tool_name": "={{ $json.pending_tool_name }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "tool_input_json": "={{ $json.pending_tool_input_json }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "build-tail-result-text",
+      "name": "Build Tail Result Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3520, 420],
+      "notes": "ADR-061 Block 2: pass the Tail Handler's result into the loop's result contract. Emits tool_result_content_json (the user.custom_tool_result content[] — text + image file_id blocks; Post Tool Result posts it verbatim), new_images_json='[]' (pulled tail content is CONSUMED by the agent, never a produced output file), new_warnings_json (normally '[]' — the handler already self-alerted on a side branch; double-fire avoided). Defensive: a TOTAL handler failure (onError -> no content) -> a failure tool_result + one session WARN so the session still resumes.",
+      "parameters": {
+        "jsCode": "const h = $json || {};\nlet content = h.tool_result_content_json;\nlet warns = h.new_warnings_json;\nif (!content) {\n  content = JSON.stringify([{ type: 'text', text: 'Pobranie kontekstu zadania nie powiodlo sie (blad narzedzia). Pracuj na podstawie dostepnego kontekstu i nie zglaszaj tego jako bledu.' }]);\n  warns = JSON.stringify([{ source: 'managed-agents/tail-handler-failed', err: String((h.error && (h.error.message || h.error)) || 'brak wyniku narzedzia tail').slice(0, 300), severity: 'WARN' }]);\n}\nreturn [{ json: {\n  tool_result_content_json: content,\n  new_images_json: h.new_images_json || '[]',\n  new_warnings_json: warns || '[]'\n} }];"
+      }
+    },
+    {
       "id": "merge-result",
       "name": "Merge Result",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
-      "position": [3520, 200],
-      "notes": "Converge the image-handler result (input 0, dormant — generate_image is an MCP tool now), the unknown-tool error text (input 1), and the ADR-054 Block 4b extract_clickup_task result (input 2) into ONE stream so Post Tool Result + Build Next State keep a single input. Exactly one branch executes per round.",
+      "position": [3740, 200],
+      "notes": "Converge the image-handler result (input 0, dormant — generate_image is an MCP tool now), the unknown-tool error text (input 1), the ADR-054 Block 4b extract_clickup_task result (input 2), and the ADR-061 Block 2 triggering-task tail-tool result (input 3) into ONE stream so Post Tool Result + Build Next State keep a single input. Exactly one branch executes per round.",
       "parameters": {
-        "numberInputs": 3
+        "numberInputs": 4
       }
     },
     {
@@ -955,9 +1051,49 @@
         ],
         [
           {
+            "node": "Is tail tool?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is tail tool?": {
+      "main": [
+        [
+          {
+            "node": "Call Tail Handler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Build Error Result Text",
             "type": "main",
             "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Tail Handler": {
+      "main": [
+        [
+          {
+            "node": "Build Tail Result Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Tail Result Text": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 3
           }
         ]
       ]
