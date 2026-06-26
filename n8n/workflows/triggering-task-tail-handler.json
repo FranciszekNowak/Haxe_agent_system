@@ -130,6 +130,30 @@
               },
               "renameOutput": true,
               "outputKey": "attachment"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c-details",
+                    "leftValue": "={{ $json.tool_name }}",
+                    "rightValue": "get_task_details",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "details"
             }
           ]
         },
@@ -387,7 +411,7 @@
       "position": [1700, 400],
       "notes": "Converge the five mutually-exclusive branches (0 comments, 1 parents, 2 attachments, 3 get_attachment-ok, 4 errors=missing-id+unknown) into ONE stream. Append; exactly one branch executes per call. Return re-reads this node so the contract is deterministic (branch-free terminal rule).",
       "parameters": {
-        "numberInputs": 5
+        "numberInputs": 6
       }
     },
     {
@@ -480,7 +504,7 @@
       "position": [700, 460],
       "notes": "ADR-061 Block 2c: emit one item per ZIP attachment of the triggering task ({kind:'zip', zip_att_id, url, title, task_id}) so Fetch Zip Manifest can pull each archive's INNER manifest (cheap, no extraction). No zips -> a single {kind:'none'} sentinel so the chain still reaches Build Attachments Result (a 0-item Code node would skip everything downstream). Reads the same attachment index Get Attachment List fetched.",
       "parameters": {
-        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet task = {}; try { task = $('Get Attachment List').first().json || {}; } catch (e) {}\nconst atts = Array.isArray(task.attachments) ? task.attachments : [];\nconst isZip = function(a){ const e = String((a && a.extension) || '').toLowerCase(); const m = String((a && a.mimetype) || '').toLowerCase(); return e === 'zip' || m === 'application/zip' || m === 'application/x-zip-compressed'; };\nconst out = [];\nfor (const a of atts) {\n  if (!isZip(a)) continue;\n  out.push({ json: { kind: 'zip', zip_att_id: String((a && a.id) || ''), url: (a && (a.url || a.url_w_query)) || '', title: (a && a.title) || 'archive.zip', task_id: taskId } });\n}\nif (out.length === 0) out.push({ json: { kind: 'none', task_id: taskId } });\nreturn out;"
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet caps = { max_entries: 50, max_file_mb: 25, max_total_mb: 250 };\ntry { const cfg = $('Lookup Zip Caps (Tail)').first().json || {}; caps = { max_entries: Number(cfg.zip_max_entries) || 50, max_file_mb: Number(cfg.zip_max_file_mb) || 25, max_total_mb: Number(cfg.zip_max_total_uncompressed_mb) || 250 }; } catch (e) {}\nlet task = {}; try { task = $('Get Attachment List').first().json || {}; } catch (e) {}\nconst atts = Array.isArray(task.attachments) ? task.attachments : [];\nconst isZip = function(a){ const e = String((a && a.extension) || '').toLowerCase(); const m = String((a && a.mimetype) || '').toLowerCase(); return e === 'zip' || m === 'application/zip' || m === 'application/x-zip-compressed'; };\nconst out = [];\nfor (const a of atts) {\n  if (!isZip(a)) continue;\n  out.push({ json: { kind: 'zip', zip_att_id: String((a && a.id) || ''), url: (a && (a.url || a.url_w_query)) || '', title: (a && a.title) || 'archive.zip', task_id: taskId, caps: caps } });\n}\nif (out.length === 0) out.push({ json: { kind: 'none', task_id: taskId } });\nreturn out;"
       }
     },
     {
@@ -525,7 +549,7 @@
         "url": "http://zip-extractor:8080/extract",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ url: $json.url, task_id: $json.task_id, attachment_id: $json.zip_att_id, parent_title: $json.title, manifest_only: true }) }}",
+        "jsonBody": "={{ JSON.stringify({ url: $json.url, task_id: $json.task_id, attachment_id: $json.zip_att_id, parent_title: $json.title, manifest_only: true, caps: $json.caps }) }}",
         "options": {
           "timeout": 300000
         }
@@ -544,6 +568,62 @@
       "notes": "ADR-061 Block 2c: rejoin the zip branch (input 0, Fetch Zip Manifest) and the no-zip branch (input 1, Is Zip Req? false) into ONE input for Build Attachments Result (a Code node with two incoming connections would run once per connection). Append; exactly one input fires per run (mirrors Merge Result).",
       "parameters": {
         "numberInputs": 2
+      }
+    },
+    {
+      "id": "0812bdd5-1d60-4558-b311-b0381252f512",
+      "name": "Lookup Zip Caps (Tail)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [500, 620],
+      "notes": "ADR-061 Block 2c follow-on: read the LIVE zip caps from config so list_attachments' manifest-mode extractor call uses the SAME caps as get_attachment's single-entry materialize (Read Input's Zip Caps). Chained LINEARLY before Build Zip Manifest Reqs so it always executes first (avoids the unexecuted-node race that bit Read Input's parallel Lookup). onError continueRegularOutput + alwaysOutputData so a DB blip degrades to defaults 50/25/250 (Build Zip Manifest Reqs falls back) instead of failing list_attachments.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  max(value::int) filter (where key = 'zip_max_entries')               as zip_max_entries,\n  max(value::int) filter (where key = 'zip_max_file_mb')               as zip_max_file_mb,\n  max(value::int) filter (where key = 'zip_max_total_uncompressed_mb') as zip_max_total_uncompressed_mb\nfrom config;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "6b9cdffc-f9c2-4542-9a04-5d7029d53487",
+      "name": "Get Task Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 1040],
+      "notes": "get_task_details: bot GET /api/v2/task/{id} for the TRIGGERING task's own title + description + status (ADR-061 Block 2c follow-on — the managed floor no longer loads the description eagerly; the agent pulls it here when the request needs the task spec). Same endpoint as Get Attachment List. onError continueRegularOutput + retry so a ClickUp blip degrades to a 'details failed' result + WARN instead of throwing into the session.",
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "5bffcf88-8334-407b-a892-72a9ac71733c",
+      "name": "Build Details Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [740, 1040],
+      "notes": "Shape the triggering task's title + description (markdown_description preferred) + status into a user.custom_tool_result text block. The managed floor lists only the title and a 'call get_task_details for the spec' hint, so this is where the agent actually reads the description. WARN only when the GET failed (no task object). new_warnings_json='[]' (self-alert via Should Warn?).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet task = {}; try { task = $('Get Task Details').first().json || {}; } catch (e) {}\nconst hasTask = !!(task && (task.id || task.name));\nlet ws = '', wm = '', wd = '';\nif (!hasTask) {\n  ws = 'managed-agents/tail-details-failed';\n  wm = 'Pobranie szczegolow zadania ' + taskId + ' nie powiodlo sie (narzedzie get_task_details).';\n  wd = 'task=' + taskId;\n}\nconst name = (task && task.name) || '';\nconst desc = (task && (task.markdown_description || task.description || task.text_content)) || '';\nconst status = (task && task.status && (task.status.status || task.status)) || '';\nconst lines = [];\nlines.push('Szczegoly zadania ' + taskId + ':');\nlines.push('Tytul: ' + (name || '(bez nazwy)'));\nif (status) lines.push('Status: ' + status);\nlines.push('');\nlines.push('Opis zadania:');\nlines.push(desc ? desc : '(brak opisu)');\nconst content = [{ type: 'text', text: lines.join('\\n') }];\nreturn [{ json: {\n  status: ws ? 'partial' : 'ok',\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: ws, _warn_msg: wm, _warn_details: wd\n} }];"
       }
     }
   ],
@@ -585,6 +665,13 @@
         [
           {
             "node": "Build Read Input Args",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Task Details",
             "type": "main",
             "index": 0
           }
@@ -788,17 +875,6 @@
         ]
       ]
     },
-    "Get Attachment List": {
-      "main": [
-        [
-          {
-            "node": "Build Zip Manifest Reqs",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Build Zip Manifest Reqs": {
       "main": [
         [
@@ -846,6 +922,50 @@
             "node": "Build Attachments Result",
             "type": "main",
             "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Attachment List": {
+      "main": [
+        [
+          {
+            "node": "Lookup Zip Caps (Tail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Zip Caps (Tail)": {
+      "main": [
+        [
+          {
+            "node": "Build Zip Manifest Reqs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Task Details": {
+      "main": [
+        [
+          {
+            "node": "Build Details Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Details Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 5
           }
         ]
       ]

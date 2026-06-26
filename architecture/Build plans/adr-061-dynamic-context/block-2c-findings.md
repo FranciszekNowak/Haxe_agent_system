@@ -113,3 +113,36 @@ optimization.
 - ✅ Corrupt zip + bad index degrade with a WARN, no abort (bad index live; corrupt path unchanged from ADR-058).
 - ✅ Bare-lane `/extract` (materialize-all) path still works — full mode unchanged (unit-verified + structurally preserved).
 - ✅ Drift clean (38/38); microservice redeployed; `services/zip-extractor` committed.
+
+## Follow-on (operator-requested, 2026-06-26): live caps + lazy task description
+
+Two refinements after the block shipped.
+
+**1. Tail handler `list_attachments` reads live config caps.** The manifest call previously omitted caps and
+leaned on the service defaults equalling `config`. New `Lookup Zip Caps (Tail)` Postgres node, chained **linearly**
+between `Get Attachment List` and `Build Zip Manifest Reqs` (so it always executes first — avoids the parallel-Lookup
+unexecuted-node race that bit Read Input; `onError continueRegularOutput` + `alwaysOutputData` → defaults 50/25/250 on
+a DB blip). `Build Zip Manifest Reqs` attaches `caps` to each zip item; `Fetch Zip Manifest` passes them in the body.
+Indices remain cap-independent regardless; this also keeps the displayed *route* of cap-dropped entries consistent if
+caps ever diverge from defaults.
+
+**2. Task description is lazy on the managed floor.** It is large and unneeded in a double-digit % of runs, so Stage A
+`Build Prompt` (managed lane / `floorOnly`) now folds only the task **title** plus a hint to call **`get_task_details`**;
+the bare lane keeps the full description inline. New 5th tail tool `get_task_details` (bot `GET /task` → title +
+description (markdown_description preferred) + status) via a new Route Tool `details` rule → `Get Task Details` →
+`Build Details Result` → `Merge Result` input 5 (fallback re-pointed to output 5); `Execute Agent Session`'s
+`Is tail tool?` OR-gate gained the 5th name. `Sync` `CONV 11→12` with steering (description not eager → pull via
+`get_task_details`; four-tools bullet → five). **Trade-off (red-teamed with the operator):** the description is the
+task spec, needed in most runs, so this adds one round-trip on the majority case to save tokens on the
+trivial-comment minority + the 100k case — accepted (async system, token floor is the priority).
+
+**Live verification (task `869dux9ne`):**
+- Stage A managed floor (exec 3962): `# Zadanie` now shows the title + the `get_task_details` hint, **not** the
+  4.7k-char description (`PROMPT MOODBOARD` absent); prompt fell ~10k → **5378 chars**.
+- `get_task_details` → status `ok`, returns title + status + the full 4759-char description.
+- `list_attachments` (exec 3960) → status `ok`, still nests all **39** inner refs with the live caps passed.
+- Unknown tool → routes to `Build Unknown Result` (fallback re-point works) + a `tail-unknown-tool` WARN.
+- `Sync all_synced=true`, 5 tiers on `conventions_version=12` (DB-confirmed); 0 CRITICAL alerts; drift clean (38/38);
+  four touched workflows re-exported.
+- **Knowingly uncovered:** the agent choosing not to pull the description when it should — same standing risk as the
+  other lazy tail tools.

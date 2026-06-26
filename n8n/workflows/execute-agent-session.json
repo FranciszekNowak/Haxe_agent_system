@@ -515,14 +515,14 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [3080, 460],
-      "notes": "ADR-061 Block 2: route the non-image, non-extract pending custom tool. TRUE (main[0]): name is one of the four TRIGGERING-task tail tools (get_task_comments | get_parent_chain | list_attachments | get_attachment) -> Call Tail Handler (bot token, scoped to the carried clickup_task_id). FALSE (main[1]): a still-unregistered custom tool -> Build Error Result Text answers 'not available' so the session never stalls (the prior default destination of Is extract_clickup_task? FALSE, preserved).",
+      "notes": "ADR-061 Block 2: route the non-image, non-extract pending custom tool. TRUE (main[0]): name is one of the TRIGGERING-task tail tools (get_task_comments | get_parent_chain | list_attachments | get_attachment | get_task_details) -> Call Tail Handler (bot token, scoped to the carried clickup_task_id). FALSE (main[1]): a still-unregistered custom tool -> Build Error Result Text answers 'not available' so the session never stalls. ADR-061 Block 2c follow-on added get_task_details (the managed floor no longer carries the task description eagerly).",
       "parameters": {
         "conditions": {
           "options": {
-            "caseSensitive": true,
+            "version": 2,
             "leftValue": "",
-            "typeValidation": "loose",
-            "version": 2
+            "caseSensitive": true,
+            "typeValidation": "loose"
           },
           "combinator": "or",
           "conditions": [
@@ -557,6 +557,15 @@
               "id": "c-attachment",
               "leftValue": "={{ $json.pending_tool_name }}",
               "rightValue": "get_attachment",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c-details",
+              "leftValue": "={{ $json.pending_tool_name }}",
+              "rightValue": "get_task_details",
               "operator": {
                 "type": "string",
                 "operation": "equals"

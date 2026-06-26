@@ -1245,7 +1245,9 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   retired in ADR-053 Block 8 — web search is in-harness on the managed lane). Returns the prompt payload +
   assembled context, plus **`image_blocks_json`** (input image refs for the vision model, non-PD) and
   `input_warnings_*`. **ADR-061 Block 1 — lane-aware floor (managed lane):** `Build Prompt` now emits only the
-  bounded **floor** (personal prefs + triggering comment + impact line + task title/description; input images stay
+  bounded **floor** (personal prefs + triggering comment + impact line + task title — **ADR-061 Block 2c follow-on:
+  the task DESCRIPTION is no longer eager on the managed lane; the floor shows the title plus a hint to call
+  `get_task_details`, which pulls the full description on demand**; input images stay
   eager) and **drops the unbounded tail** — comment thread, ancestor bodies, linked-doc leaves, semantic-search
   context, attachment **text**, and the per-run global-rules fold (which duplicated the rules already baked verbatim
   into the cached agent `system`; the managed agent still gets them, kept current by Sync Agent Definitions + the
@@ -1274,8 +1276,10 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   Block 2b: a no-op on the managed lane — the orchestrator now passes `input_images_json='[]'`, so input-image
   vision is pulled lazily via `get_attachment` instead of preloaded**); create + send
   the session; poll to idle (web search, code execution, Skills run in-harness; the client-side custom-tool
-  loop services `extract_clickup_task` (ADR-054) and, **ADR-061 Block 2**, the four triggering-task **tail tools**
-  — `get_task_comments`, `get_parent_chain`, `list_attachments`, `get_attachment` — routed by a new `Is tail tool?`
+  loop services `extract_clickup_task` (ADR-054) and, **ADR-061 Block 2 + 2c**, the five triggering-task **tail tools**
+  — `get_task_comments`, `get_parent_chain`, `list_attachments`, `get_attachment`, and `get_task_details` (the last
+  added by the Block 2c follow-on: a bot `GET /task` returning the task's own title/description/status, so the floor
+  can drop the eager description) — routed by a new `Is tail tool?`
   branch to **`Triggering Task Tail Handler (v1)`** (`Ouo0BlYOw92DUXIh`). That one handler switches on the tool name
   to the right reused reader (`Assemble Task Context`/`Assemble Parent Context`/a bot `GET /task` index/`Read Input`
   single-attachment + `Upload Input Images`), all on the **bot token** and **pinned to the carried `clickup_task_id`**
@@ -1375,8 +1379,9 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   description); the **`Assemble Task Context (v1)`** context (the triggering task's own comments + threaded
   replies); then the **task context** (task + ancestor chain) and attachment text. On the **managed** lane it
   folds only the **floor**: the **personal** prefs (per-caller — cannot be cached in the shared `system`), the
-  triggering comment, an **impact line** (`# Waga zadania`), the task title + description, and any input
-  **images** (still eager — vision blocks; image laziness moves to Block 2). The **global rules are dropped**
+  triggering comment, an **impact line** (`# Waga zadania`), the task title (**the description is pulled lazily via
+  `get_task_details` — Block 2c follow-on; only the title stays eager**), and the input image **list** (lazy vision
+  via `get_attachment` — Block 2b). The **global rules are dropped**
   on the managed lane because Sync Agent Definitions already bakes the same `q7wz-44812` page verbatim into the
   cached agent `system` (provenance `source=clickup:q7wz-44812`); folding them per-run was a pure ~3.5k-tok
   duplicate. **Consequence:** post-ADR-061 the managed lane's rules currency relies entirely on Sync Agent
