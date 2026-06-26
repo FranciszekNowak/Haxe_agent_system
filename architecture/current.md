@@ -1103,7 +1103,8 @@ Process template (main task)
 > that clamps three silent-failure invariants.
 >
 > **Build status** (master plan `architecture/Build plans/adr-056-queue-infrastructure-bullmq/`):
-> Block 0 (capability gates), **Block 1**, **Block 2**, and **Block 3 (2026-06-26)** are done —
+> Block 0 (capability gates), **Block 1**, **Block 2**, **Block 3**, **Block 4**, and **Block 5
+> (2026-06-26)** are done —
 > migration `045_queue_config.sql` (seeds `queue.*` + a write-side validating trigger), the
 > `queue-consumer` service deployed to the stack (`/enqueue` + priority + fail-safe config reader +
 > `/health`), the hardened, deterministic-return `Spine HTTP Ingress (v1)`, the **real processor**
@@ -1124,9 +1125,27 @@ Process template (main task)
 > Verified live end-to-end: two distinct mentions on one task both drafted (no collapse), a re-enqueue
 > of the same comment deduped, a real tag-op webhook drove the full producer→`/enqueue`→spine→reply
 > chain with the impact resolved to the job, and flipping the flag false fell back to a synchronous
-> draft with no enqueue. **Not yet wired:** the terminal dead-letter CRITICAL alert is Block 4,
-> monitoring + heartbeat is Block 5, and the §14.2–§14.6 reconciliation (BullMQ, 8-level priority,
-> Managed-Agents limits, mark LIVE) is Block 6.
+> draft with no enqueue. **Block 4** added the terminal dead-letter CRITICAL alert (the
+> `worker.on('failed')` handler fires exactly once per dead-letter — gated on `UnrecoverableError ||
+> attemptsMade >= attempts` — through the reused alert seam, source `queue-consumer/dlq`). **Block 5**
+> added the full monitoring layer: (a) a consumer **`GET /metrics`** (BullMQ `getJobCounts` + a
+> consumer-**computed** alert, so all `queue.*` thresholds stay in the single reader) read by a 5-min
+> **`Queue Depth Monitor (v1)`** (`M48svwpdhDg8l6An`) cron — backlog alarm is targeted (CRITICAL when
+> `waiting+delayed ≥ alert_depth_any`; WARN when `waiting ≥ alert_depth_high` **and** `active == 0`, so
+> the designed midnight burst doesn't false-alarm), failed-set alarm is edge-triggered so it backstops
+> Block 4 without storming; (b) a **consumer heartbeat dead-man's-switch** — the consumer SETs a Redis
+> key (`haxeq:consumer:heartbeat`, TTL = `queue.heartbeat_stale_s`) every ~⅓-TTL, and a **host systemd
+> timer** (`consumer-heartbeat.{service,timer}` + `consumer-heartbeat-watchdog.sh`, mirroring the ADR-046
+> disk-watchdog, reusing the same `watchdog.env` + Storage Watchdog Intake) checks the key's existence
+> every minute and fires CRITICAL `queue-consumer/heartbeat` if it (or Redis) is gone; (c) a **45s config
+> refresh poll** that applies `concurrency` live (BullMQ dynamic setter), WARNs "restart required" for
+> the construction-only knobs (`lock_duration_ms`, `rate_limit_per_min`), and posts only warnings new
+> since the last poll. Verified live: 100 delayed jobs → `/metrics` CRITICAL flood → cron posted one
+> CRITICAL (manual + the scheduled tick) → cleared on removal; a stopped consumer let the heartbeat key
+> expire → the host watchdog fired CRITICAL within the window → clean restart; AOF confirmed enabled
+> (Block 0 G4 already proved restart-survival). **Remaining:** the §14.2–§14.6 reconciliation (BullMQ,
+> 8-level priority, Managed-Agents limits, mark LIVE) + the burst/priority/negative-config scope-test is
+> Block 6.
 
 ### 14.1 Why a queue
 
@@ -1235,7 +1254,8 @@ failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent S
 | **`Post Alert (v1)`** | Centralized alert seam → ClickUp Alerts task | **LIVE** |
 | **`Error Handler (v1)`** | Global `errorWorkflow`: throws → CRITICAL + status rollback | **LIVE** |
 | **`FX Rates Daily (v1)`** + **`FX Freshness Monitor (v1)`** | Daily NBP USD/PLN upsert + staleness WARN | **LIVE** |
-| **`Storage Watchdog Intake (v1)`** (id `iMJrbyPD7UroQZ1W`) | Header-auth webhook → Post Alert; receives the host disk/DB dead-man's-switch (ADR-046) | **LIVE** |
+| **`Storage Watchdog Intake (v1)`** (id `iMJrbyPD7UroQZ1W`) | Header-auth webhook → Post Alert; receives the host disk/DB dead-man's-switch (ADR-046) **and the queue-consumer heartbeat watchdog (ADR-056 Block 5)** | **LIVE** |
+| **`Queue Depth Monitor (v1)`** (id `M48svwpdhDg8l6An`, ADR-056 Block 5) | 5-min cron → GET `queue-consumer:8080/metrics` → forwards the consumer-computed depth/health alert to `Post Alert (v1)` (source `queue-consumer/depth`). Backlog CRITICAL at `waiting+delayed ≥ alert_depth_any`, wedged-worker WARN at `waiting ≥ alert_depth_high && active==0`, edge-triggered failed-set WARN; HTTP-unreachable → WARN (the host heartbeat owns the consumer-down CRITICAL). Paired with the **host `consumer-heartbeat.timer`** dead-man's-switch (`infrastructure/systemd/` + `consumer-heartbeat-watchdog.sh`, 1-min, checks the `haxeq:consumer:heartbeat` Redis TTL key) | **LIVE** |
 | **`Read Input (v1)`** (id `zgGpONulGMohQQqI`) | Unified multimodal input reader (Blocks 2+3, ADR-036 "Input readers unified"), pure/branch-free: self-fetches `{ clickup_task_id }` → `Classify Attachment` (Switch) → **image** = URL passthrough (skips Docling) / **extractable** = Docling → `Merge` → `{ blocks(text+image, ordered), clickup_task_id, warnings }`. Reader owns ordering; Stage A (Block 5) fires `warnings` via `Post Alert (v1)`. Router + visual reader retired. **ADR-048 Block 1:** a `Lookup File Processing Config` Postgres node (global file limits `config.zip_max_entries`=50 / `zip_max_file_mb`=25 / `zip_max_total_uncompressed_mb`=250, migration 027 seeded 500, lowered to 250 by migration 028 after gate B; see Block 3) hangs off `Get Task` and converges through `Merge`; `Aggregate Blocks` filters it out (no `block` field), so the branch-free terminal is preserved. Block 1 only **surfaced** the limits; **Block 3 enforces them** (the zip guards in `Explode Zip Entries`). **ADR-048 Block 2:** a `Store Zip Image` step (`Zip Image Key` → `Upload Zip Image` → `Sign Zip Image URL` → `Compose Signed URL`) uploads each zip-inner image's **original bytes** to a **private EU Supabase bucket `zip-inner-images`** (project `haxe-agent-prod`, `eu-west-1`) and emits a **6h-TTL signed URL** as the block `ref` — never base64 (the OOM fix: heavy bytes never enter execution data). It is **only for zip-inner images**; loose images keep their ClickUp URL. **Build gate D passed (2026-06-15):** a Supabase signed URL is fetched and read by the provider through LiteLLM end-to-end (Gemini, 1089 image tokens, correct description). **ADR-048 Block 3 (zip unpacking, 2026-06-15):** a `Zip? Switch` after `Explode Attachments` routes a real `.zip` (ext/mime zip, not the no-attachment sentinel) into the zip branch and everything else to `Classify Attachment` unchanged. Zip branch: `Fetch Zip Binary` → `Stamp Zip Filename` (stamps `fileExtension=zip`/`mimeType` so `Decompress` never fails a valid archive for missing metadata — the compression node otherwise throws `File extension not found`, which `continueRegularOutput` would have silently degraded to a `zip_extraction_failed` drop) → `Decompress` (compression node; adm-zip, in-memory per gate B) → `Explode Zip Entries` (fan out each inner file; interleave `order = parentOrder + (i+1)/1000`; `att_id = <parentAttId>:<i>`; apply the global guards — junk silently skipped, nested-zip/oversize/too-many/over-total/corrupt → a pre-tagged `route:drop` item with a `multimodal/zip-*` warn_source). Inner files classify: **image** → the `Store Zip Image` step → `Build Zip Image Block` (same envelope as `Build Image Block`, ref = the Supabase signed URL; drop+warn if storage failed); **document** → a `Merge Extractable` (append) so **one** `Docling Convert` serves both loose and zip docs; **drop** → `Build Dropped Zip Block` (`[BRAK: <reason> <title>]` + warn). `Build Text Block` recovers per-item order/title source-agnostically (`Explode Zip Entries` first, else `Explode Attachments`). `Merge Branches` widened to 5 inputs (image, text, config, zip-image, zip-drop) and still converges into the branch-free `Aggregate Blocks`. **Verified end-to-end (2026-06-15):** a real ClickUp `.zip` (2 docs + 2 images + nested `inner.zip` + `.DS_Store`), run through the reader via the production `When Called` path, produced correctly interleaved blocks — docs as Docling markdown, images as fetchable Supabase signed URLs, the nested zip dropped+warned (`multimodal/zip-nested-skipped`), junk silently skipped. The 24h purge of bucket objects lands in Block 4; Docling tuning in Block 5. Loose image/document paths and `invoke-model.json` are unchanged. **ADR-054 Block 4a (as-U fetch mode, 2026-06-23):** an optional `as_user_token` input routes through an `As User?` IF to a `Get Task (as U)` node (raw-token `Authorization`, no predefined credential → no bot fallback); a denied/out-of-scope fetch → `Build Access Denied` (`clickup-asU/access-denied` warning) → `Merge Branches` (now 6 inputs). Token absent → the bot `Get Task`, byte-identical | **LIVE (Phase 2, input)** |
 | **`ClickUp Extract Tool Handler (v1)`** (id `y985MgyA5lCxOFCH`, ADR-054 Block 4b) | Agent-facing **as-U attachment extraction**: reads the caller's classic REST token from Supabase (`get_clickup_rest_token`) → `Read Input (v1)` **as U** on a task id → uploads images via `Upload Input Images (v1)` → returns a `user.custom_tool_result` content array (doc text + image `file_id` blocks). `Execute Agent Session` routes a pending `extract_clickup_task` custom tool here; token-presence guard degrades + WARNs the half-onboarded; `saveDataSuccessExecution:none` (token hygiene). Out-of-scope id → access-denied, never the bot | **LIVE** |
 | Daily Due-Date Producer | 00:00 cron: enqueue due-today/yesterday `Czy dla AI=Tak` tasks | **Planned (Phase 3)** |

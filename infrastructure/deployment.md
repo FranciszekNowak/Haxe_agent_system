@@ -328,3 +328,35 @@ If the webhook secret is rotated, update both the n8n `Storage Watchdog Header A
 `watchdog.env`. Check it: `tail /opt/haxe-agents/watchdog.log`; force a test with
 `sudo env WARN_PCT=0 /opt/haxe-agents/disk-watchdog.sh` (expect a WARN on the Alerts task). The n8n
 intake workflow is `n8n/workflows/storage-watchdog-intake.json`.
+
+## Queue-consumer heartbeat dead-man's-switch (ADR-056 Block 5)
+
+Host-level watchdog for the `queue-consumer` container, external to it (same independence principle as
+the disk-watchdog). The consumer SETs a Redis key `haxeq:consumer:heartbeat` with TTL =
+`queue.heartbeat_stale_s` (refreshed every ~⅓-TTL); if the consumer dies the key expires. Repo-mastered:
+`infrastructure/scripts/consumer-heartbeat-watchdog.sh` +
+`infrastructure/systemd/consumer-heartbeat.{service,timer}` (1-min cadence). It **reuses the same
+`watchdog.env` and the `Storage Watchdog Intake (v1)` webhook** as the disk-watchdog — no new secret —
+and POSTs CRITICAL `queue-consumer/heartbeat` on a breach (two cases: Redis unreachable, or key absent =
+consumer dead/hung). Paired with the in-n8n `Queue Depth Monitor (v1)` 5-min cron (`M48svwpdhDg8l6An`),
+which reads the consumer's `GET /metrics`.
+
+Deploy / re-deploy after editing the script or units:
+
+```bash
+# from repo root
+scp infrastructure/scripts/consumer-heartbeat-watchdog.sh \
+    infrastructure/systemd/consumer-heartbeat.service \
+    infrastructure/systemd/consumer-heartbeat.timer franciszek@185.25.149.174:/tmp/
+ssh franciszek@185.25.149.174 '
+  sed -i "s/\r$//" /tmp/consumer-heartbeat-watchdog.sh /tmp/consumer-heartbeat.service /tmp/consumer-heartbeat.timer
+  cp /tmp/consumer-heartbeat-watchdog.sh /opt/haxe-agents/consumer-heartbeat-watchdog.sh && chmod 755 /opt/haxe-agents/consumer-heartbeat-watchdog.sh
+  sudo cp /tmp/consumer-heartbeat.service /tmp/consumer-heartbeat.timer /etc/systemd/system/
+  sudo systemctl daemon-reload && sudo systemctl enable --now consumer-heartbeat.timer'
+```
+
+Check it: `tail /opt/haxe-agents/consumer-heartbeat.log` (an `OK heartbeat=<iso>` line each minute). On a
+breach the oneshot exits non-zero (systemd marks it failed) *after* delivering the alert — the `ALERTED`
+log line is the success signal, not the exit code. To force the consumer-dead case for a test: `docker
+stop queue-consumer`, wait `heartbeat_stale_s` for the key to expire, `sudo systemctl start
+consumer-heartbeat.service` (expect a CRITICAL on the Alerts task), then `docker start queue-consumer`.

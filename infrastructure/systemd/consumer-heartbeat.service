@@ -1,0 +1,9 @@
+[Unit]
+# Host-level queue-consumer dead-man's-switch (ADR-056 Block 5). Install to /etc/systemd/system/.
+Description=Haxe queue-consumer heartbeat watchdog -> Post Alert
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/haxe-agents/consumer-heartbeat-watchdog.sh

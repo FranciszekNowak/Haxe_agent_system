@@ -24,8 +24,16 @@ network, no public port, built on the VPS via the stack `docker-compose.yml`.
   attempts`, so the per-attempt `failed` event alarms exactly once, never on a retryable interim
   failure). Retry/backoff (60/300/900s, attempts=5) + classification were wired in Block 2. Verified
   live: 404 → non-retryable → 1 CRITICAL; ECONNREFUSED exhaustion → 1 CRITICAL, no interim alert.
-- **Block 5:** `/metrics` + depth cron, heartbeat dead-man's-switch, 30–60s config refresh poll +
-  "restart required" WARN for construction-only values.
+- **Block 5 (this):** monitoring layer. `GET /metrics` (BullMQ `getJobCounts` + a consumer-**computed**
+  `alert`, so the depth cron stays thresholds-free) read by the 5-min `Queue Depth Monitor (v1)`
+  (`M48svwpdhDg8l6An`); a **heartbeat dead-man's-switch** (the consumer SETs `haxeq:consumer:heartbeat`
+  with TTL = `heartbeat_stale_s`; a host systemd timer alerts if it expires); a **45s config-refresh
+  poll** (applies `concurrency` live, WARNs "restart required" for `lock_duration_ms`/`rate_limit_per_min`,
+  posts only warnings new since the last poll). Backlog alarm is targeted (CRITICAL at `waiting+delayed ≥
+  alert_depth_any`; WARN at `waiting ≥ alert_depth_high && active==0`) so the designed midnight burst
+  doesn't false-alarm; the failed-set alarm is edge-triggered (backstops Block 4 without storming).
+  Verified live: 100 delayed jobs → CRITICAL flood → cron posted one CRITICAL → cleared; stopped consumer
+  → heartbeat key expired → host watchdog CRITICAL → clean restart.
 
 ## Endpoints
 
@@ -33,6 +41,9 @@ network, no public port, built on the VPS via the stack `docker-compose.yml`.
   idempotency_key? }`. Returns `200 { ok, jobId, priority, deduped }`, `400` on a bad contract, `500`
   on enqueue failure (also fires a CRITICAL alert).
 - `GET /health` — `200` with the effective config + a Redis `PING`, else `503`.
+- `GET /metrics` — `200 { ok, counts:{waiting,active,completed,failed,delayed,paused}, thresholds,
+  alert:{severity,message,details}|null }`, else `503`. The `alert` is computed by the consumer (it owns
+  the thresholds); the depth-monitor cron just forwards a non-null one to `Post Alert`.
 
 ## Priority (ADR-056 amendment 2026-06-23b)
 

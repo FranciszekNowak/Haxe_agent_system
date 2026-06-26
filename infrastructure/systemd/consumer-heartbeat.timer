@@ -1,0 +1,13 @@
+[Unit]
+# Fires consumer-heartbeat.service every minute (ADR-056 Block 5). Install to /etc/systemd/system/ then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now consumer-heartbeat.timer
+# 1-min cadence so a dead consumer is caught within ~heartbeat_stale_s (120s) + one timer interval.
+Description=Run Haxe queue-consumer heartbeat watchdog every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

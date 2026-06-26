@@ -29,7 +29,25 @@
 //
 // attempts + custom backoff (60/300/900s) are wired here so classification is demonstrable. The
 // terminal `failed` -> CRITICAL DLQ alert is Block 4 (the worker `failed` handler below, gated on
-// the dead-letter condition). The 30-60s config refresh poll lands in Block 5.
+// the dead-letter condition).
+//
+// SCOPE — BLOCK 5 (monitoring + heartbeat + config refresh): three additions, no behaviour change to
+// enqueue/process:
+//   * GET /metrics — BullMQ queue.getJobCounts() PLUS a consumer-COMPUTED `alert` (the consumer owns
+//     all queue.* reads — ADR-056 R4 — so the depth-monitor cron stays thresholds-free and just
+//     forwards). Backlog alarm is TARGETED so the designed 50-task midnight burst doesn't false-alarm:
+//     CRITICAL when waiting+delayed >= alert_depth_any (absolute flood); WARN when waiting >=
+//     alert_depth_high AND active === 0 (jobs queued but nothing draining = wedged worker; a healthy
+//     burst has active = concurrency, so it won't trip). The failed-set alarm is EDGE-triggered (only
+//     when failed RISES vs the last read) so it backstops Block 4 without re-firing every 5 min for the
+//     24h a dead-letter lingers in the failed set; Block 4's per-job CRITICAL stays the primary signal.
+//   * HEARTBEAT dead-man's-switch — the consumer SETs a Redis key (haxeq:consumer:heartbeat) with
+//     TTL = heartbeat_stale_s every ~stale_s/3 s. A HOST systemd timer (outside this container, so it
+//     survives the consumer dying) checks the key's existence and alerts if it is gone. Staleness is
+//     encoded as the TTL, so the watchdog only does EXISTS — no clock math, one knob.
+//   * CONFIG REFRESH POLL (45s) — re-read queue.* live: apply concurrency (BullMQ dynamic setter),
+//     WARN "restart required" for the construction-only knobs (lock_duration_ms, rate_limit_per_min)
+//     when they change, and post only warnings NEW since the last poll (no 45s WARN storm).
 //
 // SCHEMA NOTE (load-bearing). The JOB's invocation_type (queue vocab: explicit_mention, due_date,
 // ...) is NOT agent_runs.invocation_type (CHECK: autonomous|explicit|conversation_reply). It aligns
@@ -44,7 +62,9 @@
 //     -> 200 { ok:true, jobId, priority, deduped:bool }
 //     -> 400 { ok:false, error }   (bad contract)
 //     -> 500 { ok:false, error }   (enqueue failure -> CRITICAL alert)
-//   GET /health -> 200 { ok:true, redis:'PONG', concurrency, lock_duration_ms, ... } | 503
+//   GET /health  -> 200 { ok:true, redis:'PONG', concurrency, lock_duration_ms, ... } | 503
+//   GET /metrics -> 200 { ok:true, counts:{waiting,active,completed,failed,delayed,paused},
+//                         thresholds:{...}, alert:{severity,message,details}|null } | 503  (depth cron)
 //
 // KEY ISOLATION: BullMQ prefix 'haxeq' (keys haxeq:agent-jobs:*) never collides with n8n queue
 // mode's default 'bull:*' on the same Redis.
@@ -171,8 +191,11 @@ async function supabaseSelect(table, select, filter) {
   return r.json();
 }
 
-// Read queue.* once, clamp + WARN the three silent-failure invariants, default+WARN on any
-// missing/unparseable key. A bad edit degrades to a safe value plus an alert — never a silent break.
+// Read queue.* once, clamp the three silent-failure invariants, default on any missing/unparseable
+// key. A bad edit degrades to a safe value plus a warning — never a silent break. Returns
+// { cfg, warnings }; the CALLER decides whether to post the warnings (startup posts all of them; the
+// Block-5 refresh poll posts only the ones NEW since the last poll, so a persistently mis-set knob
+// WARNs once, not every 45s).
 async function loadQueueConfig() {
   const warnings = [];
   let rows = null;
@@ -217,11 +240,8 @@ async function loadQueueConfig() {
     cfg.spine_timeout_ms = ceil;
   }
 
-  for (const w of warnings) {
-    console.warn(`[config][WARN] ${w}`);
-    postAlert('WARN', `queue config: ${w}`, { detail: w }, 'queue-consumer/config').catch(() => {});
-  }
-  return cfg;
+  for (const w of warnings) console.warn(`[config][WARN] ${w}`);
+  return { cfg, warnings };
 }
 
 // ---- alert seam (reused Storage Watchdog Intake) -----------------------------------------------
@@ -442,10 +462,28 @@ const connection = { host: REDIS_HOST, port: Number(REDIS_PORT), maxRetriesPerRe
 
 const queue = new Queue(QUEUE_NAME, { connection, prefix: QUEUE_PREFIX });
 
-let cfg;      // effective config, set at startup by loadQueueConfig()
+let cfg;      // effective config, set at startup by loadQueueConfig(), refreshed every CONFIG_REFRESH_MS
 let worker;   // constructed after cfg is known (needs concurrency / lockDuration / limiter)
 
+// Construction-only knobs captured at worker build — BullMQ reads lockDuration/limiter ONCE at
+// construction, so a live edit can't take effect without a restart. The refresh poll WARNs when these
+// drift from what the running worker was built with.
+let constructedLockDurationMs;
+let constructedRateLimitPerMin;
+
+// Block-5 runtime state.
+let lastFailedAlerted = 0;             // edge-trigger baseline for the failed-set alarm in /metrics
+let lastConfigWarnings = new Set();    // refresh-poll dedup: only NEW config warnings re-alert
+let heartbeatTimer = null;
+let configRefreshTimer = null;
+const CONFIG_REFRESH_MS = 45000;       // 45s: inside the 30-60s window the ADR specifies
+const HEARTBEAT_KEY = 'haxeq:consumer:heartbeat';
+// Write the heartbeat at ~1/3 of the staleness window so two missed writes still sit inside the TTL.
+function heartbeatWriteMs() { return Math.max(20000, Math.floor((cfg?.heartbeat_stale_s ?? 120) * 1000 / 3)); }
+
 function startWorker() {
+  constructedLockDurationMs = cfg.lock_duration_ms;
+  constructedRateLimitPerMin = cfg.rate_limit_per_min;
   worker = new Worker(
     QUEUE_NAME,
     processJob,
@@ -505,6 +543,101 @@ function startWorker() {
     console.warn(JSON.stringify({ level: 'warn', evt: 'stalled', jobId })));
 }
 
+// ---- Block 5: heartbeat / config refresh / metrics ---------------------------------------------
+// Heartbeat dead-man's-switch. The consumer SETs a Redis key with TTL = heartbeat_stale_s; if the
+// consumer dies it stops writing and the key expires after stale_s. A HOST systemd watchdog (outside
+// this container) only has to check the key's EXISTENCE — staleness is the TTL, so no clock math and
+// one knob (heartbeat_stale_s) controls both sides. Uses the BullMQ Redis client (already connected).
+async function writeHeartbeat() {
+  try {
+    const client = await queue.client;
+    const ttl = Math.max(30, cfg?.heartbeat_stale_s ?? 120);
+    await client.set(HEARTBEAT_KEY, new Date().toISOString(), 'EX', ttl);
+  } catch (e) {
+    // A failed heartbeat write is itself the dead-man's-switch signal (the key will expire); log loudly.
+    console.error('[heartbeat] write failed:', e.message);
+  }
+}
+
+// Config refresh poll. Re-read queue.* live every CONFIG_REFRESH_MS. LIVE knobs (concurrency) are
+// applied to the running worker via BullMQ's dynamic setter; CONSTRUCTION-ONLY knobs (lock_duration_ms,
+// rate_limit_per_min) cannot change without a restart, so a change WARNs "restart required" rather than
+// silently no-op'ing. Only warnings NEW since the last poll are posted (a persistently mis-set knob
+// alarms once, not every 45s).
+async function refreshConfig() {
+  const { cfg: next, warnings } = await loadQueueConfig();
+
+  // Live: concurrency (BullMQ Worker.concurrency is a dynamic setter; clamped already by the reader).
+  if (worker && next.concurrency !== cfg.concurrency) {
+    const from = cfg.concurrency;
+    worker.concurrency = next.concurrency;
+    console.log(JSON.stringify({ level: 'info', evt: 'concurrency_changed', from, to: next.concurrency }));
+  }
+
+  // Construction-only knobs: WARN (don't apply) when they drift from the running worker's build.
+  const restartWarnings = [];
+  if (next.lock_duration_ms !== constructedLockDurationMs) {
+    restartWarnings.push(`lock_duration_ms changed (${constructedLockDurationMs} -> ${next.lock_duration_ms}) but it is construction-only — RESTART the queue-consumer to apply`);
+  }
+  if (next.rate_limit_per_min !== constructedRateLimitPerMin) {
+    restartWarnings.push(`rate_limit_per_min changed (${constructedRateLimitPerMin} -> ${next.rate_limit_per_min}) but it is construction-only — RESTART the queue-consumer to apply`);
+  }
+
+  const all = [...warnings, ...restartWarnings];
+  for (const w of all) {
+    if (lastConfigWarnings.has(w)) continue; // already alerted; don't re-storm
+    console.warn(`[config-refresh][WARN] ${w}`);
+    postAlert('WARN', `queue config: ${w}`, { detail: w }, 'queue-consumer/config').catch(() => {});
+  }
+  lastConfigWarnings = new Set(all);
+
+  cfg = next; // processJob / writeHeartbeat / /metrics read module-level cfg, so this makes them live
+}
+
+const SEV_RANK = { WARN: 1, CRITICAL: 2 };
+function severityMax(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return (SEV_RANK[a] >= SEV_RANK[b]) ? a : b;
+}
+
+// Compute the depth/health alarm from BullMQ counts + the live thresholds. The consumer owns this
+// (R4) so the cron stays thresholds-free. Mutates lastFailedAlerted (the failed-set edge-trigger).
+function computeDepthAlert(counts) {
+  const waiting = counts.waiting || 0;
+  const delayed = counts.delayed || 0;
+  const active = counts.active || 0;
+  const failed = counts.failed || 0;
+  const reasons = [];
+  let severity = null;
+
+  // Absolute flood: total pending pressure past the hard ceiling — always CRITICAL.
+  if (waiting + delayed >= cfg.alert_depth_any) {
+    severity = severityMax(severity, 'CRITICAL');
+    reasons.push(`backlog ${waiting + delayed} (waiting+delayed) >= alert_depth_any ${cfg.alert_depth_any}`);
+  } else if (waiting >= cfg.alert_depth_high && active === 0) {
+    // Wedged: jobs queued but nothing draining. A healthy burst has active = concurrency, so this only
+    // fires when the worker is genuinely stuck (spine all-stalled, lock starvation, etc.).
+    severity = severityMax(severity, 'WARN');
+    reasons.push(`${waiting} jobs waiting with 0 active (not draining), >= alert_depth_high ${cfg.alert_depth_high}`);
+  }
+
+  // Failed-set edge-trigger: alarm only when failed RISES past the threshold (Block 4's per-job
+  // CRITICAL is the primary; this backstops a lost DLQ alert without re-firing for the 24h linger).
+  if (failed > cfg.alert_failed && failed > lastFailedAlerted) {
+    severity = severityMax(severity, 'WARN');
+    reasons.push(`failed set grew to ${failed} (> alert_failed ${cfg.alert_failed}) — inspect the DLQ; per-job CRITICALs are the primary signal`);
+  }
+  lastFailedAlerted = failed; // track current so a drop-then-rise re-alarms
+
+  if (!severity) return null;
+  return {
+    severity,
+    message: `kolejka agentów: ${reasons.join('; ')}`,
+    details: JSON.stringify({ counts, thresholds: { alert_depth_high: cfg.alert_depth_high, alert_depth_any: cfg.alert_depth_any, alert_failed: cfg.alert_failed } }),
+  };
+}
+
 // ---- HTTP surface ------------------------------------------------------------------------------
 const app = express();
 app.use(express.json({ limit: '256kb' }));
@@ -517,6 +650,25 @@ app.get('/health', async (_req, res) => {
       ok: pong === 'PONG', redis: pong, queue: QUEUE_NAME, prefix: QUEUE_PREFIX,
       concurrency: cfg?.concurrency, lock_duration_ms: cfg?.lock_duration_ms,
       spine_timeout_ms: cfg?.spine_timeout_ms, rate_limit_per_min: cfg?.rate_limit_per_min,
+    });
+  } catch (e) {
+    return res.status(503).json({ ok: false, error: e.message });
+  }
+});
+
+// Depth + health metrics for the 5-min depth-monitor cron (n8n/workflows/queue-depth-monitor.json).
+// Returns BullMQ counts plus a consumer-COMPUTED alert (null when healthy); the cron just forwards a
+// present alert to Post Alert, so all queue.* thresholds stay in the single consumer reader (R4).
+app.get('/metrics', async (_req, res) => {
+  try {
+    const counts = await queue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed', 'paused');
+    const alert = computeDepthAlert(counts);
+    if (alert) console.log(JSON.stringify({ level: 'info', evt: 'depth_alert', severity: alert.severity, counts }));
+    return res.json({
+      ok: true,
+      counts,
+      thresholds: { alert_depth_high: cfg.alert_depth_high, alert_depth_any: cfg.alert_depth_any, alert_failed: cfg.alert_failed },
+      alert: alert || null,
     });
   } catch (e) {
     return res.status(503).json({ ok: false, error: e.message });
@@ -573,15 +725,38 @@ app.post('/enqueue', async (req, res) => {
 
 // ---- startup / shutdown ------------------------------------------------------------------------
 async function main() {
-  cfg = await loadQueueConfig();
+  const loaded = await loadQueueConfig();
+  cfg = loaded.cfg;
+  // Post every startup warning, and seed the refresh-poll dedup set with them so the first poll
+  // doesn't re-post the same ones (only NEW warnings alert from then on).
+  for (const w of loaded.warnings) {
+    postAlert('WARN', `queue config: ${w}`, { detail: w }, 'queue-consumer/config').catch(() => {});
+  }
+  lastConfigWarnings = new Set(loaded.warnings);
   console.log('[config] effective:', JSON.stringify(cfg));
-  startWorker();
+
+  startWorker(); // captures the construction-only knobs (lock_duration_ms, rate_limit_per_min)
+
+  // Heartbeat: don't alarm on dead-letters that pre-date this start — baseline lastFailedAlerted to
+  // the current failed count so /metrics only edge-alarms on a RISE after startup.
+  try {
+    const counts = await queue.getJobCounts('failed');
+    lastFailedAlerted = counts.failed || 0;
+  } catch (e) {
+    console.warn('[startup] could not baseline failed count:', e.message);
+  }
+  await writeHeartbeat();
+  heartbeatTimer = setInterval(() => { writeHeartbeat().catch(() => {}); }, heartbeatWriteMs());
+  configRefreshTimer = setInterval(() => { refreshConfig().catch((e) => console.error('[config-refresh] failed:', e.message)); }, CONFIG_REFRESH_MS);
+
   app.listen(Number(PORT), () =>
     console.log(`queue-consumer listening on :${PORT}, queue=${QUEUE_NAME}, prefix=${QUEUE_PREFIX}, concurrency=${cfg.concurrency}`));
 }
 
 async function shutdown() {
   console.log('[shutdown] closing worker + queue');
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  if (configRefreshTimer) clearInterval(configRefreshTimer);
   try { await worker?.close(); } catch {}
   try { await queue.close(); } catch {}
   process.exit(0);
