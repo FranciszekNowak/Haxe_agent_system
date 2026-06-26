@@ -1,12 +1,14 @@
 [Unit]
-# Fires consumer-heartbeat.service every minute (ADR-056 Block 5). Install to /etc/systemd/system/ then:
+# Fires consumer-heartbeat.service every 5 min (ADR-056 Block 5). Install to /etc/systemd/system/ then:
 #   sudo systemctl daemon-reload && sudo systemctl enable --now consumer-heartbeat.timer
-# 1-min cadence so a dead consumer is caught within ~heartbeat_stale_s (120s) + one timer interval.
-Description=Run Haxe queue-consumer heartbeat watchdog every minute
+# 5-min cadence: the per-tick `docker exec redis-cli` is the real recurring cost, not the consumer's
+# trivial Redis SET, so we poll rarely. A dead consumer is caught within ~heartbeat_stale_s (300s, TTL)
+# + up to one timer interval ≈ 5-10 min — fine for a durable queue (jobs just wait until restart).
+Description=Run Haxe queue-consumer heartbeat watchdog every 5 min
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=1min
+OnBootSec=5min
+OnUnitActiveSec=5min
 Persistent=true
 
 [Install]

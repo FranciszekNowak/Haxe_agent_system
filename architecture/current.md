@@ -1134,13 +1134,17 @@ Process template (main task)
 > `waiting+delayed ≥ alert_depth_any`; WARN when `waiting ≥ alert_depth_high` **and** `active == 0`, so
 > the designed midnight burst doesn't false-alarm), failed-set alarm is edge-triggered so it backstops
 > Block 4 without storming; (b) a **consumer heartbeat dead-man's-switch** — the consumer SETs a Redis
-> key (`haxeq:consumer:heartbeat`, TTL = `queue.heartbeat_stale_s`) every ~⅓-TTL, and a **host systemd
-> timer** (`consumer-heartbeat.{service,timer}` + `consumer-heartbeat-watchdog.sh`, mirroring the ADR-046
-> disk-watchdog, reusing the same `watchdog.env` + Storage Watchdog Intake) checks the key's existence
-> every minute and fires CRITICAL `queue-consumer/heartbeat` if it (or Redis) is gone; (c) a **45s config
-> refresh poll** that applies `concurrency` live (BullMQ dynamic setter), WARNs "restart required" for
-> the construction-only knobs (`lock_duration_ms`, `rate_limit_per_min`), and posts only warnings new
-> since the last poll. Verified live: 100 delayed jobs → `/metrics` CRITICAL flood → cron posted one
+> key (`haxeq:consumer:heartbeat`, TTL = `queue.heartbeat_stale_s` = 300s) every ~⅓-TTL, and a **host
+> systemd timer** (`consumer-heartbeat.{service,timer}` + `consumer-heartbeat-watchdog.sh`, mirroring the
+> ADR-046 disk-watchdog, reusing the same `watchdog.env` + Storage Watchdog Intake) checks the key's
+> existence **every 5 min** (the per-tick `docker exec` is the real cost, not the trivial Redis SET; ≈5–10
+> min detection) and fires CRITICAL `queue-consumer/heartbeat` if it (or Redis) is gone; (c) a **config
+> refresh poll** on the `queue.config_refresh_s` cadence (**default once/day** — config edits are rare, so
+> a tight poll buys nothing) that applies `concurrency` live (BullMQ dynamic setter), WARNs "restart
+> required" for the construction-only knobs (`lock_duration_ms`, `rate_limit_per_min`), and posts only
+> warnings new since the last poll. Because the cadence is daily, an immediate concurrency change is done
+> by **restarting the consumer** (or temporarily lowering `config_refresh_s`); the poll is a slow
+> drift-catcher. The two timers reschedule themselves when `config_refresh_s`/`heartbeat_stale_s` change. Verified live: 100 delayed jobs → `/metrics` CRITICAL flood → cron posted one
 > CRITICAL (manual + the scheduled tick) → cleared on removal; a stopped consumer let the heartbeat key
 > expire → the host watchdog fired CRITICAL within the window → clean restart; AOF confirmed enabled
 > (Block 0 G4 already proved restart-survival). **Remaining:** the §14.2–§14.6 reconciliation (BullMQ,

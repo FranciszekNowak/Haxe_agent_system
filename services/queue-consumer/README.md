@@ -27,9 +27,11 @@ network, no public port, built on the VPS via the stack `docker-compose.yml`.
 - **Block 5 (this):** monitoring layer. `GET /metrics` (BullMQ `getJobCounts` + a consumer-**computed**
   `alert`, so the depth cron stays thresholds-free) read by the 5-min `Queue Depth Monitor (v1)`
   (`M48svwpdhDg8l6An`); a **heartbeat dead-man's-switch** (the consumer SETs `haxeq:consumer:heartbeat`
-  with TTL = `heartbeat_stale_s`; a host systemd timer alerts if it expires); a **45s config-refresh
-  poll** (applies `concurrency` live, WARNs "restart required" for `lock_duration_ms`/`rate_limit_per_min`,
-  posts only warnings new since the last poll). Backlog alarm is targeted (CRITICAL at `waiting+delayed ≥
+  with TTL = `heartbeat_stale_s` = 300s, a host systemd timer alerts every 5 min if it expires); a
+  **config-refresh poll on the `config_refresh_s` cadence (default once/day)** (applies `concurrency`
+  live, WARNs "restart required" for `lock_duration_ms`/`rate_limit_per_min`, posts only warnings new
+  since the last poll). For an *immediate* concurrency change, restart the consumer — the daily poll is a
+  drift-catcher, not a live-tuning knob. Backlog alarm is targeted (CRITICAL at `waiting+delayed ≥
   alert_depth_any`; WARN at `waiting ≥ alert_depth_high && active==0`) so the designed midnight burst
   doesn't false-alarm; the failed-set alarm is edge-triggered (backstops Block 4 without storming).
   Verified live: 100 delayed jobs → CRITICAL flood → cron posted one CRITICAL → cleared; stopped consumer
@@ -72,7 +74,11 @@ key. Defaults are the Block-0-corrected values (G1/G5). `MARGIN = 120000` ms.
 | `spine_timeout_ms ≤ lock_duration_ms − MARGIN` | lower + WARN | premature consumer abort → double-draft |
 
 Restart-only values: `lock_duration_ms`, `rate_limit_per_min` (construction-time). `concurrency` is
-live (BullMQ dynamic setter). The 30–60s refresh poll + the "restart required" WARN land in Block 5.
+live (BullMQ dynamic setter). The refresh poll re-reads `queue.*` on the **`config_refresh_s` cadence
+(default 86400 s = once/day; reader floors at 60 s)** and WARNs "restart required" when a construction-only
+value changes. Because the cadence is daily, apply an immediate `concurrency` change by **restarting the
+consumer** (or temporarily lowering `config_refresh_s`). `heartbeat_stale_s` (default 300 s) is the
+heartbeat key's TTL; the consumer writes every ~⅓ of it, and the host watchdog timer polls every 5 min.
 
 ## Environment
 

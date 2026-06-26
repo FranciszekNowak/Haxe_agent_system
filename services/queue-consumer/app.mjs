@@ -42,12 +42,17 @@
 //     when failed RISES vs the last read) so it backstops Block 4 without re-firing every 5 min for the
 //     24h a dead-letter lingers in the failed set; Block 4's per-job CRITICAL stays the primary signal.
 //   * HEARTBEAT dead-man's-switch — the consumer SETs a Redis key (haxeq:consumer:heartbeat) with
-//     TTL = heartbeat_stale_s every ~stale_s/3 s. A HOST systemd timer (outside this container, so it
-//     survives the consumer dying) checks the key's existence and alerts if it is gone. Staleness is
-//     encoded as the TTL, so the watchdog only does EXISTS — no clock math, one knob.
-//   * CONFIG REFRESH POLL (45s) — re-read queue.* live: apply concurrency (BullMQ dynamic setter),
-//     WARN "restart required" for the construction-only knobs (lock_duration_ms, rate_limit_per_min)
-//     when they change, and post only warnings NEW since the last poll (no 45s WARN storm).
+//     TTL = heartbeat_stale_s (default 300s) every ~stale_s/3 s. A HOST systemd timer (outside this
+//     container, so it survives the consumer dying; 5-min cadence) checks the key's existence and alerts
+//     if it is gone. Staleness is encoded as the TTL, so the watchdog only does EXISTS — no clock math,
+//     one knob. The Redis SET is trivially cheap; the watchdog's per-tick docker-exec is the real cost,
+//     so the timer runs every 5 min (≈5-10 min detection of a dead consumer — fine for a durable queue).
+//   * CONFIG REFRESH POLL — re-read queue.* on the queue.config_refresh_s cadence (default once/day;
+//     config edits are rare): apply concurrency live (BullMQ dynamic setter), WARN "restart required"
+//     for the construction-only knobs (lock_duration_ms, rate_limit_per_min) when they change, and post
+//     only warnings NEW since the last poll. Because the cadence is daily, a "live" concurrency change
+//     can lag up to a day — RESTART the consumer for an immediate change, or lower config_refresh_s. The
+//     cadence knob and heartbeat_stale_s reschedule their own timers when changed.
 //
 // SCHEMA NOTE (load-bearing). The JOB's invocation_type (queue vocab: explicit_mention, due_date,
 // ...) is NOT agent_runs.invocation_type (CHECK: autonomous|explicit|conversation_reply). It aligns
@@ -155,13 +160,14 @@ const DEFAULTS = {
   alert_depth_high: 20,
   alert_depth_any: 100,
   alert_failed: 0,
-  heartbeat_stale_s: 120,
+  heartbeat_stale_s: 300,
+  config_refresh_s: 86400,
 };
 const TYPES = {
   enabled: 'bool', concurrency: 'int', env_concurrency_cap: 'int', max_runtime_ms: 'int',
   spine_timeout_ms: 'int', lock_duration_ms: 'int', retry_attempts: 'int', backoff_ms: 'array',
   rate_limit_per_min: 'int', dedup_window_h: 'int', alert_depth_high: 'int', alert_depth_any: 'int',
-  alert_failed: 'int', heartbeat_stale_s: 'int',
+  alert_failed: 'int', heartbeat_stale_s: 'int', config_refresh_s: 'int',
 };
 
 function parseValue(type, raw) {
@@ -238,6 +244,12 @@ async function loadQueueConfig() {
   if (cfg.spine_timeout_ms > ceil) {
     warnings.push(`spine_timeout_ms ${cfg.spine_timeout_ms} > lock_duration_ms-MARGIN (${ceil}) -> lowered to ${ceil} (premature-abort / double-draft guard)`);
     cfg.spine_timeout_ms = ceil;
+  }
+  // Standalone sane-min clamp: a fat-fingered tiny refresh interval must not create a tight Supabase
+  // read loop (the DB trigger also bounds it, but the reader is the load-bearing safety layer).
+  if (cfg.config_refresh_s < 60) {
+    warnings.push(`config_refresh_s ${cfg.config_refresh_s} < 60 -> raised to 60 (tight-poll guard)`);
+    cfg.config_refresh_s = 60;
   }
 
   for (const w of warnings) console.warn(`[config][WARN] ${w}`);
@@ -476,10 +488,12 @@ let lastFailedAlerted = 0;             // edge-trigger baseline for the failed-s
 let lastConfigWarnings = new Set();    // refresh-poll dedup: only NEW config warnings re-alert
 let heartbeatTimer = null;
 let configRefreshTimer = null;
-const CONFIG_REFRESH_MS = 45000;       // 45s: inside the 30-60s window the ADR specifies
 const HEARTBEAT_KEY = 'haxeq:consumer:heartbeat';
 // Write the heartbeat at ~1/3 of the staleness window so two missed writes still sit inside the TTL.
-function heartbeatWriteMs() { return Math.max(20000, Math.floor((cfg?.heartbeat_stale_s ?? 120) * 1000 / 3)); }
+function heartbeatWriteMs() { return Math.max(20000, Math.floor((cfg?.heartbeat_stale_s ?? 300) * 1000 / 3)); }
+// Config refresh cadence is itself a config knob (queue.config_refresh_s, default once/day). The reader
+// floors it at 60s; both the startup schedule and the reschedule-on-change use this.
+function refreshIntervalMs() { return Math.max(60, cfg?.config_refresh_s ?? 86400) * 1000; }
 
 function startWorker() {
   constructedLockDurationMs = cfg.lock_duration_ms;
@@ -551,7 +565,7 @@ function startWorker() {
 async function writeHeartbeat() {
   try {
     const client = await queue.client;
-    const ttl = Math.max(30, cfg?.heartbeat_stale_s ?? 120);
+    const ttl = Math.max(30, cfg?.heartbeat_stale_s ?? 300);
     await client.set(HEARTBEAT_KEY, new Date().toISOString(), 'EX', ttl);
   } catch (e) {
     // A failed heartbeat write is itself the dead-man's-switch signal (the key will expire); log loudly.
@@ -559,19 +573,26 @@ async function writeHeartbeat() {
   }
 }
 
-// Config refresh poll. Re-read queue.* live every CONFIG_REFRESH_MS. LIVE knobs (concurrency) are
-// applied to the running worker via BullMQ's dynamic setter; CONSTRUCTION-ONLY knobs (lock_duration_ms,
-// rate_limit_per_min) cannot change without a restart, so a change WARNs "restart required" rather than
-// silently no-op'ing. Only warnings NEW since the last poll are posted (a persistently mis-set knob
-// alarms once, not every 45s).
+// Config refresh poll. Re-read queue.* on the cadence set by queue.config_refresh_s (default once/day —
+// config edits are rare; a tight poll buys nothing). LIVE knobs (concurrency) are applied to the running
+// worker via BullMQ's dynamic setter; CONSTRUCTION-ONLY knobs (lock_duration_ms, rate_limit_per_min)
+// cannot change without a restart, so a change WARNs "restart required" rather than silently no-op'ing.
+// Only warnings NEW since the last poll are posted (a persistently mis-set knob alarms once, not every
+// poll). NOTE: because the default cadence is daily, a concurrency change applied "live" can lag up to a
+// day — for an immediate change, RESTART the consumer (it reads config at startup) or temporarily lower
+// queue.config_refresh_s. The poll is a slow drift-catcher, not a live-tuning mechanism.
+//
+// The cadence knob (config_refresh_s) and the heartbeat staleness window (heartbeat_stale_s) govern the
+// two timers; when either changes, its timer is rescheduled here so the new cadence takes effect (no
+// restart needed for the cadence itself, though it adopts the change on the NEXT scheduled poll).
 async function refreshConfig() {
   const { cfg: next, warnings } = await loadQueueConfig();
+  const prev = cfg;
 
   // Live: concurrency (BullMQ Worker.concurrency is a dynamic setter; clamped already by the reader).
-  if (worker && next.concurrency !== cfg.concurrency) {
-    const from = cfg.concurrency;
+  if (worker && next.concurrency !== prev.concurrency) {
     worker.concurrency = next.concurrency;
-    console.log(JSON.stringify({ level: 'info', evt: 'concurrency_changed', from, to: next.concurrency }));
+    console.log(JSON.stringify({ level: 'info', evt: 'concurrency_changed', from: prev.concurrency, to: next.concurrency }));
   }
 
   // Construction-only knobs: WARN (don't apply) when they drift from the running worker's build.
@@ -592,6 +613,18 @@ async function refreshConfig() {
   lastConfigWarnings = new Set(all);
 
   cfg = next; // processJob / writeHeartbeat / /metrics read module-level cfg, so this makes them live
+
+  // Reschedule the timers whose cadence is config-driven, now that cfg is live.
+  if (configRefreshTimer && next.config_refresh_s !== prev.config_refresh_s) {
+    clearInterval(configRefreshTimer);
+    configRefreshTimer = setInterval(() => { refreshConfig().catch((e) => console.error('[config-refresh] failed:', e.message)); }, refreshIntervalMs());
+    console.log(JSON.stringify({ level: 'info', evt: 'config_refresh_rescheduled', from_s: prev.config_refresh_s, to_s: next.config_refresh_s }));
+  }
+  if (heartbeatTimer && next.heartbeat_stale_s !== prev.heartbeat_stale_s) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(() => { writeHeartbeat().catch(() => {}); }, heartbeatWriteMs());
+    console.log(JSON.stringify({ level: 'info', evt: 'heartbeat_rescheduled', from_s: prev.heartbeat_stale_s, to_s: next.heartbeat_stale_s, write_ms: heartbeatWriteMs() }));
+  }
 }
 
 const SEV_RANK = { WARN: 1, CRITICAL: 2 };
@@ -747,7 +780,7 @@ async function main() {
   }
   await writeHeartbeat();
   heartbeatTimer = setInterval(() => { writeHeartbeat().catch(() => {}); }, heartbeatWriteMs());
-  configRefreshTimer = setInterval(() => { refreshConfig().catch((e) => console.error('[config-refresh] failed:', e.message)); }, CONFIG_REFRESH_MS);
+  configRefreshTimer = setInterval(() => { refreshConfig().catch((e) => console.error('[config-refresh] failed:', e.message)); }, refreshIntervalMs());
 
   app.listen(Number(PORT), () =>
     console.log(`queue-consumer listening on :${PORT}, queue=${QUEUE_NAME}, prefix=${QUEUE_PREFIX}, concurrency=${cfg.concurrency}`));

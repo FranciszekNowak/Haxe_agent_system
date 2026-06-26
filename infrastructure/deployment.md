@@ -333,9 +333,10 @@ intake workflow is `n8n/workflows/storage-watchdog-intake.json`.
 
 Host-level watchdog for the `queue-consumer` container, external to it (same independence principle as
 the disk-watchdog). The consumer SETs a Redis key `haxeq:consumer:heartbeat` with TTL =
-`queue.heartbeat_stale_s` (refreshed every ~⅓-TTL); if the consumer dies the key expires. Repo-mastered:
-`infrastructure/scripts/consumer-heartbeat-watchdog.sh` +
-`infrastructure/systemd/consumer-heartbeat.{service,timer}` (1-min cadence). It **reuses the same
+`queue.heartbeat_stale_s` (default **300 s**, refreshed every ~⅓-TTL ≈ 100 s); if the consumer dies the
+key expires. Repo-mastered: `infrastructure/scripts/consumer-heartbeat-watchdog.sh` +
+`infrastructure/systemd/consumer-heartbeat.{service,timer}` (**5-min cadence** — the per-tick `docker
+exec redis-cli` is the real cost, not the trivial Redis SET; ≈5–10 min detection). It **reuses the same
 `watchdog.env` and the `Storage Watchdog Intake (v1)` webhook** as the disk-watchdog — no new secret —
 and POSTs CRITICAL `queue-consumer/heartbeat` on a breach (two cases: Redis unreachable, or key absent =
 consumer dead/hung). Paired with the in-n8n `Queue Depth Monitor (v1)` 5-min cron (`M48svwpdhDg8l6An`),

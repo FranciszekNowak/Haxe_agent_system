@@ -132,3 +132,27 @@ operator need; a UI adds an exposed surface for no current benefit).
 - **`docker exec ... node --input-type=module -e`** is required to run inline ESM against the consumer's
   BullMQ (the container is `type: module`); a bare `node -e` is CommonJS and `import` throws. Recorded for
   Block 6's burst test, which will enqueue many jobs the same way.
+
+---
+
+## Revision (2026-06-26, operator request) — cadences tuned down
+
+Two same-day adjustments after the operator reviewed the cadences (migration `046_queue_refresh_and_heartbeat.sql`):
+
+- **Config refresh: 45 s → once/day, and the cadence is now a config knob.** New `queue.config_refresh_s`
+  (default `86400`; consumer floors at 60 s, DB trigger bounds 60..604800). A 45 s Supabase poll did
+  ≈1,900 reads/day for almost nothing — config edits are rare. **Consequence (stated, accepted):** "live
+  concurrency apply" now lags up to a day, so an *immediate* change is done by restarting the consumer (it
+  reads config at startup) or temporarily lowering `config_refresh_s`. The poll is a slow drift-catcher.
+- **Heartbeat: TTL 120 → 300 s, host timer 1-min → 5-min.** The cost asymmetry drove this: the consumer's
+  Redis `SET` is free, but the watchdog's per-tick `docker exec redis-cli` spawns a process — so the
+  *timer* is the real recurring cost. Consumer now writes every ~100 s (`stale_s/3`, so a missed write
+  still can't expire the key); dead-consumer detection ≈5–10 min (fine for a durable queue).
+- Both timers **reschedule themselves** when `config_refresh_s` / `heartbeat_stale_s` change (clear +
+  re-`setInterval` in `refreshConfig`), so the new cadence takes effect on the next scheduled poll.
+
+Redeployed + verified live: effective config shows `heartbeat_stale_s:300, config_refresh_s:86400`; the
+heartbeat key TTL reads ~300 (consumer writing every ~100 s); `systemctl list-timers` shows
+`consumer-heartbeat.timer` at `OnUnitActiveSec=5min`; `/health` ok. Migration 046 applied
+(`update heartbeat_stale_s=300`, `insert config_refresh_s=86400`, and the validate trigger extended to
+bound `config_refresh_s`).
