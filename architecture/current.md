@@ -732,7 +732,7 @@ Target: 7–9 weeks to v1.
 - **VPS**: Cyberfolks vroot_SPRINT, AlmaLinux 10, 185.25.149.174 (KVM, 4 vCPU / 8 GB / 100 GB, hostname vps57524999).
 - **Access**: key-based SSH (ed25519). Separate keypair per machine — home and office desktops each have their own key installed for `franciszek` (private keys passphrase-free, for non-interactive automation). Non-root sudo user `franciszek` (wheel + docker + NOPASSWD sudoers); root reserved for exceptions. firewalld: ssh/http/https open. See ADR-010.
 - **Password auth: DISABLED.** Both workstations (home + office) have key-based SSH access; with both keyed, password authentication was turned off (`PasswordAuthentication no`) as the final hardening step. Access is now key-only.
-- **Docker stack**: `/opt/haxe-agents/`, six containers on private bridge network `n8n-internal`, queue mode. Image versions pinned. See ADR-011.
+- **Docker stack**: `/opt/haxe-agents/`, eight containers on private bridge network `n8n-internal`, queue mode. Image versions pinned. See ADR-011.
   - `n8n-postgres` (postgres:16) — n8n's internal DB; named volume; healthcheck-gated.
   - `n8n-redis` (redis:7-alpine) — queue backing; AOF persistence enabled; named volume.
   - `n8n-main` (n8nio/n8n:2.22.5) — UI, webhooks, scheduler; binds to 127.0.0.1:5678 only.
@@ -786,6 +786,13 @@ Target: 7–9 weeks to v1.
     > `ANTHROPIC_API_KEY` passthrough. LiteLLM's router surfaced the resulting 401 as a 429 cooldown, causing
     > ~8 h of misdiagnosis. Fixed by redeploying `docker-compose.yml` via scp. See ADR-033 for the deploy
     > model and mitigations.
+  - `queue-consumer` (Node 20, `services/queue-consumer/`) — **deployed + active** (ADR-056). Thin BullMQ
+    application-queue consumer: `POST /enqueue` (priority 1–8) + Worker (`concurrency=5`) triggering the spine
+    via `Spine HTTP Ingress (v1)`, with idempotency, retry/backoff, dead-letter, `/health`, `/metrics`, and a
+    Redis heartbeat key. `expose:8080` internal only; `mem_limit: 256m`; reads Supabase `config`/`agent_runs`
+    (no ClickUp creds). BullMQ keys are prefixed `haxeq:*` so they never collide with n8n queue mode's `bull:*`
+    on the shared `n8n-redis`.
+  - `zip-extractor` (Node, `services/zip-extractor/`) — internal helper service (ADR-058); see that ADR for detail.
 - **Public endpoint**: `https://agents.haxe.ai` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing, 90-day). HTTP → HTTPS redirect active. See ADR-012.
 - **Build control plane**: Claude Code drives infrastructure via two MCP servers in `.mcp.json`:
   - **`n8n-mcp`** (`n8n-mcp@2.56.0`) — n8n REST API (`https://agents.haxe.ai/api/v1`); key from `N8N_API_KEY` (setx; expiry 2026-08-31). See ADR-017/018.
@@ -1091,65 +1098,32 @@ Process template (main task)
 
 ## 14. Queue infrastructure
 
-> **⚠ Being replaced by ADR-056 — BullMQ application queue + thin `queue-consumer` service.**
-> §14.2–§14.6 below describe the *original* n8n-queue-mode design; ADR-056 supersedes it. The
-> application queue is **BullMQ on the existing Redis** (key prefix `haxeq`, never colliding with
-> n8n queue mode's `bull:*` — n8n stays in queue mode, the two coexist), fronted by a new always-on
-> Node service **`queue-consumer`** (`services/queue-consumer/`, container `queue-consumer` on
-> `n8n-internal`, `expose:8080` internal only; mirrors `zip-extractor`). Producers `POST /enqueue`
-> and return; a BullMQ Worker dequeues by an 8-level priority, enforces concurrency/idempotency,
-> triggers the spine via the hardened **Spine HTTP Ingress (v1)** webhook, and (later blocks) owns
-> retry/backoff/dead-letter. All `queue.*` knobs live in Supabase `config` behind a fail-safe reader
-> that clamps three silent-failure invariants.
+> **✅ LIVE (ADR-056, 2026-06-26) — BullMQ application queue + thin `queue-consumer` service.**
+> §14.2–§14.6 below describe the **as-built** design (they previously described an n8n-queue-mode plan,
+> reconciled in Block 6). The application queue is **BullMQ on the existing Redis** (key prefix `haxeq`,
+> never colliding with n8n queue mode's `bull:*` — n8n stays in queue mode, the two coexist), fronted by
+> the always-on Node service **`queue-consumer`** (`services/queue-consumer/`, container `queue-consumer`
+> on `n8n-internal`, `expose:8080` internal only; mirrors `zip-extractor`). Producers `POST /enqueue` and
+> return; a BullMQ Worker dequeues by an 8-level priority, enforces concurrency/idempotency, triggers the
+> spine via the hardened **Spine HTTP Ingress (v1)** webhook, and owns retry/backoff/dead-letter. All
+> `queue.*` knobs live in Supabase `config` behind a fail-safe reader that clamps three silent-failure
+> invariants. **Cut over: the one live producer (`CU Webhook Producer`, @-mention) behind
+> `config.queue_enabled`** with a synchronous fallback; the daily due-date cron, Gmail watcher, and
+> status/field producers are Phase-3/unbuilt and adopt the `/enqueue` contract when built.
 >
-> **Build status** (master plan `architecture/Build plans/adr-056-queue-infrastructure-bullmq/`):
-> Block 0 (capability gates), **Block 1**, **Block 2**, **Block 3**, **Block 4**, and **Block 5
-> (2026-06-26)** are done —
-> migration `045_queue_config.sql` (seeds `queue.*` + a write-side validating trigger), the
-> `queue-consumer` service deployed to the stack (`/enqueue` + priority + fail-safe config reader +
-> `/health`), the hardened, deterministic-return `Spine HTTP Ingress (v1)`, the **real processor**
-> (pre-trigger idempotency check; spine trigger held over a **`node:http`** connection up to
-> `spine_timeout_ms`, not global `fetch`; classification: transport/timeout/5xx → retryable BullMQ
-> retry on 60/300/900s, `200 status=failed`/4xx/unknown → `UnrecoverableError` → dead-letter), and now
-> the **live @-mention producer cut over to the queue behind `config.queue_enabled`**. `CU Webhook
-> Producer (v1)` keeps its instant 200, then (after the dedup claim + loop-breaker) reads
-> `queue.enabled`; if true it fetches the task's `[AI] Wpływ` impact (default `Średni`) and `POST`s the
-> job to `http://queue-consumer:8080/enqueue` over the internal Docker network; if false — or if the
-> enqueue returns non-200/unreachable — it falls back to the unchanged synchronous `Run Agent Spine`
-> `executeWorkflow` and fires a WARN. **Block-3 dedup refinement (consumer-side, keeps one path):** the
-> idempotency *unit* is now invocation-class-aware — explicit (interactive) jobs key the BullMQ `jobId`
-> on the **triggering comment** (`…:c<comment_id>`) so a distinct follow-up @-mention is its own job
-> (the old 24h task+type time-bucket would have silently collapsed it), and the `agent_runs` check runs
-> for them only as a retry-after-partial guard (on `attemptsMade>0`, bounded to runs created after the
-> job's `enqueued_at`); autonomous jobs keep the time-bucket `jobId` + `dedup_window_h` window.
-> Verified live end-to-end: two distinct mentions on one task both drafted (no collapse), a re-enqueue
-> of the same comment deduped, a real tag-op webhook drove the full producer→`/enqueue`→spine→reply
-> chain with the impact resolved to the job, and flipping the flag false fell back to a synchronous
-> draft with no enqueue. **Block 4** added the terminal dead-letter CRITICAL alert (the
-> `worker.on('failed')` handler fires exactly once per dead-letter — gated on `UnrecoverableError ||
-> attemptsMade >= attempts` — through the reused alert seam, source `queue-consumer/dlq`). **Block 5**
-> added the full monitoring layer: (a) a consumer **`GET /metrics`** (BullMQ `getJobCounts` + a
-> consumer-**computed** alert, so all `queue.*` thresholds stay in the single reader) read by a 5-min
-> **`Queue Depth Monitor (v1)`** (`M48svwpdhDg8l6An`) cron — backlog alarm is targeted (CRITICAL when
-> `waiting+delayed ≥ alert_depth_any`; WARN when `waiting ≥ alert_depth_high` **and** `active == 0`, so
-> the designed midnight burst doesn't false-alarm), failed-set alarm is edge-triggered so it backstops
-> Block 4 without storming; (b) a **consumer heartbeat dead-man's-switch** — the consumer SETs a Redis
-> key (`haxeq:consumer:heartbeat`, TTL = `queue.heartbeat_stale_s` = 300s) every ~⅓-TTL, and a **host
-> systemd timer** (`consumer-heartbeat.{service,timer}` + `consumer-heartbeat-watchdog.sh`, mirroring the
-> ADR-046 disk-watchdog, reusing the same `watchdog.env` + Storage Watchdog Intake) checks the key's
-> existence **every 5 min** (the per-tick `docker exec` is the real cost, not the trivial Redis SET; ≈5–10
-> min detection) and fires CRITICAL `queue-consumer/heartbeat` if it (or Redis) is gone; (c) a **config
-> refresh poll** on the `queue.config_refresh_s` cadence (**default once/day** — config edits are rare, so
-> a tight poll buys nothing) that applies `concurrency` live (BullMQ dynamic setter), WARNs "restart
-> required" for the construction-only knobs (`lock_duration_ms`, `rate_limit_per_min`), and posts only
-> warnings new since the last poll. Because the cadence is daily, an immediate concurrency change is done
-> by **restarting the consumer** (or temporarily lowering `config_refresh_s`); the poll is a slow
-> drift-catcher. The two timers reschedule themselves when `config_refresh_s`/`heartbeat_stale_s` change. Verified live: 100 delayed jobs → `/metrics` CRITICAL flood → cron posted one
-> CRITICAL (manual + the scheduled tick) → cleared on removal; a stopped consumer let the heartbeat key
-> expire → the host watchdog fired CRITICAL within the window → clean restart; AOF confirmed enabled
-> (Block 0 G4 already proved restart-survival). **Remaining:** the §14.2–§14.6 reconciliation (BullMQ,
-> 8-level priority, Managed-Agents limits, mark LIVE) + the burst/priority/negative-config scope-test is
-> Block 6.
+> **Status:** built and verified across Blocks 0–6 (full record: the master plan + `block-N-findings.md`
+> alongside it, and the ADR-056 amendments). Migrations `045`/`046` seed `queue.*` + a write-side
+> validating trigger; the `queue-consumer` service (`/enqueue` + priority + fail-safe reader + `/health` +
+> `/metrics`), the deterministic-return `Spine HTTP Ingress (v1)`, the real processor (idempotency →
+> held-connection spine trigger over `node:http` → ADR-047 classification → retry/backoff/DLQ), the
+> `CU Webhook Producer` cutover behind `config.queue_enabled`, and the monitoring layer (depth cron +
+> heartbeat dead-man's-switch + daily config-refresh poll) are all live. Block 6 acceptance passed: the
+> priority formula computes 8/8 buckets correctly and BullMQ drains them in rank order (explicit 1–4
+> before automatic 5–8); a 52-job burst held in-flight at the concurrency cap (no 429/529 storm) with two
+> explicit jobs jumping the batch despite being enqueued last; and the negative-config test confirmed all
+> three coupled invariants clamp + WARN at startup (concurrency 99→10, lock_duration 120 k→1.02 M,
+> spine_timeout 1.2 M→900 k) so bad values never reach the worker. Idempotent-skip and exactly-once
+> dead-letter were verified live in Blocks 2–4.
 
 ### 14.1 Why a queue
 
@@ -1160,61 +1134,94 @@ Four problems solved simultaneously:
 - **Priority scheduling.** High-importance work jumps the line. Background batch work (weekly proposer, analysis) never blocks urgent user-triggered work.
 - **Retry with backoff.** Transient failures don't kill a run permanently.
 
-### 14.2 Stack
+### 14.2 Stack — BullMQ application queue + thin `queue-consumer` service
 
-Redis (Docker container alongside n8n, ~50 MB RAM) as queue backing. n8n queue mode:
+The application queue is **BullMQ on the existing Redis** (`n8n-redis`, redis:7), fronted by a small
+always-on Node service **`queue-consumer`** (`services/queue-consumer/`, container `queue-consumer` on
+`n8n-internal`, `expose:8080` internal only; mirrors `zip-extractor`). Producers `POST /enqueue` and
+return; the consumer's BullMQ **Worker** dequeues by priority, enforces concurrency (= in-flight spine
+runs), checks idempotency, triggers the spine via the **`Spine HTTP Ingress (v1)`** held connection, and
+owns retry/backoff/dead-letter.
+
+**n8n stays in queue mode; BullMQ coexists on the same Redis by key prefix.** The two queues are at
+different layers and do **not** replace each other: **n8n queue mode** (`N8N_EXECUTIONS_MODE=queue`,
+`n8n-main` + `n8n-worker`) distributes *n8n executions* for infra/memory isolation (ADR-058); **BullMQ**
+admits *agent jobs* (priority, Managed-Agents concurrency, retry/DLQ, idempotency). BullMQ cannot execute
+n8n workflows, only trigger them. They never collide: BullMQ uses `prefix: 'haxeq'` (keys
+`haxeq:agent-jobs:*`) while n8n queue mode uses the default `bull:*`. The earlier ADR-056 "n8n goes
+regular mode" line is **superseded** — regular mode would collapse all executions into `n8n-main`'s heap
+(the base64 image path included), a reliability regression, and only becomes clean once image generation
+is also containerized (deferred by ADR-055).
+
+All `queue.*` knobs live in Supabase `config` behind the consumer's **fail-safe reader** (single reader;
+producers read only `queue.enabled`). The reader clamps + WARNs three coupled invariants at startup and on
+the (daily) refresh poll: `concurrency ≤ env_concurrency_cap`, `lock_duration_ms ≥ max_runtime_ms + MARGIN`,
+`spine_timeout_ms ≤ lock_duration_ms − MARGIN` (MARGIN = 120 s). Seeds (migrations 045/046, Block-0-measured):
+`concurrency=5`, `env_concurrency_cap=10`, `max_runtime_ms=900000` (15 min real ceiling), `spine_timeout_ms=1200000`,
+`lock_duration_ms=1500000`.
+
+### 14.3 Priority — 8-level, explicit primary / impact secondary
+
+Priority is a single lexicographic key computed at `/enqueue` (ADR-056 amendment 2026-06-23b), **always
+set 1–8** (an unset BullMQ priority breaks ordering; lower number = higher priority):
 
 ```
-N8N_EXECUTIONS_MODE=queue
-N8N_QUEUE_BULL_REDIS_HOST=redis
-N8N_QUEUE_BULL_REDIS_PORT=6379
+priority = (is_explicit ? 0 : 4) + impact_rank
+impact_rank = { Krytycznie ważne:1, Wysoki:2, Średni:3, Niski:4 }   (from [AI] Wpływ)
+is_explicit = invocation_type ∈ { explicit_mention, explicit_command }
 ```
 
-Two worker processes initially, each with concurrency 5 → 10 concurrent runs total.
-Scales by adding workers.
+So **every** explicit (interactive) job (1–4) outranks **every** automatic one (5–8); within each class,
+higher `[AI] Wpływ` wins. This is contract-shape — a code constant in the consumer, **not** a `config`
+knob. Within one priority level: FIFO. (Block 6 verified the formula 8/8 and a scrambled add `[5,2,8,1,6,3,7,4]`
+drains `[1..8]`; an automatic `Krytycznie ważne` (5) waits behind an explicit `Niski` (4).)
 
-### 14.3 Priority levels
+### 14.4 Admission control — Anthropic Managed Agents limits
 
-| Priority | Triggers | Examples |
-|---|---|---|
-| 1 (high) | Ważność = High, explicit user invocations | Customer-facing replies, deadline-day NPD |
-| 5 (normal) | Ważność = Medium, due-date daily, most webhooks | Standard NPD, supplier emails |
-| 10 (low) | Ważność = Low, weekly proposer, background analysis | Marketing copy, batch processing |
-
-Explicit invocations get +1 priority boost vs same-Ważność background jobs.
-Within a level: FIFO.
-
-### 14.4 Rate limits per integration
-
-| Integration | Limit | Behavior |
-|---|---|---|
-| Bedrock Claude | 50 req/min | Queue paces; jobs wait, don't fail |
-| ClickUp API | 100 req/min | Queue paces |
-| Gmail API | 250 req/min | Queue paces |
-| Supabase | 200 req/min (conservative) | Queue paces |
-
-Rate-limit tokens stored in Redis with TTL. Worker checks availability before
-each API call; if unavailable, requeues with short delay.
+The binding constraint is the **Anthropic Managed Agents** capacity, not a per-integration RPM. The live
+system uses a single shared pooled environment (`config.managed_agent_environment_id`); the "5 concurrent
+environments" limit is on the Environments resource-group, **not** running sessions, which are bounded by
+create-session RPM (≈300/min) + ITPM/OTPM — both slack at our scale (ADR-056 Block 0 G1). So BullMQ's
+**`concurrency` (C=5, conservative)** caps in-flight spine runs; `env_concurrency_cap=10` is a software
+safety-rail the read-side clamp enforces (a fat-finger `concurrency` is clamped, not honored). A BullMQ
+token-bucket **`limiter` (`rate_limit_per_min`, default 60)** bounds enqueue→start rate. The 50-tasks-at-midnight
+burst is therefore paced at C in-flight, never a 429/529 storm (Block 6 verified max-in-flight held at the
+cap). ClickUp/Gmail/Supabase per-call limits are handled inside the spine, not here.
 
 ### 14.5 Retry policy
 
-| Attempt | Delay |
-|---|---|
-| 1 | Immediate |
-| 2 | 1 minute |
-| 3 | 5 minutes |
-| 4 | 15 minutes |
-| 5 (final) | Dead letter → posts to Agent Errors task |
+BullMQ `attempts = retry_attempts` (5) with a custom per-attempt backoff `backoff_ms = [60000, 300000,
+900000]` (60 s / 5 min / 15 min, last value repeats). Classification (ADR-047), decided by the consumer
+from the ingress's deterministic 200 response or the transport outcome:
 
-Retryable: timeouts, 5xx responses, transient network issues.  
-Non-retryable: 4xx responses, explicit business-logic failures → dead letter immediately.
+| Outcome | Action |
+|---|---|
+| transport error / held-connection timeout / genuine n8n 5xx | **retryable** throw → BullMQ backoff |
+| HTTP 200 `status=completed` | job done |
+| HTTP 200 `status=failed` (business) / 4xx / unknown status | **`UnrecoverableError`** → dead-letter (no retry) |
+
+The BullMQ `failed` set (`removeOnFail` age 24 h) **is** the dead-letter store; `worker.on('failed')`
+posts **exactly one** CRITICAL to the Alerts task on the terminal failure (gated on `UnrecoverableError ||
+attemptsMade >= attempts`, so a 5-attempt job alarms once, not per attempt). Business failures stay
+`200 + status` (never HTTP 5xx) so the client/BullMQ don't auto-retry a known-bad outcome (double-draft
+guard). Idempotency (pre-trigger `agent_runs` check, invocation-class-aware `jobId`) covers the
+connection-drops-after-write edge: a retry skips if the prior attempt already drafted.
 
 ### 14.6 Queue monitoring
 
-n8n cron workflow every 5 min queries Redis queue depth. Alerts to Agent Errors task:
-- High-prio queue > 20
-- Any queue > 100
-- Dead letter queue > 0
+Two layers, both live (ADR-056 Block 5):
+
+- **Depth/health cron** — `Queue Depth Monitor (v1)` (`M48svwpdhDg8l6An`, 5-min) GETs the consumer's
+  `GET /metrics` (`getJobCounts` + a consumer-**computed** alert, so thresholds stay in the single reader)
+  and forwards a present alert to `Post Alert (v1)`. Backlog alarm is **targeted** so the designed burst
+  doesn't false-alarm: CRITICAL at `waiting+delayed ≥ alert_depth_any` (100); WARN at `waiting ≥
+  alert_depth_high` (20) **and** `active == 0` (queued but not draining = wedged). Failed-set alarm is
+  **edge-triggered** (only on a rise) so it backstops the DLQ alarm without re-firing for the 24 h a
+  dead-letter lingers.
+- **Heartbeat dead-man's-switch** — the consumer SETs `haxeq:consumer:heartbeat` (TTL = `heartbeat_stale_s`
+  = 300 s); a **host** systemd timer (`consumer-heartbeat.{service,timer}`, 5-min, reusing the ADR-046
+  `watchdog.env` + Storage Watchdog Intake) checks the key every 5 min and fires CRITICAL if it (or Redis)
+  is gone. It lives outside the container, so it survives the consumer dying.
 
 ---
 
@@ -1877,17 +1884,24 @@ the **fallback** path; the queue is the primary path when `queue.enabled=true`.
 
 ### 15.10 Planned-workflow design (not yet built)
 
-The canonical design intent for the workflows still to build:
+The canonical design intent for the workflows still to build. **All producers adopt the ADR-056
+`/enqueue` contract** (`POST http://queue-consumer:8080/enqueue` over the internal network with
+`{task_id, caller_user_id, impact, invocation_type, enqueued_at, payload}`); the consumer computes the
+8-level priority from `invocation_type` + `impact` (§14.3) — these are **automatic** invocations, so they
+land in priority band 5–8 (always behind interactive @-mentions), ranked by `[AI] Wpływ`. Producers read
+only `queue.enabled` and need no BullMQ knowledge.
 
 - **Daily Due-Date Producer** — cron 00:00. Queries CU for tasks due today/yesterday with `Czy
-  dla AI = Tak` and status ≠ closed. Per task: `agent_runs` idempotency (completed run in last
-  24h?), caller = assignee → creator → skip + log, enqueue with staggered ~5 s delays; batch
-  summary to GM Reports. Target: overnight drafts ready by 8 AM.
-- **Gmail Email Workflow** — watches incoming mail → enqueues email-orchestration job
-  (priority 5); worker reads the mail, calls Claude with caller-scoped context, creates a Gmail
-  **draft**. Sent-folder watcher (every 15 min) enqueues post-send analysis at priority 10.
-- **Weekly Org Proposer** — cron Monday 09:00, priority 10 (after the morning rush). Synthesizes
-  recent `agent_run_evaluations` across processes → posts structured proposals to the Process
+  dla AI = Tak` and status ≠ closed. Per task: caller = assignee → creator → skip + log, then
+  `POST /enqueue` with `invocation_type=due_date` and the task's impact (the consumer's autonomous
+  dedup — time-bucketed `jobId` + the `agent_runs` `dedup_window_h` check — handles "already drafted
+  today", replacing the producer-side idempotency the old design carried); batch summary to GM Reports.
+  Target: overnight drafts ready by 8 AM.
+- **Gmail Email Workflow** — watches incoming mail → `POST /enqueue` with `invocation_type=email`;
+  the spine reads the mail, calls Claude with caller-scoped context, creates a Gmail **draft**.
+  Sent-folder watcher (every 15 min) enqueues post-send analysis (`invocation_type` per the contract).
+- **Weekly Org Proposer** — cron Monday 09:00 (after the morning rush), `invocation_type=weekly_proposer`.
+  Synthesizes recent `agent_run_evaluations` across processes → posts structured proposals to the Process
   Improvements task.
 - **Session Cleanup** — hourly cron; expires `conversation_sessions` idle > 24 h.
 - **Queue note:** producers will enqueue to Redis and return 200 OK in < 200 ms, priority from

@@ -1,6 +1,6 @@
 # ADR-056: Queue infrastructure (BullMQ application queue + thin consumer)
 
-Status: Proposed (flip to Accepted on commit)
+Status: Accepted (2026-06-26 — built and verified across Blocks 0–6; see the Block-6 amendment)
 Date: 2026-06-23
 Depends on: ADR-053 (Managed Agents lane, rate limits, `config.agent_lane` failover flag), ADR-054 (caller-scoped retrieval: the job carries `caller_user_id`), ADR-055 (image MCP runtime sets max spine duration; self-hosted-service pattern)
 References: ADR-035 (sole `agent_runs` writer, idempotency source), ADR-043 (PD-blind), ADR-046 (host systemd dead-man's-switch pattern), ADR-047 (retry/backoff discipline, 529 handling)
@@ -8,7 +8,7 @@ Touches: `current.md` §14 (Queue infrastructure), §15.10 (producers), §15 (Ag
 
 ## Decision (verdict first)
 
-Use **BullMQ** as the application-level job queue on the existing Redis. A **thin Node consumer service** (beside or co-located with the ADR-055 image MCP service) exposes an `/enqueue` endpoint for producers and runs a BullMQ **Worker** that dequeues by priority, enforces concurrency and idempotency, triggers the existing **n8n Agent Spine** over its REST/webhook interface, and owns retry-with-backoff and dead-letter. Producers (n8n webhook + crons) enqueue and return 200 in under 200ms. **n8n stays in regular mode** (not queue mode). The first build is scoped to the load-bearing subset; per-integration token buckets and n8n queue mode are deferred.
+Use **BullMQ** as the application-level job queue on the existing Redis. A **thin Node consumer service** (beside or co-located with the ADR-055 image MCP service) exposes an `/enqueue` endpoint for producers and runs a BullMQ **Worker** that dequeues by priority, enforces concurrency and idempotency, triggers the existing **n8n Agent Spine** over its REST/webhook interface, and owns retry-with-backoff and dead-letter. Producers (n8n webhook + crons) enqueue and return 200 in under 200ms. ~~**n8n stays in regular mode** (not queue mode).~~ **[Corrected, Block 6: n8n stays in *queue* mode; BullMQ coexists on the same Redis by key prefix `haxeq` — see the Block-6 amendment for why regular mode would be a reliability regression.]** The first build is scoped to the load-bearing subset; per-integration token buckets are deferred.
 
 ## Context
 
@@ -20,7 +20,7 @@ One decisive constraint from ADR-053: the live lane is Anthropic Managed Agents 
 
 ## Decision detail
 
-1. **Topology.** Existing Redis container (AOF on). One BullMQ queue `agent-jobs`. One consumer service with two responsibilities: an `/enqueue` HTTP endpoint (producers call it) and a BullMQ Worker (processes jobs). n8n runs regular mode; the spine is invoked by the Worker.
+1. **Topology.** Existing Redis container (AOF on). One BullMQ queue `agent-jobs`. One consumer service with two responsibilities: an `/enqueue` HTTP endpoint (producers call it) and a BullMQ Worker (processes jobs). **[Corrected, Block 6: n8n stays in *queue* mode; BullMQ coexists on the same Redis via the distinct key prefix `haxeq` — not regular mode.]** the spine is invoked by the Worker via the `Spine HTTP Ingress (v1)` held connection.
 
 2. **Producers enqueue, never process.** ClickUp status/field webhook, daily due-date cron, `@`-mention/`~command` webhook, and the Gmail watcher build a job and `POST /enqueue`, then return 200 in under 200ms. The synchronous spine call is removed from producers. The queue absorbs bursts, so the §15.10 staggered ~5s enqueue delays are dropped (the queue paces).
 
@@ -61,7 +61,7 @@ The consumer→spine call passes this through; the spine reads `caller_user_id` 
 
 - **R1. n8n queue mode only.** Cannot deliver priority (§14.3), token buckets (§14.4), or the custom backoff-to-DLQ (§14.5); silently downgrades the documented design. May be added later, orthogonally, for n8n execution scaling, but it is not the application queue.
 - **R2. Hand-roll priority/rate-limit/retry on raw Redis.** Reinvents BullMQ; blows the budget; the atomicity, visibility-timeout, and crash-safety bugs are exactly what BullMQ already solved.
-- **R3. Run BullMQ and n8n queue mode together.** Two Bull queues on one Redis: redundant and confusing at this scale. Pick one (BullMQ); n8n stays regular mode.
+- **R3. Run BullMQ and n8n queue mode together.** ~~Two Bull queues on one Redis: redundant and confusing at this scale. Pick one (BullMQ); n8n stays regular mode.~~ **[Reversed, Block 6 — this rejection was wrong.** The two queues are at *different layers* (n8n queue mode distributes n8n *executions* for memory isolation per ADR-058; BullMQ admits *agent jobs*). BullMQ cannot execute n8n workflows, only trigger them, so it cannot replace queue mode. Going regular mode would collapse all executions into `n8n-main`'s heap (the base64 image path included) — a reliability regression. They coexist safely on one Redis via distinct key prefixes (`haxeq:*` vs `bull:*`), ~tens of MB. See the Block-6 amendment.]
 - **R4. Producers add to BullMQ via the n8n Redis node directly.** Fragile against BullMQ's internal Redis structure. Use the `/enqueue` endpoint so all BullMQ interaction lives in one codebase.
 - **R5. Per-integration token buckets now.** Premature; C = 5 keeps every per-integration limit slack. Add only if a specific integration 429s.
 - **R6. Fire-and-forget spine trigger.** Breaks retry/DLQ (job completes while the spine runs detached). The Worker must await spine completion.
@@ -92,7 +92,7 @@ Full evidence in `architecture/Build plans/adr-056-queue-infrastructure-bullmq/b
 - **Block 3 — Producer cutover.** Switch the webhook, due-date cron, and `@`-mention paths from synchronous spine call to `/enqueue` + immediate 200, behind `config.queue_enabled` with synchronous fallback. DoD: webhook returns < 200ms; job processed async; flag-off falls back to the synchronous path. **✅ done 2026-06-26** (`block-3-findings.md`). Scoped to the one live producer (`CU Webhook Producer`); the due-date cron + Gmail + status/field producers remain Phase-3/unbuilt and adopt this `/enqueue` contract when built. Two facts worth recording: (1) **the consumer dedup was made invocation-class-aware** here, because the as-built single-`dedup_window` design would have silently dropped follow-up @-mentions on a task for ~24h — explicit jobs now key the `jobId` on the **triggering comment id** (`${task_id}:${invocation_type}:c${comment_id}`) so each distinct mention is its own job, and their pre-trigger `agent_runs` check runs **only as a retry-after-partial guard** (on `attemptsMade>0`, bounded to runs created after the job's `enqueued_at`); autonomous jobs keep the time-bucket `jobId` + `dedup_window_h` window. This needed no `agent_runs` schema change (the producer's permanent `Claim Comment` PK already guarantees one enqueue per comment). (2) The producer puts **two distinct comment ids** in the job: `payload.triggering_comment_id` = the **thread-root** (the spine's reply target, single-level threads) and `payload.dedup_comment_id` = the comment's **own** id (the consumer's dedup key) — conflating them would re-collapse in-thread follow-ups. Impact is fetched by the producer from the `[AI] Wpływ` field (`55c7ff79…`, default `Średni`). DoD verified live end-to-end (two distinct mentions both drafted; same-comment re-enqueue deduped; real tag-op webhook → enqueue → spine → reply; flag-off → synchronous draft, no enqueue).
 - **Block 4 — Retry/backoff/DLQ.** Custom backoff (60/300/900s), `attempts = 5`; `failed` handler posts to Agent Errors exactly once. DoD: exhausted job lands in Agent Errors once; retryable vs non-retryable behave per §14.5. **✅ done 2026-06-26** (`block-4-findings.md`). Backoff/`attempts`/classification were wired in Block 2; Block 4 added the **terminal dead-letter alert** to `worker.on('failed')`, gated on `err instanceof UnrecoverableError || job.attemptsMade >= job.opts.attempts` so the per-attempt BullMQ `failed` event fires CRITICAL **exactly once** — on the dead-letter, never on a retryable interim failure. The BullMQ `failed` set (`removeOnFail` age 24h) is the DLQ store; this handler is its alarm. DoD verified live on the isolated `agent-jobs-test` queue (no real spine): a 404 → non-retryable → 1 CRITICAL; an unreachable target with per-job `attempts:2` → interim attempt no alert, exhaustion → 1 CRITICAL; `alerts-since.mjs` confirmed 2 CRITICAL / 0 WARN total (not 3).
 - **Block 5 — Monitoring + dead-man's-switch.** Queue-depth cron alerts (§14.6 thresholds); consumer heartbeat via host systemd timer (mirror ADR-046); Bull Board optional; confirm AOF survives a Redis restart. DoD: a killed consumer alerts within the heartbeat window; depth thresholds alert; queue survives Redis restart with no job loss. **✅ done 2026-06-26** (`block-5-findings.md`; design in the Block-5 amendment below). Consumer `GET /metrics` (BullMQ `getJobCounts` + a consumer-**computed** alert), the 5-min `Queue Depth Monitor (v1)` (`M48svwpdhDg8l6An`) cron, the host `consumer-heartbeat.timer` dead-man's-switch (Redis TTL key + `consumer-heartbeat-watchdog.sh`, reusing the ADR-046 `watchdog.env`/intake), and the 45s config-refresh poll. DoD verified live: 100 delayed jobs → `/metrics` CRITICAL flood → cron posted one CRITICAL (manual run + the scheduled tick) → cleared on removal; a stopped consumer let the heartbeat key expire → the host watchdog fired CRITICAL within the window → clean restart; AOF confirmed enabled (Block 0 G4 already proved live restart-survival). Bull Board not added (deferred — `/metrics` + the cron cover the operator need). The config-refresh poll's live concurrency-apply + "restart required" WARN are deployed and verified-by-construction (the interval mechanism is proven by the heartbeat timer rewriting its key after restart; `loadQueueConfig` is the proven startup reader); a shared-config live mutation test was left for explicit operator authorization.
-- **Block 6 — Burst scope-test + doc reconciliation.** Enqueue 50 due-date tasks: paced under the Managed Agents cap (no 429/529 storms), an interactive job jumps the batch, runs are idempotent, a forced failure dead-letters once. Update `current.md` §14.2 (stack → BullMQ + thin consumer, n8n regular mode) and §14.4 (Bedrock → Managed Agents limits), mark the queue LIVE. DoD: scope-test passes; `current.md` reconciled; drift-clean.
+- **Block 6 — Burst scope-test + doc reconciliation.** Enqueue 50 due-date tasks: paced under the Managed Agents cap (no 429/529 storms), an interactive job jumps the batch, runs are idempotent, a forced failure dead-letters once. Update `current.md` §14.2 (stack → BullMQ + thin consumer, **n8n stays in queue mode**) and §14.4 (Bedrock → Managed Agents limits), mark the queue LIVE. DoD: scope-test passes; `current.md` reconciled; drift-clean. **✅ done 2026-06-26** (`block-6-findings.md`; design in the Block-6 amendment below). Acceptance verified live on the isolated `agent-jobs-test` queue (no real spine, no Anthropic cost): formula 8/8 buckets correct via real `/enqueue`; scrambled add `[5,2,8,1,6,3,7,4]` drained `[1..8]` (concurrency-1); a 52-job burst held max-in-flight at the cap (5) with two explicit jobs jumping the batch despite being enqueued last; negative-config (concurrency 99 + lock_duration 120 k) → all three coupled invariants clamped + WARN'd at startup (delivered to Alerts), bad values never reached the worker. Idempotent-skip + exactly-once dead-letter were verified live in Blocks 2–4. `current.md` §14.1–§14.6/§15.10 reconciled; drift-clean.
 
 ## Consequences
 
@@ -239,3 +239,50 @@ Block 5 wires the observability layer. The design choices below depart from the 
 - **Heartbeat cadence (revised 2026-06-26, operator request).** `heartbeat_stale_s` raised 120 → **300** and the host timer moved from 1-min to **5-min**. The cost asymmetry is the reason: the consumer's Redis `SET` is trivially cheap, but the watchdog's per-tick `docker exec n8n-redis redis-cli` spawns a process + enters a namespace, so the *timer* is the real recurring cost — slow it, not the write. Detection of a dead consumer is now ≈5–10 min (TTL 300 + up to one 5-min tick), which is fine for a durable queue (jobs just wait until restart). The consumer writes every ~100 s (`stale_s/3`), so a single missed write still can't expire the key (no false positive).
 - **Config refresh poll — cadence is itself a config knob, default once/day (revised 2026-06-26, operator request).** New key `queue.config_refresh_s` (default **86400**; reader floors at 60 s, DB trigger bounds 60..604800). The original 45 s poll did ≈1,900 Supabase reads/day for almost no benefit — config edits are rare. The poll applies `concurrency` live (BullMQ's dynamic `worker.concurrency` setter); for the construction-only knobs (`lock_duration_ms`, `rate_limit_per_min`, read once at Worker build) it WARNs "restart required" instead of silently no-op'ing. Warnings are de-duplicated against the previous poll; the clamp logic is the same fail-safe reader used at startup. **Consequence to accept:** at a daily cadence the "live concurrency apply" lags up to a day — so for an *immediate* concurrency change the operator **restarts the consumer** (reads config at startup) or temporarily lowers `config_refresh_s`; the poll is a slow drift-catcher, not a live-tuning mechanism. The `config_refresh_s` and `heartbeat_stale_s` timers reschedule themselves on change (the new cadence takes effect on the next scheduled poll).
 - **Bull Board deferred.** `/metrics` + the depth cron cover the operator's need (counts + alarms); a Bull Board UI adds an exposed surface for no current benefit. Revisit if manual queue inspection becomes routine.
+
+## Amendment (2026-06-26, Block 6) — Accepted; n8n stays in queue mode; acceptance results
+
+Block 6 is the acceptance gate and the final reconciliation. Two decision corrections and the live results.
+
+**1. Status → Accepted.** The queue is built and verified end-to-end across Blocks 0–6 and is LIVE for the
+one cut-over producer (`CU Webhook Producer`, @-mention) behind `config.queue_enabled`.
+
+**2. n8n stays in QUEUE mode; BullMQ coexists by key prefix (reverses the original §1/R3 "regular mode"
+line).** This was the most consequential correction. The original ADR treated "two Bull queues on one
+Redis" as redundant and chose to drop n8n queue mode. That was wrong: the two operate at *different
+layers* and neither can do the other's job.
+- **n8n queue mode** distributes *n8n executions* across `n8n-main` + `n8n-worker` for infra/memory
+  isolation — the base64 image-generation path and heavy Docling runs are kept off the webhook/UI process
+  (ADR-058 depends on this split).
+- **BullMQ** admits *agent jobs* — priority, Managed-Agents concurrency, retry/backoff/DLQ, idempotency.
+  It can only *trigger* n8n workflows (via the held-connection `Spine HTTP Ingress`), never execute them.
+
+  Dropping queue mode would collapse every execution into `n8n-main`'s 768 MB heap, a reliability
+  regression, and only becomes clean once image generation is also containerized (deferred by ADR-055).
+  The "duplication" is skin-deep: distinct key prefixes (`haxeq:*` vs n8n's `bull:*`) on the same Redis,
+  ~tens of MB. So they coexist. `current.md` §14.2 documents this as the as-built design.
+
+**3. §14.4 stale "Bedrock 50/min" → Anthropic Managed Agents limits.** The binding constraint is the
+Managed Agents capacity (pooled environment; create-session RPM + ITPM/OTPM), not a per-integration RPM,
+and at five-person volume the BullMQ **concurrency cap (C=5)** is the primary control with everything else
+slack — so per-integration token buckets stay deferred. `current.md` §14.4 rewritten accordingly.
+
+**Acceptance test results (live, isolated `agent-jobs-test` queue — no real spine, no Anthropic cost).**
+All run via `docker exec … node --input-type=module -e` against the `haxeq:agent-jobs-test:*` keyspace,
+flushed after each; no n8n executions generated (heeding the Insights write-error caution in CLAUDE.md):
+- **Priority formula 8/8.** POSTing the 8 (invocation_type × impact) buckets to the real `/enqueue`
+  returned exactly priorities 1–8 (explicit_mention 1–4, due_date 5–8, ranked by `[AI] Wpływ`).
+- **Strict dequeue order.** 8 jobs added in scrambled order `[5,2,8,1,6,3,7,4]` drained `[1,2,…,8]` under a
+  concurrency-1 worker — proving every explicit (1–4) precedes every automatic (5–8), and an automatic
+  `Krytycznie ważne` (5) waits behind an explicit `Niski` (4).
+- **Burst pacing + jump.** 50 automatic (priority 8) + 2 explicit (priority 1, enqueued **last**),
+  concurrency 5: max-in-flight observed **= 5** (paced at the cap, never exceeded — the no-429/529-storm
+  property), and both explicit jobs completed at positions 0–1 (jumped the whole batch).
+- **Negative config (the silent-failure gate).** `concurrency=99` + `lock_duration_ms=120000` written to
+  `config` (both pass the DB trigger's *absolute* bounds by design), consumer restarted: the read-side
+  reader clamped all three coupled invariants and WARNed each to the Alerts channel — `concurrency 99→10`
+  (env_cap), `lock_duration 120000→1020000` (max_runtime+MARGIN), and the cascade `spine_timeout
+  1200000→900000` (lock_duration−MARGIN). The bad values never reached the worker. Reverted to 5 / 1500000;
+  clean restart, 0 WARN. (Authorized by the operator as a temporary, reverted shared-config edit.)
+- **Idempotent runs + exactly-once dead-letter** were already proven live in Blocks 2–4 and were not
+  re-run (re-running adds only test artifacts).
