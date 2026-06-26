@@ -1298,6 +1298,20 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   server); compute the session USD cost; enumerate produced office-docs. `Render Agent Output (v1)` then turns the
   agent's block-array into the Post Reply contract (`rendered_delta` + `image_manifest`, fetching produced
   images from the carrier). Verified live across text / web-research / image-gen / vision / office-doc (Block 9).
+  **ADR-061 Block 3 — end-to-end + scope verified (2026-06-26, ADR-061 Accepted):** the full spine was
+  driven via the orchestrator `When Called` with the producer's exact inputs on the heavy test task
+  `869dux9ne`. A **trivial-on-heavy** "2+2" run produced a **floor-only** Stage A prompt (~5.4k chars /
+  ~1.35k tok — prefs + triggering comment + impact + title + `get_task_details` hint, no description/
+  comments/attachment text), ran a **single session turn with zero tail tools** (`input_tokens=2`,
+  `cache_read=0`), and answered correctly — the 100k→floor win realized (the rules live in the cached
+  `system`, so only **2 uncached input tokens**). A **heavy** 4-part request drove **four** agent-chosen
+  tail round-trips through `Triggering Task Tail Handler (v1)` — `get_task_details`, `list_attachments`
+  (zip manifests nested), `get_task_comments`, and `get_attachment("<zip>:<idx>")` (exactly one inner
+  PNG as vision) — answered all parts correctly with `cache_read=98299` re-read across the loop
+  (the cached prefix benefits every tool round-trip). Other-task discovery stayed per-user scoped
+  (the bot-token triggering-task tools take `clickup_task_id` from n8n, never agent input, so scope can't
+  widen); 0 CRITICAL / 0 WARN, drift clean (38/38), cost rows attributed via `Log Model Run`. The
+  **tier-additive cached system prefix** (ADR-061 decision detail 3) is deferred to **ADR-062** (Proposed).
 - **Stage B (bare, dormant failover) — `Execute LLM Call (v1)`** (`n8n/workflows/execute-llm-call.json`, id `9qdJA4xnAGbxqkt9`,
   10 nodes): `Invoke Model (v1)` → drafted reply + cost; forwards `image_blocks_json` to Invoke Model.
   **Multimodal output (Block 12, 2026-06-13):** the drafting model now returns the **output-block list**, so
