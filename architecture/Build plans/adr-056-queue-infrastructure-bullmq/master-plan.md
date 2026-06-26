@@ -104,7 +104,7 @@ This plan is written against the **live** repo state confirmed by exploration, n
 
 | # | Block | State |
 |---|---|---|
-| 0 | Capability gates G1–G5 (env-concurrency cap → C; prove held-connection ingress; immediate-200 safety; BullMQ↔Redis7+AOF; measure max spine runtime) | ⬜ not started |
+| 0 | Capability gates G1–G5 (env-concurrency cap → C; prove held-connection ingress; immediate-200 safety; BullMQ↔Redis7+AOF; measure max spine runtime) | ✅ done (2026-06-26, `block-0-findings.md`). **G1** pooled env → C=5, `env_concurrency_cap`=10. **G2** held connection proven (330s + real spine over internal net, bypasses nginx); ingress `SQOkffGQhzMojrmN` left deactivated — Block 1 must harden its return contract (HTTP 500 on a *successful* run → verify via `agent_runs`, not status). **G3** producer `onReceived` confirmed. **G4** Redis 7.4.9 + AOF survives restart. **G5** max real run 872s (840s session deadline + overhead) → **raise seeds**: `max_runtime_ms`=900000, `lock_duration_ms`=1200000, `spine_timeout_ms`=1020000. |
 | 1 | Migration `045_queue_config.sql` + consumer skeleton (`/enqueue`, stub Worker, fail-safe reader, `/health`) deployed | ⬜ not started |
 | 2 | Processor: `agent_runs` idempotency check → spine ingress await (`spine_timeout`) → error classification | ⬜ not started |
 | 3 | Producer cutover — CU Webhook Producer behind `config.queue_enabled` (enqueue vs sync fallback); re-export + drift-check | ⬜ not started |
