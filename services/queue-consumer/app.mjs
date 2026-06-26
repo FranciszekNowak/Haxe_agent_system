@@ -27,8 +27,9 @@
 //        non-5xx non-2xx (e.g. 4xx) / unparseable / unknown -> UnrecoverableError -> DLQ
 //      Business failures stay 200+status (never auto-retried). Only infra failures retry.
 //
-// attempts + custom backoff (60/300/900s) are wired here so classification is demonstrable; the
-// terminal `failed` -> CRITICAL DLQ alert and the config refresh poll land in Block 4 / Block 5.
+// attempts + custom backoff (60/300/900s) are wired here so classification is demonstrable. The
+// terminal `failed` -> CRITICAL DLQ alert is Block 4 (the worker `failed` handler below, gated on
+// the dead-letter condition). The 30-60s config refresh poll lands in Block 5.
 //
 // SCHEMA NOTE (load-bearing). The JOB's invocation_type (queue vocab: explicit_mention, due_date,
 // ...) is NOT agent_runs.invocation_type (CHECK: autonomous|explicit|conversation_reply). It aligns
@@ -458,8 +459,8 @@ function startWorker() {
       settings: {
         // Custom per-attempt backoff (60/300/900s); jobs are added with backoff:{type:'custom'}.
         // attemptsMade counts attempts already made (1 after the first failure) -> index attemptsMade-1,
-        // clamped to the last element so a shorter array repeats its tail. Block 4 finalizes the DLQ
-        // exhaustion alert; the schedule itself is demonstrated by Block 2's DoD.
+        // clamped to the last element so a shorter array repeats its tail. The terminal exhaustion ->
+        // CRITICAL DLQ alert is the worker `failed` handler below (Block 4).
         backoffStrategy: (attemptsMade) => {
           const arr = cfg.backoff_ms;
           return arr[Math.min(Math.max(attemptsMade - 1, 0), arr.length - 1)];
@@ -470,8 +471,34 @@ function startWorker() {
 
   worker.on('completed', (job) =>
     console.log(JSON.stringify({ level: 'info', evt: 'completed', jobId: job.id, priority: job.opts.priority })));
-  worker.on('failed', (job, err) =>
-    console.error(JSON.stringify({ level: 'error', evt: 'failed', jobId: job?.id, attempts: job?.attemptsMade, unrecoverable: err instanceof UnrecoverableError, err: err?.message })));
+
+  // Dead-letter alert (Block 4). The `failed` event fires once PER failed attempt; BullMQ only
+  // dead-letters (stops retrying) when the error is an UnrecoverableError OR all attempts are
+  // exhausted (attemptsMade >= opts.attempts). We mirror exactly that terminal condition so the
+  // CRITICAL alert fires EXACTLY ONCE — on the dead-letter, never on a retryable interim failure
+  // (those are logged at error level and left to the backoff schedule). The BullMQ `failed` set
+  // (removeOnFail age 24h) IS the dead-letter store; this handler is its alarm (ADR-056 §6 / §14.5).
+  worker.on('failed', async (job, err) => {
+    const unrecoverable = err instanceof UnrecoverableError;
+    const attemptsMade = job?.attemptsMade ?? 0;
+    const maxAttempts = job?.opts?.attempts ?? 1;
+    const terminal = !!job && (unrecoverable || attemptsMade >= maxAttempts);
+    console.error(JSON.stringify({
+      level: 'error', evt: 'failed', jobId: job?.id, attempts: attemptsMade,
+      max_attempts: maxAttempts, unrecoverable, terminal, err: err?.message,
+    }));
+    if (!terminal) return; // retryable interim failure: BullMQ will retry on the backoff schedule.
+    const d = job.data || {};
+    const message = unrecoverable
+      ? `agent job ${job.id} dead-lettered (non-retryable) after ${attemptsMade} attempt(s)`
+      : `agent job ${job.id} dead-lettered: exhausted ${attemptsMade}/${maxAttempts} attempts`;
+    // postAlert swallows its own errors (never throws) — a failed alert must not crash the worker.
+    await postAlert('CRITICAL', message, {
+      jobId: job.id, task_id: d.task_id, invocation_type: d.invocation_type,
+      priority: job.opts?.priority, attempts_made: attemptsMade, max_attempts: maxAttempts,
+      unrecoverable, error: err?.message, failed_reason: job.failedReason,
+    }, 'queue-consumer/dlq');
+  });
   worker.on('error', (err) =>
     console.error(JSON.stringify({ level: 'error', evt: 'worker_error', err: err?.message })));
   worker.on('stalled', (jobId) =>
@@ -526,7 +553,8 @@ app.post('/enqueue', async (req, res) => {
     }
     // ALWAYS set an explicit priority 1..8 — an unset BullMQ priority falls into a separate FIFO path
     // and breaks ordering (ADR-056 amendment 2026-06-23b). attempts + custom backoff (60/300/900s)
-    // are wired so error classification is demonstrable (Block 2 DoD); the terminal DLQ alert is Block 4.
+    // are wired so error classification is demonstrable (Block 2 DoD); the terminal DLQ alert fires from
+    // the worker `failed` handler on the dead-letter condition (Block 4).
     await queue.add(QUEUE_NAME, jobData, {
       jobId, priority,
       attempts: cfg.retry_attempts,

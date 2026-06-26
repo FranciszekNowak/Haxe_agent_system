@@ -19,7 +19,11 @@ network, no public port, built on the VPS via the stack `docker-compose.yml`.
   healthy 15-min run) → error classification (transport/timeout/5xx → retryable; `200 status=failed`
   / 4xx / unknown → `UnrecoverableError` → DLQ). `attempts` + custom backoff (60/300/900s) wired so
   classification is demonstrable; the terminal DLQ alert is Block 4.
-- **Block 4:** retry/backoff (60/300/900s, attempts=5) + DLQ → one CRITICAL alert.
+- **Block 4 (this):** terminal dead-letter alert — `worker.on('failed')` posts **one** CRITICAL
+  (`queue-consumer/dlq`) when a job is dead-lettered (gated on `UnrecoverableError || attemptsMade >=
+  attempts`, so the per-attempt `failed` event alarms exactly once, never on a retryable interim
+  failure). Retry/backoff (60/300/900s, attempts=5) + classification were wired in Block 2. Verified
+  live: 404 → non-retryable → 1 CRITICAL; ECONNREFUSED exhaustion → 1 CRITICAL, no interim alert.
 - **Block 5:** `/metrics` + depth cron, heartbeat dead-man's-switch, 30–60s config refresh poll +
   "restart required" WARN for construction-only values.
 
