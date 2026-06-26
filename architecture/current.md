@@ -1260,7 +1260,9 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   `embed_input` (render) and `reference_refs` (image generation) still resolve round-trip-free: the orchestrator
   writes `agent_input_file_map` (`source_ref`→`url`, synthetic `file_id`) from the same floor metadata and sets
   the session's `input_images_json='[]'` (so the in-session eager Files-API upload becomes a no-op). The **bare**
-  failover keeps full eager assembly. zip-internal images are an accepted *output*-path regression (Block 2c). Folds attachment **text** into the prompt (bare lane only) and fires the reader's `warnings` via
+  failover keeps full eager assembly. zip-internal images remain an accepted *output*-path regression (Block 2c made
+  them seeable as vision via `get_attachment("<zip>:<idx>")` and browsable via the nested `list_attachments` manifest,
+  but they are still not wired into `embed_input`/`reference_file_ids`). Folds attachment **text** into the prompt (bare lane only) and fires the reader's `warnings` via
   `Post Alert (v1)` on a reconverging side branch (`Return Context` stays the sole terminal). Multimodal
   input (ADR-036/038/040 Block 5): images present → `modality='multimodal_input'` set on the context payload →
   routing returns the **Gemini** alias for all multimodal tasks (`haxe-gemini-flash`/`-pro` by tier; ADR-043
@@ -1280,7 +1282,15 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   (the agent supplies only `limit`/`since`/`depth`/`attachment_id`, never a task id — so it cannot widen scope past the
   triggering task; other-task discovery stays on the per-user scoped `clickup_*` MCP). A failed pull WARNs via
   `Post Alert (v1)` on a side branch and returns a structured error to the agent (never a silent empty); the handler's
-  return path is a single branch-free terminal. The image branch stays dormant (image generation runs via the MCP
+  return path is a single branch-free terminal. **ADR-061 Block 2c (progressive zip disclosure):** `list_attachments`
+  now nests each ZIP attachment's inner manifest inline — one `manifest_only` `zip-extractor` call per zip (central-
+  directory walk: names/sizes/types, **no** byte read / Docling / upload) — listing every inner file as
+  `attachment_id="<zip>:<idx>"`; `get_attachment("<zip>:<idx>")` materializes **exactly that one** inner file (the
+  extractor's `only_index` mode, via `Read Input`'s `only_att_id` base-id+inner-index parse) and returns it as text
+  (Docling) or vision. Entry `index` is assigned to every non-junk entry **before** the size caps, so it is stable
+  between the cheap manifest and the single-entry pull. A zip-inner **image** is thus seeable as vision, but is still
+  **not** wired into `embed_input`/`reference_file_ids` (those resolve only against the floor's top-level
+  attachment metadata). The image branch stays dormant (image generation runs via the MCP
   server); compute the session USD cost; enumerate produced office-docs. `Render Agent Output (v1)` then turns the
   agent's block-array into the Post Reply contract (`rendered_delta` + `image_manifest`, fetching produced
   images from the carrier). Verified live across text / web-research / image-gen / vision / office-doc (Block 9).
@@ -1312,7 +1322,12 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   extractor uploads each accepted entry to the bucket and returns a manifest; `Fan Manifest` fans it into one
   item per entry at the parent zip's interleaved ordinal, feeding the **unchanged** `Classify Zip Entry`
   three-way fan; everything else (including the no-attachment sentinel) flows to `Classify Attachment`
-  unchanged. The caps come from **live `config`**: an `Await Caps` merge barrier on the spine
+  unchanged. **ADR-061 Block 2c** added two cheaper `POST /extract` modes sharing the same entry walk: `manifest_only`
+  (central-directory walk — names/sizes/types/`<zip>:<idx>` att_ids, no read/upload/sign; used by the tail handler's
+  `list_attachments` to nest a zip's inner index) and `only_index=N` (materialize just one inner entry; used by
+  `get_attachment("<zip>:<idx>")` via `Read Input`'s `only_att_id`). An entry's `index` is assigned before the caps,
+  so it is identical across all three modes — a manifest-listed `<zip>:<idx>` is a valid single-pull argument. The
+  full materialize-all contract (this bare-lane / `extract_clickup_task` / Stage-A path) is unchanged. The caps come from **live `config`**: an `Await Caps` merge barrier on the spine
   (`Explode Attachments → Await Caps → Zip? Switch`, with `Lookup File Processing Config` as its second
   input) forces `Lookup` to execute before the zip branch — n8n's v1 order otherwise defers that parallel
   side-branch to last, so `Zip Caps` would read an unexecuted node, throw, and silently fall back to

@@ -244,10 +244,10 @@
       "name": "Build Attachments Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [740, 480],
-      "notes": "Shape the task's attachments[] into a cheap index the agent reads to decide what to pull: one line per attachment with its attachment_id, title, mime/ext, size. Tells the agent to call get_attachment with a chosen attachment_id for content. No attachments -> legitimate empty (no WARN). WARN only when the GET failed (no attachments array). new_warnings_json='[]' (self-alert).",
+      "position": [1500, 460],
+      "notes": "Shape the task's attachments[] into a cheap index the agent reads to decide what to pull: one line per attachment with attachment_id, title, mime/ext, size. ADR-061 Block 2c: each ZIP attachment also nests its INNER manifest inline (indented), each inner file as attachment_id=\"<zip>:<idx>\" with name/type/size (route=drop entries flagged [POMINIETO]); the agent pulls ONE inner file via get_attachment(\"<zip>:<idx>\"). Manifests come from Fetch Zip Manifest (aligned by order with Build Zip Manifest Reqs[kind=zip]). No attachments -> legitimate empty (no WARN). WARN when the GET failed (no attachments array) OR a zip manifest failed (entries=null -> the zip is still listed plain, agent can pull the whole archive). new_warnings_json='[]' (self-alert via Should Warn?).",
       "parameters": {
-        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet task = {}; try { task = $('Get Attachment List').first().json || {}; } catch (e) {}\nlet atts = Array.isArray(task.attachments) ? task.attachments : null;\nlet ws = '', wm = '', wd = '';\nif (atts === null) {\n  ws = 'managed-agents/tail-attachments-failed';\n  wm = 'Pobranie listy zalacznikow zadania ' + taskId + ' nie powiodlo sie (narzedzie list_attachments).';\n  wd = 'task=' + taskId;\n  atts = [];\n}\nconst items = atts.map(function(a){ return { attachment_id: String((a && a.id) || ''), title: (a && a.title) || '', ext: String((a && a.extension) || '').toLowerCase(), mime: String((a && a.mimetype) || '').toLowerCase(), size_bytes: Number((a && a.size) || 0) }; });\nconst lines = [];\nlines.push('Zalaczniki zadania ' + taskId + ' (' + items.length + '):');\nif (items.length === 0) lines.push('(brak zalacznikow)');\nfor (const it of items) { lines.push('- attachment_id=\"' + it.attachment_id + '\" | ' + (it.title || '(bez nazwy)') + ' | ' + (it.mime || it.ext || '?') + ' | ' + (it.size_bytes ? Math.round(it.size_bytes / 1024) + ' KB' : '? KB')); }\nlines.push('');\nlines.push('Aby pobrac TRESC konkretnego zalacznika (dokument -> tekst, obraz -> wizja), wywolaj get_attachment z { attachment_id } wybranym z powyzszej listy.');\nconst content = [{ type: 'text', text: lines.join('\\n') }];\nreturn [{ json: {\n  status: ws ? 'partial' : (items.length ? 'ok' : 'empty'),\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: ws, _warn_msg: wm, _warn_details: wd\n} }];"
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet task = {}; try { task = $('Get Attachment List').first().json || {}; } catch (e) {}\nlet atts = Array.isArray(task.attachments) ? task.attachments : null;\nlet ws = '', wm = '', wd = '';\nif (atts === null) {\n  ws = 'managed-agents/tail-attachments-failed';\n  wm = 'Pobranie listy zalacznikow zadania ' + taskId + ' nie powiodlo sie (narzedzie list_attachments).';\n  wd = 'task=' + taskId;\n  atts = [];\n}\nlet zipReqs = []; try { zipReqs = $('Build Zip Manifest Reqs').all().map(function(i){ return i.json; }).filter(function(r){ return r && r.kind === 'zip'; }); } catch (e) {}\nlet zipResps = []; try { zipResps = $('Fetch Zip Manifest').all().map(function(i){ return i.json; }); } catch (e) {}\nconst manifestByZip = {};\nlet zipFailed = 0;\nfor (let k = 0; k < zipReqs.length; k++) {\n  const resp = zipResps[k] || {};\n  const entries = Array.isArray(resp.entries) ? resp.entries : null;\n  manifestByZip[zipReqs[k].zip_att_id] = entries;\n  if (entries === null) zipFailed++;\n}\nif (zipFailed > 0 && !ws) {\n  ws = 'managed-agents/tail-zip-manifest-failed';\n  wm = 'Nie udalo sie odczytac zawartosci ' + zipFailed + ' archiwum ZIP zadania ' + taskId + ' (list_attachments); archiwum nadal mozna pobrac w calosci przez get_attachment.';\n  wd = 'task=' + taskId + '; zip_failed=' + zipFailed;\n}\nconst items = atts.map(function(a){ return { attachment_id: String((a && a.id) || ''), title: (a && a.title) || '', ext: String((a && a.extension) || '').toLowerCase(), mime: String((a && a.mimetype) || '').toLowerCase(), size_bytes: Number((a && a.size) || 0) }; });\nconst lines = [];\nlines.push('Zalaczniki zadania ' + taskId + ' (' + items.length + '):');\nif (items.length === 0) lines.push('(brak zalacznikow)');\nfor (const it of items) {\n  lines.push('- attachment_id=\"' + it.attachment_id + '\" | ' + (it.title || '(bez nazwy)') + ' | ' + (it.mime || it.ext || '?') + ' | ' + (it.size_bytes ? Math.round(it.size_bytes / 1024) + ' KB' : '? KB'));\n  const entries = manifestByZip[it.attachment_id];\n  if (entries === null) {\n    lines.push('    (nie udalo sie odczytac zawartosci archiwum - pobierz cale przez get_attachment z tym attachment_id)');\n  } else if (entries) {\n    if (entries.length === 0) lines.push('    (archiwum bez obslugiwanych plikow)');\n    for (const e of entries) {\n      const ref = e.att_id || (it.attachment_id + ':' + e.index);\n      const drop = e.route === 'drop' ? (' [POMINIETO: ' + (e.drop_reason || 'drop') + ']') : '';\n      lines.push('    - attachment_id=\"' + ref + '\" | ' + (e.name || '(bez nazwy)') + ' | ' + (e.mime || e.ext || '?') + ' | ' + (e.size ? Math.round(e.size / 1024) + ' KB' : '? KB') + drop);\n    }\n  }\n}\nlines.push('');\nlines.push('Aby pobrac TRESC konkretnego zalacznika (dokument -> tekst, obraz -> wizja), wywolaj get_attachment z { attachment_id } z powyzszej listy. Pliki WEWNATRZ archiwum ZIP maja zagniezdzony attachment_id w formacie \"<zip>:<indeks>\" - podaj go do get_attachment, aby pobrac pojedynczy plik z archiwum (nie cale archiwum).');\nconst content = [{ type: 'text', text: lines.join('\\n') }];\nreturn [{ json: {\n  status: ws ? 'partial' : (items.length ? 'ok' : 'empty'),\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: ws, _warn_msg: wm, _warn_details: wd\n} }];"
       }
     },
     {
@@ -471,6 +471,80 @@
       "parameters": {
         "jsCode": "const r = ($('Merge Result').first() || {}).json || {};\nreturn [{ json: {\n  status: r.status || 'ok',\n  tool_result_content_json: r.tool_result_content_json || JSON.stringify([{ type: 'text', text: 'Brak wyniku narzedzia.' }]),\n  new_images_json: r.new_images_json || '[]',\n  new_warnings_json: r.new_warnings_json || '[]'\n} }];"
       }
+    },
+    {
+      "id": "808646e8-1aea-42ac-8717-e0f3234be774",
+      "name": "Build Zip Manifest Reqs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 460],
+      "notes": "ADR-061 Block 2c: emit one item per ZIP attachment of the triggering task ({kind:'zip', zip_att_id, url, title, task_id}) so Fetch Zip Manifest can pull each archive's INNER manifest (cheap, no extraction). No zips -> a single {kind:'none'} sentinel so the chain still reaches Build Attachments Result (a 0-item Code node would skip everything downstream). Reads the same attachment index Get Attachment List fetched.",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet task = {}; try { task = $('Get Attachment List').first().json || {}; } catch (e) {}\nconst atts = Array.isArray(task.attachments) ? task.attachments : [];\nconst isZip = function(a){ const e = String((a && a.extension) || '').toLowerCase(); const m = String((a && a.mimetype) || '').toLowerCase(); return e === 'zip' || m === 'application/zip' || m === 'application/x-zip-compressed'; };\nconst out = [];\nfor (const a of atts) {\n  if (!isZip(a)) continue;\n  out.push({ json: { kind: 'zip', zip_att_id: String((a && a.id) || ''), url: (a && (a.url || a.url_w_query)) || '', title: (a && a.title) || 'archive.zip', task_id: taskId } });\n}\nif (out.length === 0) out.push({ json: { kind: 'none', task_id: taskId } });\nreturn out;"
+      }
+    },
+    {
+      "id": "c5460671-2936-4311-9b70-2cdbfd3ee215",
+      "name": "Is Zip Req?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [900, 460],
+      "notes": "TRUE (kind=zip) -> Fetch Zip Manifest pulls that archive's inner manifest. FALSE (the kind='none' sentinel, no zips) -> straight to Merge Manifests so Build Attachments Result still runs. Exactly one branch fires per item; with >=1 zip only TRUE fires (N items), with 0 zips only FALSE fires (1 sentinel).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-is-zip-req",
+              "leftValue": "={{ $json.kind }}",
+              "rightValue": "zip",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "97d22bfe-7bd9-4232-9793-7b600f1201a6",
+      "name": "Fetch Zip Manifest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 380],
+      "notes": "ADR-061 Block 2c: POST the zip's pre-signed ClickUp url to the zip-extractor in MANIFEST mode (manifest_only:true) -> central-directory walk only: names/sizes/types/routes + <zip>:<idx> att_ids, NO byte read / upload / sign. Runs once per zip item. Caps omitted -> service defaults (50/25/250) which equal config; entry indices are cap-independent so they still align with get_attachment's single-entry materialize. onError continueRegularOutput + retry: a manifest failure degrades to no entries (Build Attachments Result lists the zip plain + WARNs), never throws.",
+      "parameters": {
+        "method": "POST",
+        "url": "http://zip-extractor:8080/extract",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $json.url, task_id: $json.task_id, attachment_id: $json.zip_att_id, parent_title: $json.title, manifest_only: true }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "b144cbc5-2fcd-4129-a420-27121ad7624e",
+      "name": "Merge Manifests",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [1300, 460],
+      "notes": "ADR-061 Block 2c: rejoin the zip branch (input 0, Fetch Zip Manifest) and the no-zip branch (input 1, Is Zip Req? false) into ONE input for Build Attachments Result (a Code node with two incoming connections would run once per connection). Append; exactly one input fires per run (mirrors Merge Result).",
+      "parameters": {
+        "numberInputs": 2
+      }
     }
   ],
   "connections": {
@@ -564,17 +638,6 @@
             "node": "Merge Result",
             "type": "main",
             "index": 1
-          }
-        ]
-      ]
-    },
-    "Get Attachment List": {
-      "main": [
-        [
-          {
-            "node": "Build Attachments Result",
-            "type": "main",
-            "index": 0
           }
         ]
       ]
@@ -719,6 +782,68 @@
         [
           {
             "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Attachment List": {
+      "main": [
+        [
+          {
+            "node": "Build Zip Manifest Reqs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Zip Manifest Reqs": {
+      "main": [
+        [
+          {
+            "node": "Is Zip Req?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Zip Req?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Zip Manifest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Manifests",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Fetch Zip Manifest": {
+      "main": [
+        [
+          {
+            "node": "Merge Manifests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Manifests": {
+      "main": [
+        [
+          {
+            "node": "Build Attachments Result",
             "type": "main",
             "index": 0
           }
