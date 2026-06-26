@@ -80,20 +80,28 @@ orchestrator's terminal branches (`Call Post Reply (Managed)`, `Img Cost Missing
 Execute-Workflow caller, so the webhook had "no item to return" → 500. This is the documented n8n
 sub-workflow-return-determinism trap (CLAUDE.md), surfacing as an HTTP 500 despite success.
 
-**Implication for the consumer (carry into Block 1/2):** the consumer must distinguish
-1. **"the spine ran to completion"** — verified via the `agent_runs` row (ADR-035), the source of truth,
-   **not** the ingress HTTP status; from
-2. **"infrastructure failed to invoke/await the spine"** — a connection error / timeout / a *genuine*
-   n8n-level 5xx → retryable per ADR-047.
+**Implication for the consumer (carry into Block 1/2):** harden the ingress so its HTTP response **is**
+the authoritative, deterministic signal — do not fall back to polling `agent_runs` to judge the result.
+The 500 was only because bare `lastNode` let n8n pick the return node by accident; the orchestrator
+itself already computes a clear outcome (`Call Execute Agent Session` → `{status, failure_kind, outcome,
+warnings}`, gated by `Session OK?` / `If LLM Succeeded?`). **Block 1 adds an explicit terminal that
+returns that outcome**, e.g. `Webhook(responseNode) → Execute Workflow (orchestrator, onError:
+continueErrorOutput) → Set (coalesce to ONE item carrying the orchestrator's real outcome: {status,
+outcome, failure_kind, clickup_task_id, warnings}) → Respond to Webhook`. Consumer classification then
+reads that response:
+- **transport error / timeout / genuine n8n-level 5xx** → retryable infra failure (ADR-047);
+- **HTTP 200, `status=completed`** → job done;
+- **HTTP 200, `status=failed` (business)** → `UnrecoverableError` → DLQ (no retry).
 
-The n8n `500 "No item to return was found"` is case (1), not a spine error, and must **not** trigger a
-retry (that would double-draft). **Block 1 hardens the ingress so a completed run always returns a
-deterministic `200` + a small normalized JSON body**, e.g.
-`Webhook(responseNode) → Execute Workflow (orchestrator, onError: continueErrorOutput) → Set (coalesce
-to one item: {status, clickup_task_id}) → Respond to Webhook (200)`. Then 2xx = "spine completed →
-confirm draft via `agent_runs`"; connection-error/timeout = retryable infra failure. This refines
-ADR-056 §3/§6 ("await completion and use success/failure"): classify **infra** failure by transport,
-classify **business outcome** by `agent_runs`.
+Keep business failures as **200 + a `status` field**, *not* an HTTP 5xx, so the HTTP client / BullMQ
+don't auto-retry a business failure (that would double-draft). The `agent_runs` row keeps **only** its
+ADR-035 role — the **pre-trigger idempotency skip** (don't re-run a task already drafted in the dedup
+window); it is not used to judge this run's result. The two mechanisms compose cleanly: the ingress
+response classifies the normal case, and the pre-trigger `agent_runs` check covers the one edge where
+the connection drops *after* the spine wrote its run but *before* responding (consumer sees a transport
+error → retries → idempotency check finds the completed run → skips). This refines ADR-056 §3/§6
+("await completion and use success/failure"): classify **infra** failure by transport, classify
+**business outcome** from the ingress's structured response.
 
 **Async-poll fallback:** documented in the ADR as the recorded fallback; **not needed** — the held
 connection is reliable.
