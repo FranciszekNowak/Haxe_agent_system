@@ -1091,6 +1091,26 @@ Process template (main task)
 
 ## 14. Queue infrastructure
 
+> **⚠ Being replaced by ADR-056 — BullMQ application queue + thin `queue-consumer` service.**
+> §14.2–§14.6 below describe the *original* n8n-queue-mode design; ADR-056 supersedes it. The
+> application queue is **BullMQ on the existing Redis** (key prefix `haxeq`, never colliding with
+> n8n queue mode's `bull:*` — n8n stays in queue mode, the two coexist), fronted by a new always-on
+> Node service **`queue-consumer`** (`services/queue-consumer/`, container `queue-consumer` on
+> `n8n-internal`, `expose:8080` internal only; mirrors `zip-extractor`). Producers `POST /enqueue`
+> and return; a BullMQ Worker dequeues by an 8-level priority, enforces concurrency/idempotency,
+> triggers the spine via the hardened **Spine HTTP Ingress (v1)** webhook, and (later blocks) owns
+> retry/backoff/dead-letter. All `queue.*` knobs live in Supabase `config` behind a fail-safe reader
+> that clamps three silent-failure invariants.
+>
+> **Build status** (master plan `architecture/Build plans/adr-056-queue-infrastructure-bullmq/`):
+> Block 0 (capability gates) and **Block 1 (2026-06-26)** are done — migration
+> `045_queue_config.sql` (seeds `queue.*` + a write-side validating trigger), the `queue-consumer`
+> service deployed to the stack (`/enqueue` + priority + fail-safe config reader + **stub** worker +
+> `/health`), and the hardened, deterministic-return `Spine HTTP Ingress (v1)`. **Not yet wired:**
+> the live @-mention path is still synchronous — the producer cutover behind `config.queue_enabled`
+> is Block 3, the real processor is Block 2, and the §14.2–§14.6 reconciliation (BullMQ, 8-level
+> priority, Managed-Agents limits, mark LIVE) is Block 6.
+
 ### 14.1 Why a queue
 
 Four problems solved simultaneously:

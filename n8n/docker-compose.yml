@@ -225,6 +225,46 @@ services:
       retries: 5
       start_period: 10s
 
+  # Application job queue + thin consumer (ADR-056). Producers POST /enqueue and return; a BullMQ
+  # Worker (queue "agent-jobs", Redis key prefix "haxeq" — never colliding with n8n queue mode's
+  # bull:*) dequeues by an 8-level priority, enforces concurrency/idempotency, triggers the spine via
+  # the Spine HTTP Ingress webhook, and (later blocks) owns retry/backoff/dead-letter. All queue.*
+  # knobs live in Supabase config behind a fail-safe reader. Mirrors zip-extractor; internal only,
+  # reachable at http://queue-consumer:8080. Needs SUPABASE_URL + SUPABASE_SERVICE_KEY + ALERT_INTAKE_KEY
+  # in .env (ALERT_INTAKE_KEY = the reused Storage Watchdog header-auth secret). STUB_DELAY_MS is a
+  # test-only lever (default 0). Block 1: stub worker (logs+completes); real processor lands in Block 2.
+  queue-consumer:
+    build:
+      context: ./queue-consumer
+    container_name: queue-consumer
+    restart: unless-stopped
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      REDIS_HOST: n8n-redis
+      REDIS_PORT: "6379"
+      QUEUE_NAME: agent-jobs
+      QUEUE_PREFIX: haxeq
+      SPINE_INGRESS_URL: http://n8n-main:5678/webhook/spine-ingress
+      ALERT_INTAKE_URL: http://n8n-main:5678/webhook/storage-watchdog-7e06358ac257ad20
+      ALERT_INTAKE_KEY: ${ALERT_INTAKE_KEY}
+      STUB_DELAY_MS: ${STUB_DELAY_MS:-0}
+      PORT: "8080"
+    expose:
+      - "8080"                 # internal only; reachable at http://queue-consumer:8080
+    networks:
+      - n8n-internal
+    mem_limit: 256m
+    depends_on:
+      n8n-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
 volumes:
   n8n-postgres-data:
   n8n-redis-data:

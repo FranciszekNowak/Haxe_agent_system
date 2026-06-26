@@ -1,0 +1,19 @@
+{
+  "name": "haxe-queue-consumer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "BullMQ application queue + thin consumer for the Haxe agent pipeline (ADR-056). Producers POST /enqueue; a BullMQ Worker dequeues by priority, enforces concurrency/idempotency, triggers the n8n spine, and owns retry/backoff/dead-letter.",
+  "main": "app.mjs",
+  "scripts": {
+    "start": "node app.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bullmq": "^5.34.0",
+    "express": "^4.21.2",
+    "ioredis": "^5.4.2"
+  }
+}

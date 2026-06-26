@@ -1,0 +1,48 @@
+# Add this service to /opt/haxe-agents/docker-compose.yml (under `services:`) and re-export the repo
+# copy. Deploy with `docker compose up -d --build queue-consumer` (ADR-033 prefers up -d for config).
+#
+# Source must be present on the VPS at /opt/haxe-agents/queue-consumer/ (scp the
+# services/queue-consumer/ dir there, sans node_modules) for the build context below.
+#
+# ENV: SUPABASE_URL / SUPABASE_SERVICE_KEY are already in the stack .env. ALERT_INTAKE_KEY is the
+# reused Storage Watchdog header-auth secret (same value as watchdog.env WATCHDOG_KEY) — added to
+# .env as a new additive line. The two internal URLs are non-secret topology, inlined here:
+#   - SPINE_INGRESS_URL  -> the hardened Spine HTTP Ingress (v1) webhook on n8n-main (internal,
+#                            bypasses nginx's 300s cap; held connection = spine run lifetime). Used by
+#                            the Block 2 processor; set now so the container env is complete.
+#   - ALERT_INTAKE_URL   -> the Storage Watchdog Intake (v1) webhook on n8n-main (internal hop, no
+#                            public round-trip). Forwards {severity,source,message,details} -> Post Alert.
+# expose:8080 only — internal; reachable at http://queue-consumer:8080 from the n8n-internal network.
+
+  queue-consumer:
+    build:
+      context: ./queue-consumer
+    container_name: queue-consumer
+    restart: unless-stopped
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      REDIS_HOST: n8n-redis
+      REDIS_PORT: "6379"
+      QUEUE_NAME: agent-jobs
+      QUEUE_PREFIX: haxeq
+      SPINE_INGRESS_URL: http://n8n-main:5678/webhook/spine-ingress
+      ALERT_INTAKE_URL: http://n8n-main:5678/webhook/storage-watchdog-7e06358ac257ad20
+      ALERT_INTAKE_KEY: ${ALERT_INTAKE_KEY}
+      PORT: "8080"
+      STUB_DELAY_MS: ${STUB_DELAY_MS:-0}       # test-only lever (Block 1 priority-order proof); 0 in prod
+
+    expose:
+      - "8080"                                 # internal only; reachable at http://queue-consumer:8080
+    networks:
+      - n8n-internal
+    mem_limit: 256m
+    depends_on:
+      n8n-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
