@@ -13,8 +13,12 @@ network, no public port, built on the VPS via the stack `docker-compose.yml`.
   with `jobId`+`priority`), **stub** Worker (logs + completes), the **fail-safe config reader**,
   `/health`. Deployed and verified (enqueue → priority-ordered pickup → complete; out-of-bounds
   `queue.concurrency` clamps + WARNs to the Alerts task).
-- **Block 2:** real processor — `agent_runs` idempotency check → spine ingress await
-  (`spine_timeout_ms`) → error classification (retryable vs `UnrecoverableError`).
+- **Block 2 (this):** real processor — `agent_runs` idempotency check (match `clickup_task_id` +
+  `triggered_by` within `dedup_window_h`) → spine ingress await over a held `node:http` connection
+  (`spine_timeout_ms`; **not** global `fetch`, whose ~300s `headersTimeout` would falsely abort a
+  healthy 15-min run) → error classification (transport/timeout/5xx → retryable; `200 status=failed`
+  / 4xx / unknown → `UnrecoverableError` → DLQ). `attempts` + custom backoff (60/300/900s) wired so
+  classification is demonstrable; the terminal DLQ alert is Block 4.
 - **Block 4:** retry/backoff (60/300/900s, attempts=5) + DLQ → one CRITICAL alert.
 - **Block 5:** `/metrics` + depth cron, heartbeat dead-man's-switch, 30–60s config refresh poll +
   "restart required" WARN for construction-only values.

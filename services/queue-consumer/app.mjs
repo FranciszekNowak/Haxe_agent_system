@@ -7,11 +7,32 @@
 // /enqueue and return; this service's BullMQ Worker dequeues BY PRIORITY, enforces concurrency =
 // in-flight spine runs, checks idempotency, triggers the spine, and owns retry/backoff/dead-letter.
 //
-// SCOPE — BLOCK 1 (skeleton): Queue + /enqueue (validate contract, compute 8-level priority,
-// queue.add with jobId+priority), a STUB Worker that logs+completes, the fail-safe config reader,
-// and /health. The real processor (idempotency check -> spine ingress await -> error
-// classification) lands in Block 2; retry/backoff/DLQ in Block 4; the config refresh poll +
-// "restart required" WARN in Block 5.
+// SCOPE — BLOCK 2 (real processor): the stub Worker is replaced by the production processor:
+//   1. PRE-TRIGGER IDEMPOTENCY (ADR-035 role only) — before triggering the spine, look for a
+//      COMPLETED agent_runs row for this job's task + trigger kind within dedup_window_h. If found,
+//      succeed the job as a no-op (skip; do not re-draft). Also covers the edge where a prior
+//      attempt's held connection dropped AFTER the spine wrote its run but BEFORE responding (retry
+//      -> idempotency skip). A FAILED idempotency read throws RETRYABLE (never proceed blind: a
+//      hidden completed run would double-draft).
+//   2. TRIGGER THE SPINE via the hardened Spine HTTP Ingress and AWAIT it (held connection up to
+//      spine_timeout_ms). The ingress returns a deterministic HTTP 200 with {status, outcome,
+//      failure_kind, clickup_task_id, warnings} (Block 0 G2 / Block 1).
+//   3. CLASSIFY (ADR-047 / Block 0 G2 contract):
+//        transport error / timeout / genuine n8n 5xx     -> throw retryable (BullMQ retries)
+//        HTTP 200, status=completed                        -> job done
+//        HTTP 200, status=failed (business)               -> throw UnrecoverableError -> DLQ (no retry)
+//        non-5xx non-2xx (e.g. 4xx) / unparseable / unknown -> UnrecoverableError -> DLQ
+//      Business failures stay 200+status (never auto-retried). Only infra failures retry.
+//
+// attempts + custom backoff (60/300/900s) are wired here so classification is demonstrable; the
+// terminal `failed` -> CRITICAL DLQ alert and the config refresh poll land in Block 4 / Block 5.
+//
+// SCHEMA NOTE (load-bearing). The JOB's invocation_type (queue vocab: explicit_mention, due_date,
+// ...) is NOT agent_runs.invocation_type (CHECK: autonomous|explicit|conversation_reply). It aligns
+// with agent_runs.TRIGGERED_BY. So the idempotency check matches on triggered_by, and the value the
+// consumer sends to the ingress as `invocation_type` is the SPINE vocabulary (derived), not the
+// job's — sending explicit_mention there would violate the agent_runs.invocation_type CHECK and
+// break the spine's own run insert.
 //
 // CONTRACT
 //   POST /enqueue
@@ -24,13 +45,15 @@
 // KEY ISOLATION: BullMQ prefix 'haxeq' (keys haxeq:agent-jobs:*) never collides with n8n queue
 // mode's default 'bull:*' on the same Redis.
 //
-// Reads Supabase (config — and agent_runs in Block 2) via REST with SUPABASE_SERVICE_KEY. No ClickUp
-// creds. Alerts ride the reused Storage Watchdog Intake (header-auth X-Watchdog-Key) -> Post Alert
-// (v1) -> ClickUp Alerts task (the swappable seam; ADR-025). The Alerts task is dropped by the CU
-// producer's own guard, so consumer alerts cannot loop.
+// Reads Supabase (config, agent_runs) via REST with SUPABASE_SERVICE_KEY. No ClickUp creds. Alerts
+// ride the reused Storage Watchdog Intake (header-auth X-Watchdog-Key) -> Post Alert (v1) -> ClickUp
+// Alerts task (the swappable seam; ADR-025). The Alerts task is dropped by the CU producer's own
+// guard, so consumer alerts cannot loop.
 
 import express from 'express';
-import { Queue, Worker } from 'bullmq';
+import http from 'node:http';
+import https from 'node:https';
+import { Queue, Worker, UnrecoverableError } from 'bullmq';
 
 const {
   SUPABASE_URL,
@@ -39,14 +62,18 @@ const {
   REDIS_PORT = '6379',
   QUEUE_NAME = 'agent-jobs',
   QUEUE_PREFIX = 'haxeq',
+  SPINE_INGRESS_URL,
   ALERT_INTAKE_URL,
   ALERT_INTAKE_KEY,
   PORT = '8080',
-  STUB_DELAY_MS = '0', // test-only lever: makes priority-ordered pickup observable (default 0 in prod)
 } = process.env;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('FATAL: SUPABASE_URL and SUPABASE_SERVICE_KEY are required');
+  process.exit(1);
+}
+if (!SPINE_INGRESS_URL) {
+  console.error('FATAL: SPINE_INGRESS_URL is required (the hardened Spine HTTP Ingress webhook)');
   process.exit(1);
 }
 
@@ -59,6 +86,32 @@ const IMPACTS = new Set(Object.keys(IMPACT_RANK));
 const INVOCATION_TYPES = new Set([
   'autonomous_webhook', 'due_date', 'explicit_mention', 'explicit_command', 'email', 'weekly_proposer',
 ]);
+
+// Spine-vocabulary derivation (contract-shape, code constants). The consumer prefers a producer-
+// supplied payload value (source-specific; e.g. the autonomous_webhook -> status-vs-field ambiguity
+// can only be resolved by the producer) and falls back to these maps. For the only in-scope producer
+// (explicit_mention, Block 3) the derivation is exact, so Block 2 verifies end-to-end without a
+// producer.
+//   * TRIGGERED_BY: job invocation_type -> agent_runs.triggered_by (the precise idempotency key and
+//     the value the spine writes for this run).
+//   * SPINE_INVOCATION: job invocation_type -> agent_runs.invocation_type (CHECK: the coarse 3-value
+//     set). This is what the ingress's `invocation_type` field MUST carry.
+const TRIGGERED_BY = {
+  explicit_mention: 'explicit_mention',
+  explicit_command: 'explicit_command',
+  due_date: 'due_date_daily',
+  autonomous_webhook: 'webhook_status_change', // ambiguous (status vs field) — Phase-3 producer overrides via payload.triggered_by
+  email: 'gmail_incoming',
+  weekly_proposer: 'weekly_proposer',
+};
+const SPINE_INVOCATION = {
+  explicit_mention: 'explicit',
+  explicit_command: 'explicit',
+  due_date: 'autonomous',
+  autonomous_webhook: 'autonomous',
+  email: 'autonomous',
+  weekly_proposer: 'autonomous',
+};
 
 // ---- fail-safe config reader (the load-bearing piece — ADR-056 amendment) ----------------------
 // Block-0-corrected defaults (block-0-findings.md G1/G5). MARGIN is the reader's enforced minimum
@@ -208,6 +261,150 @@ function deriveJobId(task_id, invocation_type, enqueued_at, dedupWindowH) {
   return `${task_id}:${invocation_type}:${bucket}`;
 }
 
+// ---- processor (Block 2) -----------------------------------------------------------------------
+// Resolve the spine-vocabulary trigger fields for a job: prefer producer-supplied payload values,
+// fall back to the derivation maps. `triggeredBy` is BOTH the idempotency key and the value the
+// spine will write, so the same value is used in the agent_runs check and the ingress POST — the
+// check asks exactly "did a run that looks like the one I'm about to trigger already complete?".
+function resolveSpineFields(job) {
+  const { task_id, invocation_type, caller_user_id, payload = {} } = job.data;
+  const triggeredBy = payload.triggered_by || TRIGGERED_BY[invocation_type] || invocation_type;
+  const spineInvocation = payload.invocation_type || SPINE_INVOCATION[invocation_type] || 'autonomous';
+  return {
+    taskId: task_id,
+    reviewer_user_id: payload.reviewer_user_id ?? caller_user_id,
+    caller_username: payload.caller_username ?? '',
+    triggered_by: triggeredBy,
+    invocation_type: spineInvocation,
+    triggering_comment_id: payload.triggering_comment_id ?? '',
+    triggering_comment_text: payload.triggering_comment_text ?? '',
+  };
+}
+
+// Pre-trigger idempotency (ADR-035 role only). Returns the prior completed run row if one exists for
+// this task + trigger kind within dedup_window_h, else null. Throws on read failure so the caller can
+// treat it as RETRYABLE (never proceed blind -> a hidden completed run would double-draft).
+async function findCompletedRun(taskId, triggeredBy, dedupWindowH) {
+  const cutoffIso = new Date(Date.now() - dedupWindowH * 3600 * 1000).toISOString();
+  const filter =
+    `clickup_task_id=eq.${encodeURIComponent(taskId)}` +
+    `&triggered_by=eq.${encodeURIComponent(triggeredBy)}` +
+    `&status=eq.completed` +
+    `&created_at=gt.${encodeURIComponent(cutoffIso)}` +
+    `&order=created_at.desc&limit=1`;
+  const rows = await supabaseSelect('agent_runs', 'id,created_at,status', filter);
+  return Array.isArray(rows) && rows.length ? rows[0] : null;
+}
+
+// Trigger the spine via the hardened ingress and await it (held connection up to spine_timeout_ms).
+// Returns { httpStatus, ok, body, raw } where body is the parsed deterministic outcome (or null if
+// unparseable). Rejects on network failure / timeout (err.isTimeout=true for a timeout) — the caller
+// maps that to a retryable infra throw.
+//
+// Uses node:http directly, NOT global fetch: the ingress holds the connection open with no response
+// for the WHOLE spine run (up to 15 min, G5), and undici/fetch's default ~300s headersTimeout would
+// abort a HEALTHY long run at 5 min as a false transport error. node:http's socket-inactivity
+// `timeout` is the only timer here, set to spine_timeout_ms — exactly the held-connection cap.
+function callSpine(spineBody, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(SPINE_INGRESS_URL);
+    const mod = url.protocol === 'https:' ? https : http;
+    const payload = Buffer.from(JSON.stringify(spineBody));
+    const req = mod.request(
+      {
+        hostname: url.hostname,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: url.pathname + url.search,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': payload.length },
+        timeout: timeoutMs, // socket-inactivity cap = held-connection lifetime (no other timer)
+      },
+      (res) => {
+        let raw = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { raw += c; });
+        res.on('end', () => {
+          let body = null;
+          try { body = JSON.parse(raw); } catch { /* leave null; classified below */ }
+          resolve({ httpStatus: res.statusCode, ok: res.statusCode >= 200 && res.statusCode < 300, body, raw });
+        });
+      },
+    );
+    req.on('timeout', () => {
+      const e = new Error(`held connection idle > ${timeoutMs}ms`);
+      e.isTimeout = true;
+      req.destroy(e);
+    });
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function processJob(job) {
+  const { task_id, invocation_type } = job.data;
+  const spine = resolveSpineFields(job);
+  const logBase = { jobId: job.id, task_id, invocation_type, triggered_by: spine.triggered_by, attempt: job.attemptsMade };
+
+  // 1. Pre-trigger idempotency check (ADR-035 role only).
+  let prior;
+  try {
+    prior = await findCompletedRun(task_id, spine.triggered_by, cfg.dedup_window_h);
+  } catch (e) {
+    // A failed read could hide a completed run -> proceeding would double-draft. Retry instead.
+    console.warn(JSON.stringify({ level: 'warn', evt: 'idempotency_read_failed', ...logBase, err: e.message }));
+    throw new Error(`idempotency check failed (retryable): ${e.message}`);
+  }
+  if (prior) {
+    console.log(JSON.stringify({ level: 'info', evt: 'idempotent_skip', ...logBase, prior_run_id: prior.id, prior_at: prior.created_at }));
+    return { skipped: true, reason: 'idempotent', prior_run_id: prior.id };
+  }
+
+  // 2. Trigger the spine and await it.
+  console.log(JSON.stringify({ level: 'info', evt: 'spine_call', ...logBase, timeout_ms: cfg.spine_timeout_ms }));
+  let res;
+  try {
+    res = await callSpine(spine, cfg.spine_timeout_ms);
+  } catch (e) {
+    // transport error or held-connection timeout -> RETRYABLE infra (ADR-047)
+    const kind = e?.isTimeout ? `timeout after ${cfg.spine_timeout_ms}ms` : (e?.message || 'transport error');
+    console.warn(JSON.stringify({ level: 'warn', evt: 'spine_transport_error', ...logBase, err: kind }));
+    throw new Error(`spine call transport/timeout (retryable): ${kind}`);
+  }
+
+  // 3. Classify from the response.
+  // Genuine n8n-level 5xx -> retryable infra.
+  if (res.httpStatus >= 500) {
+    console.warn(JSON.stringify({ level: 'warn', evt: 'spine_5xx', ...logBase, http: res.httpStatus, body: res.raw?.slice(0, 300) }));
+    throw new Error(`spine ingress HTTP ${res.httpStatus} (retryable): ${res.raw?.slice(0, 300)}`);
+  }
+  // Any other non-2xx (e.g. 4xx) -> won't fix on retry -> DLQ.
+  if (!res.ok) {
+    console.error(JSON.stringify({ level: 'error', evt: 'spine_4xx', ...logBase, http: res.httpStatus, body: res.raw?.slice(0, 300) }));
+    throw new UnrecoverableError(`spine ingress HTTP ${res.httpStatus} (non-retryable): ${res.raw?.slice(0, 300)}`);
+  }
+  // HTTP 200 but body didn't parse -> the deterministic contract is broken; treat as retryable infra
+  // (a transient proxy/HTML page is more likely than a permanent contract break, and retry is safe —
+  // idempotency will skip if the spine in fact ran).
+  if (!res.body || typeof res.body !== 'object') {
+    console.warn(JSON.stringify({ level: 'warn', evt: 'spine_unparseable', ...logBase, body: res.raw?.slice(0, 300) }));
+    throw new Error(`spine ingress 200 but unparseable body (retryable): ${res.raw?.slice(0, 200)}`);
+  }
+  const { status, outcome, failure_kind, warnings } = res.body;
+  if (status === 'completed') {
+    console.log(JSON.stringify({ level: 'info', evt: 'spine_completed', ...logBase, outcome, warnings: warnings || [] }));
+    return { skipped: false, status: 'completed', outcome, warnings: warnings || [] };
+  }
+  if (status === 'failed') {
+    // Business failure -> straight to DLQ, no retry (retrying would double-draft a known-bad outcome).
+    console.error(JSON.stringify({ level: 'error', evt: 'spine_business_failure', ...logBase, failure_kind, outcome }));
+    throw new UnrecoverableError(`spine business failure (${failure_kind || 'unknown'}): ${outcome || ''}`);
+  }
+  // Unknown status -> conservative: DLQ rather than loop on a contract we don't understand.
+  console.error(JSON.stringify({ level: 'error', evt: 'spine_unknown_status', ...logBase, status, outcome }));
+  throw new UnrecoverableError(`spine returned unknown status "${status}"`);
+}
+
 // ---- BullMQ wiring ------------------------------------------------------------------------------
 // Worker requires maxRetriesPerRequest:null; pass connection OPTIONS (not a shared instance) so
 // BullMQ manages its own connections correctly for both Queue and Worker.
@@ -219,18 +416,9 @@ let cfg;      // effective config, set at startup by loadQueueConfig()
 let worker;   // constructed after cfg is known (needs concurrency / lockDuration / limiter)
 
 function startWorker() {
-  // STUB processor (Block 1): log + complete. Real processor lands in Block 2.
   worker = new Worker(
     QUEUE_NAME,
-    async (job) => {
-      console.log(JSON.stringify({
-        level: 'info', evt: 'stub_process', jobId: job.id, priority: job.opts.priority,
-        task_id: job.data.task_id, invocation_type: job.data.invocation_type, ts: new Date().toISOString(),
-      }));
-      const delay = Number(STUB_DELAY_MS) || 0;
-      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-      return { ok: true, stub: true, jobId: job.id };
-    },
+    processJob,
     {
       connection,
       prefix: QUEUE_PREFIX,
@@ -238,13 +426,23 @@ function startWorker() {
       lockDuration: cfg.lock_duration_ms,    // restart-only (construction-time)
       maxStalledCount: 1,
       limiter: { max: cfg.rate_limit_per_min, duration: 60000 }, // restart-only (construction-time)
+      settings: {
+        // Custom per-attempt backoff (60/300/900s); jobs are added with backoff:{type:'custom'}.
+        // attemptsMade counts attempts already made (1 after the first failure) -> index attemptsMade-1,
+        // clamped to the last element so a shorter array repeats its tail. Block 4 finalizes the DLQ
+        // exhaustion alert; the schedule itself is demonstrated by Block 2's DoD.
+        backoffStrategy: (attemptsMade) => {
+          const arr = cfg.backoff_ms;
+          return arr[Math.min(Math.max(attemptsMade - 1, 0), arr.length - 1)];
+        },
+      },
     },
   );
 
   worker.on('completed', (job) =>
     console.log(JSON.stringify({ level: 'info', evt: 'completed', jobId: job.id, priority: job.opts.priority })));
   worker.on('failed', (job, err) =>
-    console.error(JSON.stringify({ level: 'error', evt: 'failed', jobId: job?.id, err: err?.message })));
+    console.error(JSON.stringify({ level: 'error', evt: 'failed', jobId: job?.id, attempts: job?.attemptsMade, unrecoverable: err instanceof UnrecoverableError, err: err?.message })));
   worker.on('error', (err) =>
     console.error(JSON.stringify({ level: 'error', evt: 'worker_error', err: err?.message })));
   worker.on('stalled', (jobId) =>
@@ -298,9 +496,12 @@ app.post('/enqueue', async (req, res) => {
       return res.json({ ok: true, jobId, priority, deduped: true });
     }
     // ALWAYS set an explicit priority 1..8 — an unset BullMQ priority falls into a separate FIFO path
-    // and breaks ordering (ADR-056 amendment 2026-06-23b). attempts/backoff are wired in Block 4.
+    // and breaks ordering (ADR-056 amendment 2026-06-23b). attempts + custom backoff (60/300/900s)
+    // are wired so error classification is demonstrable (Block 2 DoD); the terminal DLQ alert is Block 4.
     await queue.add(QUEUE_NAME, jobData, {
       jobId, priority,
+      attempts: cfg.retry_attempts,
+      backoff: { type: 'custom' },
       removeOnComplete: { age: 3600, count: 1000 },
       removeOnFail: { age: 86400 },
     });

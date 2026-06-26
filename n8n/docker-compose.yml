@@ -231,8 +231,9 @@ services:
   # the Spine HTTP Ingress webhook, and (later blocks) owns retry/backoff/dead-letter. All queue.*
   # knobs live in Supabase config behind a fail-safe reader. Mirrors zip-extractor; internal only,
   # reachable at http://queue-consumer:8080. Needs SUPABASE_URL + SUPABASE_SERVICE_KEY + ALERT_INTAKE_KEY
-  # in .env (ALERT_INTAKE_KEY = the reused Storage Watchdog header-auth secret). STUB_DELAY_MS is a
-  # test-only lever (default 0). Block 1: stub worker (logs+completes); real processor lands in Block 2.
+  # in .env (ALERT_INTAKE_KEY = the reused Storage Watchdog header-auth secret). Block 2: real processor
+  # (agent_runs idempotency skip -> node:http held-connection spine trigger up to spine_timeout_ms ->
+  # retryable-vs-UnrecoverableError classification). The DLQ alert is Block 4; producer cutover is Block 3.
   queue-consumer:
     build:
       context: ./queue-consumer
@@ -248,7 +249,6 @@ services:
       SPINE_INGRESS_URL: http://n8n-main:5678/webhook/spine-ingress
       ALERT_INTAKE_URL: http://n8n-main:5678/webhook/storage-watchdog-7e06358ac257ad20
       ALERT_INTAKE_KEY: ${ALERT_INTAKE_KEY}
-      STUB_DELAY_MS: ${STUB_DELAY_MS:-0}
       PORT: "8080"
     expose:
       - "8080"                 # internal only; reachable at http://queue-consumer:8080

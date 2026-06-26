@@ -30,7 +30,6 @@
       ALERT_INTAKE_URL: http://n8n-main:5678/webhook/storage-watchdog-7e06358ac257ad20
       ALERT_INTAKE_KEY: ${ALERT_INTAKE_KEY}
       PORT: "8080"
-      STUB_DELAY_MS: ${STUB_DELAY_MS:-0}       # test-only lever (Block 1 priority-order proof); 0 in prod
 
     expose:
       - "8080"                                 # internal only; reachable at http://queue-consumer:8080

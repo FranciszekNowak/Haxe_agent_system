@@ -1103,13 +1103,22 @@ Process template (main task)
 > that clamps three silent-failure invariants.
 >
 > **Build status** (master plan `architecture/Build plans/adr-056-queue-infrastructure-bullmq/`):
-> Block 0 (capability gates) and **Block 1 (2026-06-26)** are done — migration
+> Block 0 (capability gates), **Block 1**, and **Block 2 (2026-06-26)** are done — migration
 > `045_queue_config.sql` (seeds `queue.*` + a write-side validating trigger), the `queue-consumer`
-> service deployed to the stack (`/enqueue` + priority + fail-safe config reader + **stub** worker +
-> `/health`), and the hardened, deterministic-return `Spine HTTP Ingress (v1)`. **Not yet wired:**
-> the live @-mention path is still synchronous — the producer cutover behind `config.queue_enabled`
-> is Block 3, the real processor is Block 2, and the §14.2–§14.6 reconciliation (BullMQ, 8-level
-> priority, Managed-Agents limits, mark LIVE) is Block 6.
+> service deployed to the stack (`/enqueue` + priority + fail-safe config reader + `/health`), the
+> hardened, deterministic-return `Spine HTTP Ingress (v1)`, and now the **real processor**: a
+> pre-trigger idempotency check (a completed `agent_runs` row matched on `clickup_task_id` +
+> `triggered_by` within `dedup_window_h` → skip as a no-op), the spine trigger held over a
+> **`node:http`** connection up to `spine_timeout_ms` (not global `fetch`, whose ~300s
+> `headersTimeout` would falsely abort a healthy 15-min run), and error classification
+> (transport/timeout/5xx → retryable BullMQ retry on 60/300/900s; `200 status=failed`/4xx/unknown →
+> `UnrecoverableError` → straight to dead-letter, no retry). Verified live end-to-end: a queued job
+> drove a real spine run and posted the ClickUp reply; the idempotent skip, the no-retry business
+> failure, and the retrying transport failure all behaved as specified. **Not yet wired:** the live
+> @-mention path is still synchronous — the producer cutover behind `config.queue_enabled` is
+> Block 3, the terminal dead-letter CRITICAL alert is Block 4, monitoring + heartbeat is Block 5, and
+> the §14.2–§14.6 reconciliation (BullMQ, 8-level priority, Managed-Agents limits, mark LIVE) is
+> Block 6.
 
 ### 14.1 Why a queue
 
