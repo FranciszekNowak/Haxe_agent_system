@@ -488,14 +488,14 @@
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
-            "user_message": "={{ '# Identyfikator zadania ClickUp (clickup_task_id): ' + ($json.clickup_task_id || '') + '\\nPrzekaż tę wartość DOKŁADNIE jako parametr clickup_task_id przy każdym wywołaniu narzędzia generate_image (do rozliczenia kosztu obrazu).\\n\\n' + $json.prompt }}",
-            "impact": "={{ $json.impact }}",
-            "input_images_json": "={{ $json.image_blocks_json || '[]' }}",
-            "clickup_task_id": "={{ $json.clickup_task_id }}",
-            "caller_user_id": "={{ $json.caller_user_id }}",
-            "process_type": "={{ $json.process_type }}",
-            "triggered_by": "={{ $json.triggered_by }}",
-            "invocation_type": "={{ $json.invocation_type }}"
+            "user_message": "={{ '# Identyfikator zadania ClickUp (clickup_task_id): ' + ($('Call Assemble Context').first().json.clickup_task_id || '') + '\\nPrzekaż tę wartość DOKŁADNIE jako parametr clickup_task_id przy każdym wywołaniu narzędzia generate_image (do rozliczenia kosztu obrazu).\\n\\n' + $('Call Assemble Context').first().json.prompt }}",
+            "impact": "={{ $('Call Assemble Context').first().json.impact }}",
+            "input_images_json": "={{ '[]' }}",
+            "clickup_task_id": "={{ $('Call Assemble Context').first().json.clickup_task_id }}",
+            "caller_user_id": "={{ $('Call Assemble Context').first().json.caller_user_id }}",
+            "process_type": "={{ $('Call Assemble Context').first().json.process_type }}",
+            "triggered_by": "={{ $('Call Assemble Context').first().json.triggered_by }}",
+            "invocation_type": "={{ $('Call Assemble Context').first().json.invocation_type }}"
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,
@@ -804,6 +804,72 @@
         "options": {}
       },
       "onError": "continueRegularOutput"
+    },
+    {
+      "id": "orch-build-floor-file-map",
+      "name": "Build Floor File Map",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1088, 416],
+      "notes": "ADR-061 Block 2b (Option E): the managed floor dropped the eager Files-API upload (input_images_json='[]' below), so the agent_input_file_map that generate_image reference_refs resolves against is no longer populated by Upload Input Images. Rebuild it here from Stage A's image_blocks_json: each top-level image -> a row keyed by source_ref (the attachment id the agent passes as a reference_ref) with url = the ClickUp attachment URL the external generator fetches. file_id is synthetic ('att_'+source_ref) — only the PK; the resolver matches source_ref OR file_id and returns url. Mirrors the {file_id,url,mime,source_ref} shape Upload Input Images persisted (url=ref). Empty (no images) -> empty file_map -> upsert no-op.",
+      "parameters": {
+        "jsCode": "const ctx = $('Call Assemble Context').first().json || {};\nlet blocks = [];\ntry { blocks = JSON.parse(ctx.image_blocks_json || '[]'); } catch (e) { blocks = []; }\nconst file_map = [];\nfor (const b of (Array.isArray(blocks) ? blocks : [])) {\n  const source_ref = String((b && b.source_ref) || '').trim();\n  const url = String((b && b.ref) || '').trim();\n  if (!source_ref || !url) continue;\n  file_map.push({ file_id: 'att_' + source_ref, url, mime: String((b && b.mime) || 'image/*'), source_ref });\n}\nreturn [{ json: { file_map } }];"
+      }
+    },
+    {
+      "id": "orch-upsert-file-map-managed",
+      "name": "Upsert File Map (Managed)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1264, 416],
+      "notes": "ADR-061 Block 2b: persist the floor's source_ref->{url,mime} rows to agent_input_file_map so the image MCP handler resolves generate_image reference_refs WITHOUT session context (same role Upload Input Images' Upsert File Map played eagerly). Reuses that exact insert+on-conflict SQL. onError=continueErrorOutput + alwaysOutputData so a DB write failure routes to Alert File Map Failed (WARN) on the error output while the success output still feeds the session — a failed map write only degrades later reference resolution, it must NOT block the run. alwaysOutputData guarantees the success output emits an item even when 0 rows were upserted (no input images) so the session never gets skipped.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into public.agent_input_file_map (file_id, url, mime, source_ref)\nselect file_id, url, mime, source_ref\nfrom jsonb_to_recordset($1::jsonb) as x(file_id text, url text, mime text, source_ref text)\nwhere file_id is not null\non conflict (file_id) do update set url = excluded.url, mime = excluded.mime, source_ref = excluded.source_ref;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.file_map || []) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "orch-alert-file-map-failed",
+      "name": "Alert File Map Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1456, 544],
+      "notes": "ADR-061 Block 2b: a failed agent_input_file_map write silently degrades later generate_image reference_refs resolution (the agent can still answer text/embed, just can't reference-generate from input images) — fire a WARN on this side branch and reconverge to Call Execute Agent Session so the session still runs (degrade, don't break).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-orchestrator/floor-file-map-write-failed",
+            "message": "Nie udało się zapisać agent_input_file_map dla obrazów floora (managed) — generate_image z reference_refs może nie rozwiązać załączonych obrazów.",
+            "details": "=task={{ $('Call Assemble Context').first().json.clickup_task_id }}; obrazy={{ ( () => { try { return JSON.parse($('Call Assemble Context').first().json.image_blocks_json || '[]').length } catch(e) { return '?' } } )() }}; embed_input nadal działa, dotyczy tylko reference_refs."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -940,7 +1006,7 @@
       "main": [
         [
           {
-            "node": "Call Execute Agent Session",
+            "node": "Build Floor File Map",
             "type": "main",
             "index": 0
           }
@@ -1053,6 +1119,46 @@
         [
           {
             "node": "Alert Image Cost Missing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Floor File Map": {
+      "main": [
+        [
+          {
+            "node": "Upsert File Map (Managed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert File Map (Managed)": {
+      "main": [
+        [
+          {
+            "node": "Call Execute Agent Session",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert File Map Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert File Map Failed": {
+      "main": [
+        [
+          {
+            "node": "Call Execute Agent Session",
             "type": "main",
             "index": 0
           }

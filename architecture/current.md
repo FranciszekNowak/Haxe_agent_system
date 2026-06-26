@@ -1212,7 +1212,11 @@ failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent S
 lane-resolution + managed-branch nodes). Entry is
 either a Form Trigger (`taskId`, manual testing) or a `When Called` Execute-Workflow trigger (from
 the webhook producer). After Stage A + the `Context OK?` guard, **`Read Agent Lane` → `Resolve Lane` →
-`Lane = managed?`** routes Stage B: **true** → the managed chain (`Call Execute Agent Session` → `Session
+`Lane = managed?`** routes Stage B: **true** → the managed chain (**ADR-061 Block 2b:** `Build Floor File
+Map` → `Upsert File Map (Managed)` first — rebuilds `agent_input_file_map` (`source_ref`→`url`, synthetic
+`file_id`) from the floor's `image_blocks_json` so `reference_refs` still resolves now that the eager Files-API
+upload is dropped; a write failure routes to `Alert File Map Failed` (WARN) and reconverges, never blocking
+the session — then `Call Execute Agent Session` (with `input_images_json='[]'`) → `Session
 OK?` → `Call Render Agent Output` → `Call Write Cost Field` → `Sum Execution Image Cost` → `Call Post Reply
 (Managed)`, passing `doc_attachments`/`session_id` through to Post Reply's office-doc branch; the comment
 footer shows the **per-execution** cost — the session's text cost plus the windowed per-execution image cost
@@ -1233,7 +1237,7 @@ empty completion (both added 2026-06-11 after a zero-attachment task silently pr
 ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the stages:
 
 - **Stage A — `Assemble Context and Build Prompt (v1)`** (`n8n/workflows/assemble-context-and-build-prompt.json`,
-  id `GGTBvFBgGSNbtUR6`, 12 nodes): **`Read Lane (Stage A)`** (reads `config.agent_lane`, fail-safe to `bare`) →
+  id `GGTBvFBgGSNbtUR6`, 15 nodes): **`Read Lane (Stage A)`** (reads `config.agent_lane`, fail-safe to `bare`) →
   `Assemble Parent Context (v1)` → Assemble Task Context
   (now also fetches **threaded comment replies** — `GET /comment/{id}/reply` per top-30 comment with
   `reply_count>0` — and interleaves them under their parent in `task_comments`, ADR-040) →
@@ -1247,10 +1251,16 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   into the cached agent `system`; the managed agent still gets them, kept current by Sync Agent Definitions + the
   Freshness Check). The **bare** failover lane is unchanged (full assembly), gated on the lane read. **ADR-061 Block 2**
   turned that dropped tail into four pull-on-demand custom tools the managed agent calls on the retained session loop
-  (`get_task_comments`, `get_parent_chain`, `list_attachments`, `get_attachment` — see Stage B). **Input images stay
-  eager** on both lanes: making them lazy is coupled to two output paths (`embed_input` at render and `reference_refs`
-  at image generation, both resolved from `image_blocks_json`), so the lazy-image re-threading is a **deferred
-  follow-up block**, not part of Block 2. Folds attachment **text** into the prompt (bare lane only) and fires the reader's `warnings` via
+  (`get_task_comments`, `get_parent_chain`, `list_attachments`, `get_attachment` — see Stage B). **ADR-061 Block 2b — lazy attachments floor (Option E):** on the managed lane `Build Prompt` no longer
+  calls `Read Input`/Docling at all — a new **`Is Managed? (Stage A)`** IF routes managed to **`Fetch Attachment
+  Index (Stage A)`** (bot `GET /task` — ClickUp's native attachment index; no extraction, no eager Files-API
+  upload) and bare to `Read Input` (unchanged), reconverging at **`Merge Input Source`**. The managed
+  `image_blocks_json` is built from that index (top-level images only); the `# Załączone obrazy` section lists
+  them (ref + name) but no longer preloads them as vision — the agent calls `get_attachment` to see one.
+  `embed_input` (render) and `reference_refs` (image generation) still resolve round-trip-free: the orchestrator
+  writes `agent_input_file_map` (`source_ref`→`url`, synthetic `file_id`) from the same floor metadata and sets
+  the session's `input_images_json='[]'` (so the in-session eager Files-API upload becomes a no-op). The **bare**
+  failover keeps full eager assembly. zip-internal images are an accepted *output*-path regression (Block 2c). Folds attachment **text** into the prompt (bare lane only) and fires the reader's `warnings` via
   `Post Alert (v1)` on a reconverging side branch (`Return Context` stays the sole terminal). Multimodal
   input (ADR-036/038/040 Block 5): images present → `modality='multimodal_input'` set on the context payload →
   routing returns the **Gemini** alias for all multimodal tasks (`haxe-gemini-flash`/`-pro` by tier; ADR-043
@@ -1258,7 +1268,9 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   Claude-direct vision path).
 - **Stage B (managed, default) — `Execute Agent Session (v1)` → `Render Agent Output (v1)`** (ADR-053/055):
   resolve the tier agent from `agent_routing` (Niski→Haiku, Średni→Sonnet, Wysoki→Opus, Krytycznie ważne→Opus
-  — Fable repointed) bound to the persistent environment; upload input images to the Files API; create + send
+  — Fable repointed) bound to the persistent environment; upload input images to the Files API (**ADR-061
+  Block 2b: a no-op on the managed lane — the orchestrator now passes `input_images_json='[]'`, so input-image
+  vision is pulled lazily via `get_attachment` instead of preloaded**); create + send
   the session; poll to idle (web search, code execution, Skills run in-harness; the client-side custom-tool
   loop services `extract_clickup_task` (ADR-054) and, **ADR-061 Block 2**, the four triggering-task **tail tools**
   — `get_task_comments`, `get_parent_chain`, `list_attachments`, `get_attachment` — routed by a new `Is tail tool?`
