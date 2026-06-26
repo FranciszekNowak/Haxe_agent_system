@@ -155,20 +155,22 @@ overhead. Round up for headroom.
 - `spine_timeout_ms=540000` (9 min) **< 872s real run** → the consumer would abort a *healthy* held
   connection before the 840s session deadline returns → retry → **double-draft**.
 
-**Corrected seed values for Block 1** (MARGIN = 120000 ms = 2 min):
+**Corrected seed values for Block 1** (operator-confirmed: a single n8n spine execution can run up to
+**15 minutes** as a normal case, not a rare outlier — so both protective caps sit a full 5/10 min above
+that ceiling; MARGIN = 120000 ms = 2 min is the reader's enforced minimum gap):
 
 | key | ADR default | **Block-1 seed** | rationale |
 |---|---|---|---|
-| `queue.max_runtime_ms` (G5) | — (new) | **900000** | 840s session deadline + ~32s orchestrator overhead (872s observed), rounded up |
-| `queue.lock_duration_ms` | 600000 | **1200000** | floor = `max_runtime + MARGIN` = 1020000; 1.2M gives headroom (a healthy ≤900s run is never declared stalled) |
-| `queue.spine_timeout_ms` | 540000 | **1020000** | must be `> max_runtime` (won't abort a healthy ~872s run) **and** `< lock_duration − MARGIN` (1080000) |
+| `queue.max_runtime_ms` (G5) | — (new) | **900000** | the firm real ceiling — a single spine execution can last up to **15 min** (840s session deadline + orchestrator overhead; 872s observed) |
+| `queue.spine_timeout_ms` | 540000 | **1200000** | 20 min — a full **5 min** above the 15-min ceiling, so a healthy full-length run is never aborted by the consumer; stays below `lock_duration − MARGIN` |
+| `queue.lock_duration_ms` | 600000 | **1500000** | 25 min — **10 min** above the ceiling and 5 min above `spine_timeout`; a healthy ≤15-min run is never declared stalled, and a genuinely crashed worker's job is still reclaimed within 25 min |
 | `queue.env_concurrency_cap` (G1) | — (new) | **10** | software safety-rail ceiling (see G1) |
 | `queue.concurrency` (C) | 5 | **5** | conservative default (G1) |
 
 Invariant check (the three the fail-safe reader enforces):
-`concurrency(5) ≤ env_cap(10)` ✓ · `lock_duration(1.2M) ≥ max_runtime(900k)+MARGIN(120k)=1.02M` ✓ ·
-`spine_timeout(1.02M) < lock_duration(1.2M)−MARGIN(120k)=1.08M` ✓ · and `spine_timeout(1.02M) >
-max_runtime(900k)` ✓ (so a healthy slow run is awaited, not killed).
+`concurrency(5) ≤ env_cap(10)` ✓ · `lock_duration(1.5M) ≥ max_runtime(900k)+MARGIN(120k)=1.02M` ✓ ·
+`spine_timeout(1.2M) < lock_duration(1.5M)−MARGIN(120k)=1.38M` ✓ · and `spine_timeout(1.2M) >
+max_runtime(900k)` ✓ (so a healthy 15-min run is awaited, not killed).
 
 ---
 
