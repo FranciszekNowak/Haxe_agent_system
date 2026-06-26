@@ -1103,22 +1103,30 @@ Process template (main task)
 > that clamps three silent-failure invariants.
 >
 > **Build status** (master plan `architecture/Build plans/adr-056-queue-infrastructure-bullmq/`):
-> Block 0 (capability gates), **Block 1**, and **Block 2 (2026-06-26)** are done — migration
-> `045_queue_config.sql` (seeds `queue.*` + a write-side validating trigger), the `queue-consumer`
-> service deployed to the stack (`/enqueue` + priority + fail-safe config reader + `/health`), the
-> hardened, deterministic-return `Spine HTTP Ingress (v1)`, and now the **real processor**: a
-> pre-trigger idempotency check (a completed `agent_runs` row matched on `clickup_task_id` +
-> `triggered_by` within `dedup_window_h` → skip as a no-op), the spine trigger held over a
-> **`node:http`** connection up to `spine_timeout_ms` (not global `fetch`, whose ~300s
-> `headersTimeout` would falsely abort a healthy 15-min run), and error classification
-> (transport/timeout/5xx → retryable BullMQ retry on 60/300/900s; `200 status=failed`/4xx/unknown →
-> `UnrecoverableError` → straight to dead-letter, no retry). Verified live end-to-end: a queued job
-> drove a real spine run and posted the ClickUp reply; the idempotent skip, the no-retry business
-> failure, and the retrying transport failure all behaved as specified. **Not yet wired:** the live
-> @-mention path is still synchronous — the producer cutover behind `config.queue_enabled` is
-> Block 3, the terminal dead-letter CRITICAL alert is Block 4, monitoring + heartbeat is Block 5, and
-> the §14.2–§14.6 reconciliation (BullMQ, 8-level priority, Managed-Agents limits, mark LIVE) is
-> Block 6.
+> Block 0 (capability gates), **Block 1**, **Block 2**, and **Block 3 (2026-06-26)** are done —
+> migration `045_queue_config.sql` (seeds `queue.*` + a write-side validating trigger), the
+> `queue-consumer` service deployed to the stack (`/enqueue` + priority + fail-safe config reader +
+> `/health`), the hardened, deterministic-return `Spine HTTP Ingress (v1)`, the **real processor**
+> (pre-trigger idempotency check; spine trigger held over a **`node:http`** connection up to
+> `spine_timeout_ms`, not global `fetch`; classification: transport/timeout/5xx → retryable BullMQ
+> retry on 60/300/900s, `200 status=failed`/4xx/unknown → `UnrecoverableError` → dead-letter), and now
+> the **live @-mention producer cut over to the queue behind `config.queue_enabled`**. `CU Webhook
+> Producer (v1)` keeps its instant 200, then (after the dedup claim + loop-breaker) reads
+> `queue.enabled`; if true it fetches the task's `[AI] Wpływ` impact (default `Średni`) and `POST`s the
+> job to `http://queue-consumer:8080/enqueue` over the internal Docker network; if false — or if the
+> enqueue returns non-200/unreachable — it falls back to the unchanged synchronous `Run Agent Spine`
+> `executeWorkflow` and fires a WARN. **Block-3 dedup refinement (consumer-side, keeps one path):** the
+> idempotency *unit* is now invocation-class-aware — explicit (interactive) jobs key the BullMQ `jobId`
+> on the **triggering comment** (`…:c<comment_id>`) so a distinct follow-up @-mention is its own job
+> (the old 24h task+type time-bucket would have silently collapsed it), and the `agent_runs` check runs
+> for them only as a retry-after-partial guard (on `attemptsMade>0`, bounded to runs created after the
+> job's `enqueued_at`); autonomous jobs keep the time-bucket `jobId` + `dedup_window_h` window.
+> Verified live end-to-end: two distinct mentions on one task both drafted (no collapse), a re-enqueue
+> of the same comment deduped, a real tag-op webhook drove the full producer→`/enqueue`→spine→reply
+> chain with the impact resolved to the job, and flipping the flag false fell back to a synchronous
+> draft with no enqueue. **Not yet wired:** the terminal dead-letter CRITICAL alert is Block 4,
+> monitoring + heartbeat is Block 5, and the §14.2–§14.6 reconciliation (BullMQ, 8-level priority,
+> Managed-Agents limits, mark LIVE) is Block 6.
 
 ### 14.1 Why a queue
 
@@ -1223,7 +1231,7 @@ failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent S
 | **`Invoke Model (v1)`** | Centralized model-call seam: route → LiteLLM → exact PLN cost → log. **Text + multimodal-INPUT only** since ADR-051 Block 5 (image generation moved to `Generate Images Parallel`) | **LIVE** |
 | **`Generate Images Parallel (v1)`** (id `2keb6XVWq5PG0leK`, ADR-051) | Concurrent image-gen batch: `Promise.all` over a bounded pool (cap `config.image_concurrency_cap`=4) fires all of a run's `generate` images at once (wall-clock ≈ slowest single, not the sum); inline image-resolution (ADR-045) + per-image one-tier-below fallback; reuses `Log Model Run` for per-image cost; returns per-image results + `warnings[]`. Auth via the image-scoped LiteLLM key in Supabase Vault (`get_litellm_image_key()`). Cap raised 4→5 (migration 033). **Block 7 (2026-06-16): timeout is non-blocking** — `Fire Images Concurrently` carries an internal **840 s soft-deadline** (`Promise.race`) that returns partial results (un-generated images → `success:false` + an `image-batch/timeout-partial` WARN, never a CRITICAL) below the raised global **`N8N_RUNNERS_TASK_TIMEOUT=900 s`** (15 min, fits 2 `gpt-image-2` waves); per-call HTTP timeout 240→300 s clamped to remaining budget; a failed/not-generated image now bills **0** (`Explode Results` applies the floor only on success). | **LIVE — the sole image-gen path: `Image Resolver`'s generate branch calls it (Block 4), and `Invoke Model`'s dead image branch was deleted (Block 5, 2026-06-15)** |
 | **`Assemble Task Context (v1)`** | Triggering-task comment + threaded-reply fetch (open-ended search + Layer-B retired, ADR-054 Block 3b) | **LIVE** |
-| **`CU Webhook Producer (v1)`** | Comment-webhook trigger → verify → detect mention → call spine | **LIVE (@-mention)** |
+| **`CU Webhook Producer (v1)`** | Comment-webhook trigger → verify → detect mention → dedup/loop-breaker → **`queue.enabled`? enqueue (`POST /enqueue`, impact fetched) : synchronous `Run Agent Spine` fallback** (ADR-056 Block 3) | **LIVE (@-mention, queue cutover)** |
 | **`Post Alert (v1)`** | Centralized alert seam → ClickUp Alerts task | **LIVE** |
 | **`Error Handler (v1)`** | Global `errorWorkflow`: throws → CRITICAL + status rollback | **LIVE** |
 | **`FX Rates Daily (v1)`** + **`FX Freshness Monitor (v1)`** | Daily NBP USD/PLN upsert + staleness WARN | **LIVE** |
@@ -1750,8 +1758,10 @@ n8n id `eS66Sk6fweQ0EOPa` (ADR-029 + updates). A **workspace-wide** (team-level,
 list/space/folder filter — employees can mention the agent from any task) `taskCommentPosted`
 webhook, `responseMode: onReceived` → instant 200. Flow:
 
-`Not Telemetry Task?` guard → signature verification → `Detect Mention` → call spine
-(`triggered_by=explicit_mention`).
+`Not Telemetry Task?` guard → signature verification → `Detect Mention` → dedup claim +
+loop-breaker → **`Read Queue Flag` → `Queue Enabled?`**: if true → `Fetch Task Impact` →
+`Build Enqueue Job` → `Enqueue Job` (`POST /enqueue`); if false / enqueue fails → synchronous
+`Run Agent Spine` (`triggered_by=explicit_mention`). See **ADR-056 Block 3** for the cutover.
 
 - **`Not Telemetry Task?`** drops webhooks for the Alerts task `869dj2z2c` *before* anything
   else — a WARN comment on that watched task would otherwise re-fire the webhook into an
@@ -1791,9 +1801,21 @@ webhook, `responseMode: onReceived` → instant 200. Flow:
   mentions); a mention in a private space the agent isn't a member of triggers but Assemble Parent Context
   403s → WARN.
 
-The producer returns 200 immediately and invokes the spine via the `When Called` trigger
-(synchronous); the explicit Redis producer/worker enqueue split (§14) lands with the Phase-3
-autonomous producers.
+- **Queue cutover (ADR-056 Block 3, 2026-06-26).** After the dedup claim + loop-breaker, the
+  producer reads `config.queue_enabled`. **Flag on (live default):** `Fetch Task Impact` GETs the task
+  and `Build Enqueue Job` resolves the `[AI] Wpływ` impact (same field id `55c7ff79…` + option map as
+  `Assemble Parent Context`; default `Średni` if absent/unreadable), then builds the ADR-056 job
+  (`invocation_type=explicit_mention`; spine-context fields — `reviewer_user_id`, `caller_username`,
+  `triggered_by`, `triggering_comment_id` = the **thread-root** reply target, `triggering_comment_text`,
+  and `dedup_comment_id` = the comment's **own** id for the consumer's comment-keyed `jobId`) into
+  `payload` and `POST`s it to `http://queue-consumer:8080/enqueue`. **Flag off, or enqueue non-200 /
+  unreachable:** `Enqueue Job`'s error output falls back to the unchanged `Run Agent Spine`
+  `executeWorkflow` **and** fires a WARN (`cu-webhook/enqueue`) — the run is never silently dropped
+  (ADR-056 §9 failover). The instant-200 (`responseMode:onReceived`) is unchanged on both paths, so
+  webhook latency is unaffected.
+
+The producer returns 200 immediately. The synchronous `Run Agent Spine` (`When Called` trigger) is now
+the **fallback** path; the queue is the primary path when `queue.enabled=true`.
 
 ### 15.8 Monitoring, alerting & FX (ADR-025)
 

@@ -9,11 +9,14 @@
 //
 // SCOPE — BLOCK 2 (real processor): the stub Worker is replaced by the production processor:
 //   1. PRE-TRIGGER IDEMPOTENCY (ADR-035 role only) — before triggering the spine, look for a
-//      COMPLETED agent_runs row for this job's task + trigger kind within dedup_window_h. If found,
-//      succeed the job as a no-op (skip; do not re-draft). Also covers the edge where a prior
-//      attempt's held connection dropped AFTER the spine wrote its run but BEFORE responding (retry
-//      -> idempotency skip). A FAILED idempotency read throws RETRYABLE (never proceed blind: a
-//      hidden completed run would double-draft).
+//      COMPLETED agent_runs row for this job's task + trigger kind. If found, succeed the job as a
+//      no-op (skip; do not re-draft). A FAILED idempotency read throws RETRYABLE (never proceed blind:
+//      a hidden completed run would double-draft). BLOCK-3 DEDUP REFINEMENT: the dedup UNIT is
+//      invocation-class-aware. EXPLICIT (interactive) jobs key on the triggering COMMENT (jobId
+//      `...:c<comment_id>`) so a distinct follow-up @-mention runs instead of being collapsed by a 24h
+//      task+type window; for them the agent_runs check is only a RETRY-after-partial guard (run on
+//      attemptsMade>0, bounded to runs created after this job's enqueued_at). AUTONOMOUS jobs keep the
+//      dedup_window_h time-bucket jobId + window check (a cron must not reprocess a task in-window).
 //   2. TRIGGER THE SPINE via the hardened Spine HTTP Ingress and AWAIT it (held connection up to
 //      spine_timeout_ms). The ingress returns a deterministic HTTP 200 with {status, outcome,
 //      failure_kind, clickup_task_id, warnings} (Block 0 G2 / Block 1).
@@ -247,13 +250,23 @@ function computePriority(invocation_type, impact) {
   return (isExplicit ? 0 : 4) + IMPACT_RANK[impact]; // 1..8
 }
 
-// jobId = idempotency_key = `${task_id}:${invocation_type}:${dedup_window}`. The dedup window is a
-// time BUCKET (floor(enqueued_at / dedup_window_h)), so the same task+invocation within one window
-// collapses to one job (duplicate enqueues ignored while the job exists), and a later window gets a
-// fresh job (re-processing allowed after the window). The CONSUMER derives this — producers read
-// only queue.enabled (ADR-056 "Single reader"), so they cannot compute the bucket; any producer-sent
-// idempotency_key is therefore advisory and the consumer's derivation is authoritative.
-function deriveJobId(task_id, invocation_type, enqueued_at, dedupWindowH) {
+// jobId = idempotency_key. The dedup UNIT depends on invocation class (Block 3):
+//   * EXPLICIT (interactive: explicit_mention/explicit_command) -> keyed on the TRIGGERING COMMENT:
+//     `${task_id}:${invocation_type}:c${dedup_comment_id}`. Each distinct @-mention/command is a
+//     distinct request, so a follow-up on the same task gets its OWN job; a 24h task+type time bucket
+//     would silently collapse it (the regression Block 3 fixes). The producer's permanent Claim Comment
+//     (agent_webhook_dedup PK on the comment id) already guarantees one enqueue per comment, so this
+//     comment-keyed jobId only ever collapses a true duplicate enqueue of the SAME comment.
+//   * AUTONOMOUS (due_date/webhook/email/...) -> keyed on a time BUCKET (floor(enqueued_at /
+//     dedup_window_h)): a cron must not reprocess the same task+trigger within the window. There is no
+//     triggering comment for these.
+// The CONSUMER derives this — producers read only queue.enabled (ADR-056 "Single reader"); the
+// dedup_comment_id rides in payload, any producer-sent idempotency_key is advisory.
+function deriveJobId(b, dedupWindowH) {
+  const { task_id, invocation_type, enqueued_at, payload = {} } = b;
+  if (EXPLICIT_INVOCATIONS.has(invocation_type) && payload.dedup_comment_id) {
+    return `${task_id}:${invocation_type}:c${payload.dedup_comment_id}`;
+  }
   const windowMs = dedupWindowH * 3600 * 1000;
   const t = Date.parse(enqueued_at);
   const enqMs = Number.isFinite(t) ? t : Date.now();
@@ -281,11 +294,12 @@ function resolveSpineFields(job) {
   };
 }
 
-// Pre-trigger idempotency (ADR-035 role only). Returns the prior completed run row if one exists for
-// this task + trigger kind within dedup_window_h, else null. Throws on read failure so the caller can
-// treat it as RETRYABLE (never proceed blind -> a hidden completed run would double-draft).
-async function findCompletedRun(taskId, triggeredBy, dedupWindowH) {
-  const cutoffIso = new Date(Date.now() - dedupWindowH * 3600 * 1000).toISOString();
+// Pre-trigger idempotency (ADR-035 role only). Returns the most recent COMPLETED run for this task +
+// trigger kind created after `cutoffIso`, else null. The caller sets the cutoff per invocation class
+// (Block 3): the dedup_window_h window for autonomous jobs; the job's own enqueued_at for explicit
+// retries. Throws on read failure so the caller can treat it as RETRYABLE (never proceed blind -> a
+// hidden completed run would double-draft).
+async function findCompletedRun(taskId, triggeredBy, cutoffIso) {
   const filter =
     `clickup_task_id=eq.${encodeURIComponent(taskId)}` +
     `&triggered_by=eq.${encodeURIComponent(triggeredBy)}` +
@@ -347,17 +361,32 @@ async function processJob(job) {
   const logBase = { jobId: job.id, task_id, invocation_type, triggered_by: spine.triggered_by, attempt: job.attemptsMade };
 
   // 1. Pre-trigger idempotency check (ADR-035 role only).
-  let prior;
-  try {
-    prior = await findCompletedRun(task_id, spine.triggered_by, cfg.dedup_window_h);
-  } catch (e) {
-    // A failed read could hide a completed run -> proceeding would double-draft. Retry instead.
-    console.warn(JSON.stringify({ level: 'warn', evt: 'idempotency_read_failed', ...logBase, err: e.message }));
-    throw new Error(`idempotency check failed (retryable): ${e.message}`);
-  }
-  if (prior) {
-    console.log(JSON.stringify({ level: 'info', evt: 'idempotent_skip', ...logBase, prior_run_id: prior.id, prior_at: prior.created_at }));
-    return { skipped: true, reason: 'idempotent', prior_run_id: prior.id };
+  // EXPLICIT (interactive) jobs dedup on the comment via jobId, so a distinct follow-up @-mention is a
+  // distinct job and MUST run — running the task+trigger agent_runs check on its FIRST attempt would
+  // falsely skip it against an earlier mention's completed run. So for explicit the agent_runs check is
+  // ONLY a retry-after-partial guard: run it solely on a RETRY (attemptsMade>0), bounded to runs created
+  // AFTER this job was enqueued (a completed run appearing post-enqueue, on a retry, is this job's own
+  // prior attempt that drafted then lost its held connection). AUTONOMOUS jobs keep the dedup_window_h
+  // window on every attempt (a cron must not reprocess a task already done within the window).
+  const isExplicit = EXPLICIT_INVOCATIONS.has(invocation_type);
+  const runIdempotencyCheck = !isExplicit || job.attemptsMade > 0;
+  let prior = null;
+  if (runIdempotencyCheck) {
+    const enqMs = Date.parse(job.data.enqueued_at);
+    const cutoffIso = (isExplicit && Number.isFinite(enqMs))
+      ? new Date(enqMs).toISOString()
+      : new Date(Date.now() - cfg.dedup_window_h * 3600 * 1000).toISOString();
+    try {
+      prior = await findCompletedRun(task_id, spine.triggered_by, cutoffIso);
+    } catch (e) {
+      // A failed read could hide a completed run -> proceeding would double-draft. Retry instead.
+      console.warn(JSON.stringify({ level: 'warn', evt: 'idempotency_read_failed', ...logBase, err: e.message }));
+      throw new Error(`idempotency check failed (retryable): ${e.message}`);
+    }
+    if (prior) {
+      console.log(JSON.stringify({ level: 'info', evt: 'idempotent_skip', ...logBase, prior_run_id: prior.id, prior_at: prior.created_at }));
+      return { skipped: true, reason: 'idempotent', prior_run_id: prior.id };
+    }
   }
 
   // 2. Trigger the spine and await it.
@@ -477,7 +506,7 @@ app.post('/enqueue', async (req, res) => {
   if (typeof b.payload !== 'object' || Array.isArray(b.payload)) return res.status(400).json({ ok: false, error: 'payload must be an object' });
 
   const priority = computePriority(b.invocation_type, b.impact);
-  const jobId = deriveJobId(b.task_id, b.invocation_type, b.enqueued_at, cfg.dedup_window_h);
+  const jobId = deriveJobId(b, cfg.dedup_window_h);
   const jobData = {
     task_id: b.task_id,
     caller_user_id: b.caller_user_id,

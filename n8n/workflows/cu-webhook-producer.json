@@ -330,6 +330,142 @@
           ]
         }
       }
+    },
+    {
+      "id": "read-queue-flag",
+      "name": "Read Queue Flag",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1720, -140],
+      "notes": "ADR-056 Block 3: read config.queue_enabled to choose enqueue vs synchronous fallback. onError:continueRegularOutput + retry -> a DB blip passes the input item through with no `value` field, so Queue Enabled? evaluates false and the run falls back to the synchronous Run Agent Spine (fail-safe to the known-good path).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select value from config where key = 'queue.enabled' limit 1;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "queue-enabled",
+      "name": "Queue Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1900, -140],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "qe1",
+              "leftValue": "={{ String(($json.value ?? '')).trim().toLowerCase() }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fetch-impact",
+      "name": "Fetch Task Impact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2100, -240],
+      "notes": "ADR-056 Block 3: fetch the task so Build Enqueue Job can read the [AI] Wpływ custom field for queue priority. onError:continueRegularOutput + retry -> a ClickUp blip degrades to the Średni default (Build Job try/catch), never a throw.",
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('Detect Mention').first().json.taskId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "build-job",
+      "name": "Build Enqueue Job",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2300, -240],
+      "notes": "ADR-056 Block 3: assemble the /enqueue job. dedup_comment_id = the OWN comment id (distinct per @-mention -> distinct job, so follow-ups are not collapsed); payload.triggering_comment_id = reply_to_comment_id (thread root) for the spine's reply, matching the sync mapping.",
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const d = $('Detect Mention').first().json;\nconst taskId = d.taskId;\nconst ownCommentId = String(d.triggering_comment_id || '');   // dedup key (own comment id)\nconst replyTargetId = String(d.reply_to_comment_id || '');     // spine reply target (thread root)\nconst reviewerId = String(d.reviewer_user_id || '');\n\n// Resolve impact from the task's [AI] Wplyw custom field (same field id + option map as Assemble Parent Context).\nconst IMPORTANCE_FIELD_ID = '55c7ff79-1857-41e6-87b4-bd46678e1470';\nconst FALLBACK = {\n  '4c440e3f-94e8-4239-b9ec-54051090e2a4': 'Niski',\n  '1947d7f8-b394-4d7f-b555-9b2ad62fe38e': 'Średni',\n  '8c96537f-8bf8-405f-8a1c-c4fb39d80691': 'Wysoki',\n  '7780679d-6e30-466f-afae-d7728a31cbde': 'Krytycznie ważne'\n};\nconst VALID = ['Niski', 'Średni', 'Wysoki', 'Krytycznie ważne'];\nlet impact = '';\ntry {\n  const task = $('Fetch Task Impact').first().json || {};\n  const cf = (task.custom_fields || []).find(f => f.id === IMPORTANCE_FIELD_ID);\n  const v = cf ? cf.value : undefined;\n  if (v !== undefined && v !== null && v !== '') {\n    const opts = (cf.type_config && cf.type_config.options) || [];\n    const m = opts.find(o => o.id === v) || opts.find(o => String(o.orderindex) === String(v));\n    impact = m ? m.name : (FALLBACK[v] || '');\n  }\n} catch (e) {}\nif (VALID.indexOf(impact) === -1) impact = 'Średni';   // default: absent / 'n/d' / unreadable\n\n// Job contract (ADR-056 Block 2). Top-level invocation_type = queue vocabulary 'explicit_mention'\n// (drives priority + jobId + agent_runs.triggered_by idempotency). payload carries the spine-context\n// fields the consumer maps to the ingress; the consumer derives the spine-vocabulary invocation_type.\nreturn [{ json: {\n  task_id: taskId,\n  caller_user_id: reviewerId,\n  impact: impact,\n  invocation_type: 'explicit_mention',\n  enqueued_at: new Date().toISOString(),\n  payload: {\n    reviewer_user_id: reviewerId,\n    caller_username: d.caller_username || '',\n    triggered_by: 'explicit_mention',\n    triggering_comment_id: replyTargetId,\n    triggering_comment_text: d.triggering_comment_text || '',\n    dedup_comment_id: ownCommentId\n  }\n} }];"
+      }
+    },
+    {
+      "id": "enqueue-job",
+      "name": "Enqueue Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2500, -240],
+      "notes": "ADR-056 Block 3: POST the job to the queue-consumer over the internal Docker network. onError:continueErrorOutput -> a non-200 or unreachable consumer routes to output 1, which falls back to the synchronous Run Agent Spine AND fires a WARN (ADR-056 §9 failover; never silently drop the mention).",
+      "parameters": {
+        "method": "POST",
+        "url": "http://queue-consumer:8080/enqueue",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "alert-enqueue-failed",
+      "name": "Alert Enqueue Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [2500, -60],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "cu-webhook/enqueue",
+            "message": "Nie udało się dodać zadania do kolejki (queue-consumer) — fallback do synchronicznego uruchomienia spine.",
+            "details": "=task={{ $('Detect Mention').first().json.taskId }}; enqueue nieudane — {{ JSON.stringify($json).slice(0,300) }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      },
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -410,7 +546,7 @@
       "main": [
         [
           {
-            "node": "Run Agent Spine",
+            "node": "Read Queue Flag",
             "type": "main",
             "index": 0
           }
@@ -451,6 +587,74 @@
         [
           {
             "node": "Recent Runs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Queue Flag": {
+      "main": [
+        [
+          {
+            "node": "Queue Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Task Impact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Agent Spine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Task Impact": {
+      "main": [
+        [
+          {
+            "node": "Build Enqueue Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Enqueue Job": {
+      "main": [
+        [
+          {
+            "node": "Enqueue Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enqueue Job": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Run Agent Spine",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert Enqueue Failed",
             "type": "main",
             "index": 0
           }
