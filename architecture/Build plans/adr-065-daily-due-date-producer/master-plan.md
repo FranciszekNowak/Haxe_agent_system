@@ -71,7 +71,7 @@ Caller = the single assignee (no creator fallback). Output posts as a **new top-
 | Block | Title | Status |
 |---|---|---|
 | 0 | Capability gates + ADR/plan | ✅ Done (2026-06-27) |
-| 1 | Build the producer workflow | ⬜ Not started |
+| 1 | Build the producer workflow | ✅ Done (2026-06-27) — `due-date-producer.json` (`Ubwr6fRmStFwwJfP`), 17 nodes, validates (0 errors), drift-clean, **inactive** pending Block 2 |
 | 2 | E2E verification + freshness monitor + write-backs | ⬜ Not started |
 
 ## Block 1 — Build the producer workflow
