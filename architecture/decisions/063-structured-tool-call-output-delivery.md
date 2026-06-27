@@ -68,7 +68,7 @@ existing reader already accepts a `{blocks:[…]}` wrapper). `blocks` is the ord
   "properties": {
     "blocks": {
       "type": "array",
-      "description": "Uporządkowana lista bloków tworzących finalną odpowiedź. Renderowane w kolejności (pole order lub kolejność tablicy). CAŁA treść oraz wszystkie obrazy/dokumenty muszą być przekazane jako bloki — nic poza wywołaniem tego narzędzia nie trafia do odbiorcy.",
+      "description": "Uporządkowana lista bloków tworzących finalną odpowiedź. Renderowane w kolejności (pole order lub kolejność tablicy). CAŁA treść oraz wszystkie obrazy/dokumenty muszą być przekazane jako bloki — nic poza wywołaniem tego narzędzia nie trafia do odbiorcy. Przekaż blocks jako tablicę JSON, nie jako string.",
       "items": {
         "type": "object",
         "properties": {
@@ -210,6 +210,30 @@ remains a clean future enhancement (read `doc` blocks in `Render Agent Output �
   round-trip was proven live against LiteLLM (Block 4) but the lane is dormant; bare go-live remains gated
   on refreshing the stale VPS `ANTHROPIC_API_KEY` (a separate, pre-existing infra issue — not an ADR-063
   defect).
+
+## Amendment (2026-06-27): stringified-`blocks` coercion + loud empty-delivery WARN
+
+The structural guarantee ADR-063 relies on — "the tool input arrives as syntactically-valid parsed
+JSON" — covers the **outer** object, but it does **not** force `blocks` to be a JSON *array* rather than
+a JSON *string*. On real task `869dwgmfb` (orchestrator exec 4603, session exec 4633) Sonnet called
+`deliver_output` with the full analysis, but serialized the array into a string:
+`{"blocks": "[ … ]"}` — valid JSON, wrong shape. Both lane capture points (`Execute Agent Session →
+Poll Round` managed, `Invoke Model → Parse Response` bare) only accepted `Array.isArray(input.blocks)`,
+fell through to `[]`, and the renderer produced an **empty comment** — with **zero alerts**, a silent
+degrade. This is the same defect class ADR-063 set out to kill, reappearing one layer inside the tool
+input; it is nondeterministic per generation, which is why the symptom was "sometimes empty, sometimes
+the full answer" on retries.
+
+Fix (this amendment): both capture points now **coerce** a string `blocks` (`JSON.parse`, then
+`Array.isArray`) before deciding it is empty — accepting the two shapes the API actually emits
+(`array` | JSON-string-of-array), which is the tolerant-by-design posture, not the fragile hand-rolled
+parser ADR-063 deleted. `Build Final Output` now fires a **WARN `output-adapter/deliver-output-empty`**
+when `outcome==='delivered'` but the coerced array is still empty, so a genuinely empty delivery is loud.
+The `deliver_output` `blocks` description gained an explicit steer — *"Przekaż blocks jako tablicę JSON,
+nie jako string."* — in **both lanes** (one schema), bumping `CONV` 14→15 and re-syncing the managed
+agent **v19→v20**. Steering only lowers frequency; the coercion is the actual fix. Files:
+`execute-agent-session.json` (Poll Round + Build Final Output), `invoke-model.json` (Parse Response +
+the bare `deliver_output_tool` description), `sync-agent-definitions.json` (managed description + CONV).
 
 ## Date
 

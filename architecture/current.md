@@ -251,7 +251,13 @@ no re-upload, mirroring the bare lane. **Cutover: DONE and LIVE (ADR-063 Block 5
 workflows (`render-agent-output.json`, `agent-orchestrator.json`, `invoke-model.json`, `execute-llm-call.json`,
 `image-resolver.json`) are deployed, and the persona output-format contract was flipped from the free-text JSON
 block-array to *"call `deliver_output`"* in `sync-agent-definitions.json → Build System` (CONV 13→14), re-synced
-to all agents (now version 19). Verified end-to-end on a realistic image+document task (managed lane, full spine):
+to all agents (version 19). **Amendment (2026-06-27, CONV 14→15, agents v19→v20):** Sonnet sometimes calls
+`deliver_output` with `blocks` as a **JSON string** (`{"blocks":"[…]"}`) rather than an array — valid JSON, wrong
+shape — which both lane capture points (`Poll Round` managed, `Parse Response` bare) read as empty, producing a
+**silent empty comment** (real task `869dwgmfb`). Both capture points now coerce a string `blocks` to an array,
+`Build Final Output` fires a loud `output-adapter/deliver-output-empty` WARN on a delivered-but-empty result, and
+the `blocks` description gained the steer *"Przekaż blocks jako tablicę JSON, nie jako string."* (both lanes).
+Verified end-to-end on a realistic image+document task (managed lane, full spine):
 the agent called `deliver_output`, returned structured `output_blocks` (text + `mode:generate` image + `doc`),
 `outcome=delivered`, render produced an inline image manifest with **zero** warnings, and Post Reply posted the
 threaded comment with the inline image and the `Analiza_produktu.xlsx` attachment — **no `parse-fallback` path
