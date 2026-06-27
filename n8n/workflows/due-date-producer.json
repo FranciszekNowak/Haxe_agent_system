@@ -507,6 +507,11 @@
             "node": "Stamp Heartbeat",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "Build Summary Message",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -551,17 +556,6 @@
           },
           {
             "node": "Run Agent Spine",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Stamp Heartbeat": {
-      "main": [
-        [
-          {
-            "node": "Build Summary Message",
             "type": "main",
             "index": 0
           }

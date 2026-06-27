@@ -1,8 +1,36 @@
 # ADR-065: Daily Due-Date Autonomous Producer
 
 Date: 2026-06-27
-Status: Proposed (Block 0 done — gates verified; build in progress). Flips to **Accepted (built +
-verified live)** in Block 2.
+Status: **Accepted — built + verified live end-to-end (2026-06-27); workflow INACTIVE pending operator
+activation.** Both workflows (`due-date-producer.json` `Ubwr6fRmStFwwJfP`, `due-date-producer-freshness-monitor.json`
+`q98HgAuUlqxg1CF4`) deploy, validate (0 errors), and are drift-clean.
+
+## Verification (2026-06-27, against the live system via a temporary Gate allowlist on disposable tasks)
+
+- **Enqueue path (primary):** a qualifying disposable task (due today Warsaw, 1 assignee, `Czy dla
+  AI=Tak`, open, impact Niski) was fetched (response carried `custom_fields`/`assignees`/`status`),
+  passed the gate (found:25 → candidates:1), enqueued (`invocation_type=due_date`, jobId
+  `…:due_date:<bucket>`, priority 8, deduped:false). The consumer ran the spine → `agent_runs` row
+  `triggered_by=due_date_daily`, `invocation_type=autonomous`, `caller=<assignee>`, status completed,
+  model `claude-haiku-4-5` — and a **new top-level comment** (`@`-mention the assignee) was posted.
+- **Dedup:** re-running with the task already actioned today → `already_actioned:1, enqueued:0`, no run.
+- **Synchronous fallback:** forcing `/enqueue` to fail (dead port) on a fresh task → the
+  `due-date-producer/enqueue` WARN fired AND the inline spine still ran (`due_date_daily`/`autonomous`,
+  top-level comment) — never silently dropped.
+- **Negative gates (live):** wrong-day (Warsaw TZ), not-for-AI, and zero-assignee tasks were each
+  rejected with the correct counter; the two-assignee case is covered by the same `assignees.length !==
+  1` predicate that rejected zero (a ClickUp quirk left the 2-assignee test task with 1 assignee, so it
+  was not exercised directly — noted honestly). Closed/done is enforced by `include_closed=false` + the
+  `status.type` check (not exercised live).
+- **Summary + heartbeat:** the per-night `Post Alert (v1)` INFO carries the full counts; `config.due_date_producer.last_run_at` is stamped every run (verified non-zero counts after fixing a bug where the heartbeat Postgres node clobbered the summary item — the summary item is now fanned out to a side branch).
+- **Freshness monitor:** fresh heartbeat → no alert (dead-end branch); forced-stale (threshold lowered
+  to 0h) → the `due-date-producer/freshness` WARN fired. Restored to 26h.
+- **Blast-radius dry run** (no allowlist, dispatch disabled): of 30 tasks in the ±48h window, 25 are
+  wrong-day and 0 genuine tasks qualified today — i.e. no storm risk on activation.
+- All checks: **0 CRITICAL**. The only WARNs were the intentional fault-injection ones above and the
+  pre-existing `agent-orchestrator/render` `no-deliver-output` text-fallback (a known Haiku
+  `deliver_output` protocol issue, orthogonal to this ADR). Test `agent_runs` rows + all 6 disposable
+  tasks were deleted afterward.
 
 ## Context
 

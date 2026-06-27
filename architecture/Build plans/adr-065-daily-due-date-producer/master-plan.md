@@ -72,7 +72,7 @@ Caller = the single assignee (no creator fallback). Output posts as a **new top-
 |---|---|---|
 | 0 | Capability gates + ADR/plan | ✅ Done (2026-06-27) |
 | 1 | Build the producer workflow | ✅ Done (2026-06-27) — `due-date-producer.json` (`Ubwr6fRmStFwwJfP`), 17 nodes, validates (0 errors), drift-clean, **inactive** pending Block 2 |
-| 2 | E2E verification + freshness monitor + write-backs | ⬜ Not started |
+| 2 | E2E verification + freshness monitor + write-backs | ✅ Done (2026-06-27) — verified live (enqueue/dedup/sync-fallback/summary/heartbeat + negative gates + freshness fresh/stale); fixed a heartbeat-clobbers-summary bug; freshness monitor `q98HgAuUlqxg1CF4` built. Both workflows **INACTIVE pending operator activation** |
 
 ## Block 1 — Build the producer workflow
 - Triggers: `Schedule Trigger` daily 00:00 Europe/Warsaw + `Form Trigger` manual harness (mirror
