@@ -268,7 +268,14 @@ masks this today; the managed lane uses separate Anthropic Agent API creds and i
 the renderer **skips** `doc` blocks — office docs attach via the authoritative `doc_files[]` enumeration
 (`Execute Agent Session → Build Final Output` → orchestrator → Post Reply), so a produced document is never
 dropped; the `doc` block is an optional placement/caption marker whose ordering is **not yet honored** (ADR-063
-documents this as deferred).
+documents this as deferred). **Amendment 2 (2026-06-27):** a second silent drop lived in the orchestrator's
+`Session OK?` gate, which tested only `output_message` (the agent's free-text trailing message). Under
+`deliver_output` that field is empty whenever the agent delivers cleanly via the tool with no chatter (the
+normal path) — so a valid answer sitting in `output_blocks` was discarded with a `agent-orchestrator/managed-session`
+"no content to publish" WARN and **no reply posted** (real task `869dwjc4a`, session exec 4730). The gate now passes
+when `output_message` is non-empty **OR** (`delivered_via_tool` AND `output_blocks` non-empty); a truly empty
+session still routes to `Alert Session Empty`. Verified end-to-end (orchestrator exec 4763): empty `output_message`,
+TRUE branch taken, comment posted, zero alerts. File: `agent-orchestrator.json` (`Session OK?` only).
 
 **Reliability:** an auth dead-man's-switch (`Managed Agents Auth Monitor (v1)`), the CU-rules sync +
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the

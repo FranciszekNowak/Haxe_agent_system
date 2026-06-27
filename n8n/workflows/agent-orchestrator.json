@@ -510,6 +510,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [1472, 224],
+      "notes": "Gates whether the session produced anything to publish. ADR-063 fix (2026-06-27): under deliver_output the agent's answer lives in output_blocks and final_message_text/output_message is EMPTY when it delivers cleanly via the tool (no chatter). The old check (output_message notEmpty) dropped those valid tool-delivered answers -> WARN agent-orchestrator/managed-session + no Post Reply. Now TRUE when output_message is non-empty OR (delivered_via_tool AND output_blocks non-empty). FALSE (genuinely empty: no text AND no blocks) still -> Alert Session Empty.",
       "parameters": {
         "conditions": {
           "options": {
@@ -522,11 +523,11 @@
           "conditions": [
             {
               "id": "sok1",
-              "leftValue": "={{ $json.output_message }}",
+              "leftValue": "={{ (($json.output_message || '').toString().trim() !== '') || ($json.delivered_via_tool === true && Array.isArray($json.output_blocks) && $json.output_blocks.length > 0) }}",
               "rightValue": "",
               "operator": {
-                "type": "string",
-                "operation": "notEmpty",
+                "type": "boolean",
+                "operation": "true",
                 "singleValue": true
               }
             }

@@ -235,6 +235,34 @@ agent **v19→v20**. Steering only lowers frequency; the coercion is the actual 
 `execute-agent-session.json` (Poll Round + Build Final Output), `invoke-model.json` (Parse Response +
 the bare `deliver_output_tool` description), `sync-agent-definitions.json` (managed description + CONV).
 
+## Amendment (2026-06-27): orchestrator emptiness gate keyed off the wrong field
+
+A second silent-drop survived the first amendment, in a *different* place: the orchestrator's
+`Session OK?` gate. ADR-063 moved the agent's answer into `output_blocks` (captured from the
+`deliver_output` tool call), and `Execute Agent Session → Build Final Output` sets
+`output_message = final_message_text` — the agent's *free-text* trailing message. When the agent
+delivers cleanly through the tool and emits no chatty trailing text (the **intended, normal** path),
+`final_message_text` is empty, so `output_message` is empty even though `output_blocks` holds the
+real answer. The orchestrator's `Session OK?` IF node still tested only `output_message` notEmpty —
+a leftover from the pre-ADR-063 free-text era — so it took its FALSE branch, fired
+**WARN `agent-orchestrator/managed-session`** ("no content to publish"), and **skipped Post Reply
+entirely**, discarding the answer. Intermittent by nature: a run where the agent happened to emit a
+trailing text message posted fine, so the symptom was "sometimes empty, no reply at all."
+
+Proven on real task `869dwjc4a` (session exec 4730): `outcome=delivered`,
+`delivered_via_tool=true`, `output_blocks=[{"md":"2 + 2 = 4.","type":"text"}]`, `output_message=""`
+→ reply dropped + WARN, **no** `deliver-output-empty` WARN (blocks were non-empty), confirming the
+gate — not the agent — was the defect.
+
+Fix (this amendment): `Session OK?` now passes when there is anything to publish —
+`output_message` non-empty **OR** (`delivered_via_tool === true` **AND** `output_blocks` is a
+non-empty array). A genuinely empty session (no text **and** no blocks) still takes the FALSE branch
+to `Alert Session Empty`, so the loud-on-empty guarantee is preserved. `Render Agent Output` already
+builds `rendered_delta` from `output_blocks` independently of `output_message`, so no renderer change
+was needed. Verified end-to-end on the live spine (orchestrator exec 4763, task `869dwjhmu`): the
+gate took the TRUE branch with empty `output_message`, Post Reply posted the comment ("4"), zero
+alerts. File: `agent-orchestrator.json` (`Session OK?` node only).
+
 ## Date
 
 2026-06-27
