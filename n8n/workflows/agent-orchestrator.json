@@ -872,26 +872,212 @@
         "options": {}
       },
       "onError": "continueRegularOutput"
+    },
+    {
+      "id": "5f77a0d5-e01d-4302-879a-efb8d1da4391",
+      "name": "Check Spend Limit",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-30, 560],
+      "notes": "ADR-064 spend gate (single chokepoint). Runs get_spend_status(reviewer_user_id) before any spend-bearing work. Output 0 -> Spend Blocked?; error output 1 -> Alert Spend Check Failed -> Resume (FAIL-OPEN: a DB error must never freeze all agent work). Only the production When Called path is gated; the Form Trigger test path is left ungated.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from get_spend_status($1);",
+        "options": {
+          "queryReplacement": "={{ [ $('When Called').first().json.reviewer_user_id || '' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "0645a85c-64f0-4e96-9c42-91c44edcd3a4",
+      "name": "Spend Blocked?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [190, 560],
+      "notes": "ADR-064: $json.blocked from get_spend_status. true -> post block notice + WARN, spine does NOT run (no model spend). false -> Resume After Gate -> normal spine. The spend.enabled=false kill-switch already forces blocked=false inside the function.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "blk1",
+              "leftValue": "={{ $json.blocked }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "8fed886f-8e0b-44bf-a6b7-7d7889a5285b",
+      "name": "Resume After Gate",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [400, 470],
+      "notes": "ADR-064: the Postgres gate replaces the item with the spend row, dropping the When Called fields Call Assemble Context reads ($json.taskId etc.). Restore the 7 trigger inputs here so the normal spine continues unchanged. Runs only on the When Called path (When Called is executed); the Form Trigger path stays ungated and untouched.",
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "taskId",
+              "value": "={{ $('When Called').first().json.taskId }}",
+              "type": "string"
+            },
+            {
+              "id": "r2",
+              "name": "reviewer_user_id",
+              "value": "={{ $('When Called').first().json.reviewer_user_id }}",
+              "type": "string"
+            },
+            {
+              "id": "r3",
+              "name": "caller_username",
+              "value": "={{ $('When Called').first().json.caller_username }}",
+              "type": "string"
+            },
+            {
+              "id": "r4",
+              "name": "triggered_by",
+              "value": "={{ $('When Called').first().json.triggered_by }}",
+              "type": "string"
+            },
+            {
+              "id": "r5",
+              "name": "invocation_type",
+              "value": "={{ $('When Called').first().json.invocation_type }}",
+              "type": "string"
+            },
+            {
+              "id": "r6",
+              "name": "triggering_comment_id",
+              "value": "={{ $('When Called').first().json.triggering_comment_id }}",
+              "type": "string"
+            },
+            {
+              "id": "r7",
+              "name": "triggering_comment_text",
+              "value": "={{ $('When Called').first().json.triggering_comment_text }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "dedf0a57-055c-4e29-8bde-7c045248aa74",
+      "name": "Post Block Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [190, 760],
+      "notes": "ADR-064: tell the user (Polish) which cap was hit + that it resets at midnight Warsaw. Reply in-thread to triggering_comment_id; for an autonomous run with no comment, post a top-level task comment. The notice never @-tags the agent, so it can't re-trigger the producer webhook (no loop). onError continueRegularOutput so a post failure can't throw.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('When Called').first().json.triggering_comment_id ? ('https://api.clickup.com/api/v2/comment/' + $('When Called').first().json.triggering_comment_id + '/reply') : ('https://api.clickup.com/api/v2/task/' + $('When Called').first().json.taskId + '/comment') }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ comment_text: (() => { const s = $('Check Spend Limit').first().json; const r = s.block_reason; const u = Number(s.user_spend).toFixed(2), ul = Number(s.user_limit).toFixed(2), c = Number(s.company_spend).toFixed(2), cl = Number(s.company_limit).toFixed(2); if (r === 'company') return '⛔ Firmowy dzienny limit wydatków na agenta został wyczerpany (' + c + ' / ' + cl + ' PLN). Uruchomienia są wstrzymane dla wszystkich do północy (czas warszawski).'; if (r === 'both') return '⛔ Limit wydatków wyczerpany — Twój dzienny (' + u + ' / ' + ul + ' PLN) oraz firmowy (' + c + ' / ' + cl + ' PLN). Uruchomienia wstrzymane do północy (czas warszawski).'; return '⛔ Osiągnięto Twój dzienny limit wydatków na agenta (' + u + ' / ' + ul + ' PLN). Nowe uruchomienia będą blokowane do północy (czas warszawski), gdy limit się zresetuje.'; })(), notify_all: false }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "223ed083-31ea-46b3-beff-9e46631ebe25",
+      "name": "Alert Spend Blocked",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [400, 760],
+      "notes": "ADR-064: WARN via Post Alert (v1) whenever a run is blocked, so the operator sees who hit which cap.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "spend-limit/blocked",
+            "message": "Zablokowano uruchomienie agenta — przekroczono dzienny limit wydatków.",
+            "details": "=task={{ $('When Called').first().json.taskId }}; user={{ $('When Called').first().json.reviewer_user_id }}; reason={{ $('Check Spend Limit').first().json.block_reason }}; user_spend={{ $('Check Spend Limit').first().json.user_spend }}/{{ $('Check Spend Limit').first().json.user_limit }} PLN; firma={{ $('Check Spend Limit').first().json.company_spend }}/{{ $('Check Spend Limit').first().json.company_limit }} PLN"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "3be40526-ecbf-47b4-b4c6-ec99326b4695",
+      "name": "Alert Spend Check Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [-30, 760],
+      "notes": "ADR-064 fail-open notice: the gate query errored, the run was let through. Covers the silent-degrade mode where a DB hiccup would otherwise either freeze all work (if fail-closed) or pass silently.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "spend-limit/check-failed",
+            "message": "Nie udało się sprawdzić limitu wydatków (get_spend_status) — uruchomienie przepuszczone (fail-open).",
+            "details": "=task={{ $('When Called').first().json.taskId }}; user={{ $('When Called').first().json.reviewer_user_id }}; sprawdź połączenie z bazą / funkcję get_spend_status."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
     "Form Trigger": {
-      "main": [
-        [
-          {
-            "node": "Call Assemble Context",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Set Status W trakcie",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "When Called": {
       "main": [
         [
           {
@@ -1161,6 +1347,85 @@
         [
           {
             "node": "Call Execute Agent Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Check Spend Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Spend Limit": {
+      "main": [
+        [
+          {
+            "node": "Spend Blocked?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Spend Check Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Spend Blocked?": {
+      "main": [
+        [
+          {
+            "node": "Post Block Reply",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert Spend Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resume After Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Spend Check Failed": {
+      "main": [
+        [
+          {
+            "node": "Resume After Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resume After Gate": {
+      "main": [
+        [
+          {
+            "node": "Call Assemble Context",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Set Status W trakcie",
             "type": "main",
             "index": 0
           }
