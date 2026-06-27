@@ -75,7 +75,7 @@ Caller = the single assignee (no creator fallback). Output posts as a **new top-
 | 2 | E2E verification + freshness monitor + write-backs | ✅ Done (2026-06-27) — verified live (enqueue/dedup/sync-fallback/summary/heartbeat + negative gates + freshness fresh/stale); fixed a heartbeat-clobbers-summary bug; freshness monitor `q98HgAuUlqxg1CF4` built. Both workflows **INACTIVE pending operator activation** |
 
 ## Block 1 — Build the producer workflow
-- Triggers: `Schedule Trigger` daily 00:00 Europe/Warsaw + `Form Trigger` manual harness (mirror
+- Triggers: `Schedule Trigger` daily 01:00 Europe/Warsaw + `Form Trigger` manual harness (mirror
   `fx-rates-daily.json`).
 - `Compute Window` (Code): Warsaw today date + widened unix-ms window (start−24h, end+24h).
 - `Fetch Due Tasks` (HTTP GET `/api/v2/team/761759/task`, `due_date_gt`/`due_date_lt`,

@@ -42,8 +42,8 @@ overnight drafts are ready by morning. This is the Phase-3 "Daily Due-Date Produ
 
 ## Decision
 
-Build `Daily Due-Date Producer (v1)` (`n8n/workflows/due-date-producer.json`): a daily 00:00
-Europe/Warsaw cron (plus a Form-Trigger manual harness) that scans ClickUp and fires **one** autonomous
+Build `Daily Due-Date Producer (v1)` (`n8n/workflows/due-date-producer.json`): a daily 01:00
+Europe/Warsaw cron (01:00 rather than 00:00 to avoid midnight-boundary brittleness) (plus a Form-Trigger manual harness) that scans ClickUp and fires **one** autonomous
 agent run per qualifying task. A task qualifies iff ALL hold:
 
 1. due date is **today** in **Europe/Warsaw**,

@@ -8,13 +8,13 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.3,
       "position": [-260, 200],
-      "notes": "ADR-065 Phase-3 autonomous producer. Fires daily at 00:00 Europe/Warsaw (workflow timezone is set to Europe/Warsaw in settings). Scans ClickUp for tasks due TODAY (Warsaw) with exactly one assignee + [AI] Czy zadanie dla AI=Tak, not already actioned today, not closed/done, and enqueues one autonomous run per task. The schedule can't be fired via API — use the Form Trigger harness to test.",
+      "notes": "ADR-065 Phase-3 autonomous producer. Fires daily at 01:00 Europe/Warsaw (workflow timezone is set to Europe/Warsaw in settings; 01:00 rather than 00:00 to avoid midnight-boundary brittleness). Scans ClickUp for tasks due TODAY (Warsaw) with exactly one assignee + [AI] Czy zadanie dla AI=Tak, not already actioned today, not closed/done, and enqueues one autonomous run per task. The schedule can't be fired via API — use the Form Trigger harness to test.",
       "parameters": {
         "rule": {
           "interval": [
             {
               "field": "days",
-              "triggerAtHour": 0,
+              "triggerAtHour": 1,
               "triggerAtMinute": 0
             }
           ]

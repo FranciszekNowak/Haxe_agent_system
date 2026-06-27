@@ -8,7 +8,7 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.3,
       "position": [0, 200],
-      "notes": "ADR-065 proactive dead-man's switch. Runs daily at 09:00 Europe/Warsaw (after the 00:00 producer). WARNs if config.due_date_producer.last_run_at is missing or older than 26h — a silently-stopped producer cron is the CLAUDE.md silent-degradation mode (overnight drafts would vanish unnoticed). Activate TOGETHER with the Daily Due-Date Producer; while the producer is inactive this would (correctly) WARN.",
+      "notes": "ADR-065 proactive dead-man's switch. Runs daily at 09:00 Europe/Warsaw (after the 01:00 producer). WARNs if config.due_date_producer.last_run_at is missing or older than 26h — a silently-stopped producer cron is the CLAUDE.md silent-degradation mode (overnight drafts would vanish unnoticed). Activate TOGETHER with the Daily Due-Date Producer; while the producer is inactive this would (correctly) WARN.",
       "parameters": {
         "rule": {
           "interval": [
