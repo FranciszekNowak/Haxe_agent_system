@@ -292,7 +292,9 @@ tokens from two OAuth servers: (1) an **MCP-OAuth token** for *discovery* (held 
 attaches only the triggering user's vault, scoping every hosted-MCP call to what that human can see), and (2) a
 **classic REST token** for *identity + Block-4 as-U extraction* (the hosted MCP returns no attachment content),
 held in **Supabase Vault** and read back by `caller_user_id`. **Built (Block 1):** the credential store —
-`user_clickup_credentials` (migration 039, RLS-enabled); the OAuth app-secret getter `get_clickup_oauth_app()`
+`user_data_and_config` (migration 039 as `user_clickup_credentials`; **renamed in migration 047** and
+extended with `daily_spend_limit_pln` for ADR-064 per-user spend caps — it now holds per-user data *and*
+config, not credentials only; RLS-enabled); the OAuth app-secret getter `get_clickup_oauth_app()`
 (migration 040); a CSRF-state table extended for the second consent (migrations 041 + 043, the latter adding the
 PKCE verifier / DCR client_id / carried identity for the MCP phase); the REST-token store + getter
 `set_clickup_rest_token()` / `get_clickup_rest_token()` (migration 042, Supabase Vault); and a **self-serve
@@ -304,7 +306,7 @@ hosted-MCP consent → `/webhook/clickup-mcp-callback` (exchange, create the per
 (`scripts/onboard-clickup-user.mjs`) is retained as a dev fallback. ClickUp OAuth tokens don't expire (no refresh
 machinery). **Built (Block 2 — session-to-user binding, 2026-06-23):** `Execute Agent Session (v1)` now resolves
 the triggering `caller_user_id` → that user's per-user ClickUp Vault id (the `Resolve Agent` query joins
-`user_clickup_credentials` on status `active`) and attaches it to the session's `vault_ids` alongside the
+`user_data_and_config` on status `active`) and attaches it to the session's `vault_ids` alongside the
 image-MCP vault (`Build Setup` → `Create Session`). The binding is set by n8n from `caller_user_id` only, so the
 agent cannot spoof whose scope it runs under. An un-onboarded caller **degrades, not breaks**: the ClickUp vault
 is simply omitted (`clickup_scope: 'degraded'`) and one consolidated WARN (`managed-agents/clickup-scope-degraded`)
@@ -387,7 +389,7 @@ re-run of `Sync Agent Definitions (v1)` with ClickUp removed (CONV bump → ever
 proven deterministic-pre-gather floor). No dedicated scoping flag was built (operator decision 2026-06-24 — a
 new code path is unjustified for a 5-person system already covered by two proven levers). **Revoke ops:** revoke
 = delete the user's Anthropic Vault credential/vault + delete the Supabase REST token (`clickup_rest_token_<id>`)
-+ flip the `user_clickup_credentials` row to `revoked`; the next session then degrades + WARNs (the proven Block-2
++ flip the `user_data_and_config` row to `revoked`; the next session then degrades + WARNs (the proven Block-2
 path). Documented as a runbook; no revoke script built (operator decision 2026-06-24). **Proactive onboarding-coverage dead-man's-switch (built 2026-06-24):**
 `ClickUp Onboarding Coverage Monitor (v1)` (`0hj3LDSEe1R3JJ5w`) runs weekly (Mon 08:00 Europe/Warsaw) and WARNs
 via `Post Alert (v1)` for any ClickUp member who is (1) a **full member** (`role_key` owner/admin/member — guests

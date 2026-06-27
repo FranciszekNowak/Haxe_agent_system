@@ -6,7 +6,7 @@
 //   * EXTRACTION = the CLASSIC REST OAuth token in Supabase Vault     -> minted HERE.
 // The production path that mints BOTH is the hosted webhook `ClickUp OAuth Onboarding (v1)`, but right now it
 // is unusable for the REST token for two reasons: (1) its "Already Connected?" guard short-circuits for any
-// user who already has a user_clickup_credentials row (which the loopback DISCOVERY onboarder creates), so it
+// user who already has a user_data_and_config row (which the loopback DISCOVERY onboarder creates), so it
 // throws the REST token away and shows an "already connected" page; and (2) even past that, it chains into the
 // hosted-MCP consent phase, which is STILL allowlist-blocked, so it always ends in a failure page + CRITICAL.
 // This script is the clean interim: the CLASSIC ClickUp OAuth loopback flow -> store ONLY the REST token via

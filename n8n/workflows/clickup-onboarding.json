@@ -221,7 +221,7 @@
       "notes": "Re-onboard guard: if an active mapping row already exists, stop before re-running the consent chain. alwaysOutputData so a no-row result still flows (empty item). To RE-KEY a user, delete their row first.",
       "parameters": {
         "operation": "executeQuery",
-        "query": "select clickup_user_id, status from user_clickup_credentials where clickup_user_id = $1;",
+        "query": "select clickup_user_id, status from user_data_and_config where clickup_user_id = $1;",
         "options": {
           "queryReplacement": "={{ [ String($('Get ClickUp User').first().json.user.id) ] }}"
         }
@@ -655,7 +655,7 @@
       "notes": "Records the durable mapping (migration 039), vault_id + credential id keyed by mcp URL. Upsert so re-key/re-consent updates in place. No token stored here (write-only in the Vault). Failure -> failure page + CRITICAL (orphaned vault id in the alert).",
       "parameters": {
         "operation": "executeQuery",
-        "query": "insert into user_clickup_credentials (clickup_user_id, clickup_username, clickup_email, vault_id, vault_credential_ids, status) values ($1, $2, $3, $4, $5::jsonb, 'active') on conflict (clickup_user_id) do update set clickup_username = excluded.clickup_username, clickup_email = excluded.clickup_email, vault_id = excluded.vault_id, vault_credential_ids = excluded.vault_credential_ids, status = 'active', updated_at = now(), revoked_at = null;",
+        "query": "insert into user_data_and_config (clickup_user_id, clickup_username, clickup_email, vault_id, vault_credential_ids, status) values ($1, $2, $3, $4, $5::jsonb, 'active') on conflict (clickup_user_id) do update set clickup_username = excluded.clickup_username, clickup_email = excluded.clickup_email, vault_id = excluded.vault_id, vault_credential_ids = excluded.vault_credential_ids, status = 'active', updated_at = now(), revoked_at = null;",
         "options": {
           "queryReplacement": "={{ [ String($('Consume MCP State').first().json.clickup_user_id), ($('Consume MCP State').first().json.clickup_username || ''), ($('Consume MCP State').first().json.clickup_email || ''), $('Create Vault').first().json.id, JSON.stringify({ 'https://mcp.clickup.com/mcp': $('Create Credential').first().json.id }) ] }}"
         }

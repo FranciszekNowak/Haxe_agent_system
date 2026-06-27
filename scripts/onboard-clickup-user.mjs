@@ -2,7 +2,7 @@
 // onboard-clickup-user.mjs — ADR-054 Block 1: onboard one ClickUp user into permission-scoped
 // context retrieval. Runs the OAuth authorization-code flow, mints that user's ClickUp access
 // token, stores it as a static_bearer credential in a NEW per-user Anthropic Vault keyed to the
-// hosted ClickUp MCP, and records the mapping row in user_clickup_credentials.
+// hosted ClickUp MCP, and records the mapping row in user_data_and_config.
 //
 // Why this exists: the managed lane reads ClickUp through one shared bot token today. ADR-054 moves
 // scope enforcement onto the CREDENTIAL — each member's own OAuth token in their own Vault, attached
@@ -29,7 +29,7 @@
 //   5. identify the user (GET https://api.clickup.com/api/v2/user),
 //   6. create a per-user Anthropic Vault + a static_bearer credential
 //      { mcp_server_url: https://mcp.clickup.com/mcp, token: <access_token> },
-//   7. record the user_clickup_credentials row (via Supabase REST if SUPABASE_* set, else print SQL).
+//   7. record the user_data_and_config row (via Supabase REST if SUPABASE_* set, else print SQL).
 // The access token is NEVER printed or written to disk — it is write-only in the Vault.
 //
 // Usage (run on a machine with a browser — Franciszek's Windows desktop, NOT the headless VPS):
@@ -157,7 +157,7 @@ function getAuthCode() {
   // 5b) guard against a duplicate / orphan vault if we can see the table
   if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
     const existing = await jsonFetch('check existing row',
-      `${SUPABASE_URL}/rest/v1/user_clickup_credentials?clickup_user_id=eq.${encodeURIComponent(clickupUserId)}&select=clickup_user_id,status,vault_id`,
+      `${SUPABASE_URL}/rest/v1/user_data_and_config?clickup_user_id=eq.${encodeURIComponent(clickupUserId)}&select=clickup_user_id,status,vault_id`,
       { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } });
     if (Array.isArray(existing) && existing.length) {
       die(`a row already exists for user ${clickupUserId} (status ${existing[0].status}, vault ${existing[0].vault_id}). `
@@ -201,17 +201,17 @@ function getAuthCode() {
     status: 'active',
   };
   if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
-    await jsonFetch('insert row', `${SUPABASE_URL}/rest/v1/user_clickup_credentials`, {
+    await jsonFetch('insert row', `${SUPABASE_URL}/rest/v1/user_data_and_config`, {
       method: 'POST',
       headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
                  'Content-Type': 'application/json', Prefer: 'return=minimal' },
       body: JSON.stringify(row),
     });
-    console.log('✓ user_clickup_credentials row inserted');
+    console.log('✓ user_data_and_config row inserted');
   } else {
     console.log('\nSUPABASE_URL / SUPABASE_SERVICE_KEY not set — run this INSERT yourself (no secret in it):\n');
     console.log(
-      `insert into user_clickup_credentials (clickup_user_id, clickup_username, clickup_email, vault_id, vault_credential_ids)\n` +
+      `insert into user_data_and_config (clickup_user_id, clickup_username, clickup_email, vault_id, vault_credential_ids)\n` +
       `values ('${clickupUserId}', ${sqlStr(username)}, ${sqlStr(email)}, '${vaultId}', '${JSON.stringify(row.vault_credential_ids)}'::jsonb);`
     );
   }

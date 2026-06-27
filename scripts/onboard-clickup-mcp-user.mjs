@@ -23,7 +23,7 @@
 //   3. open https://mcp.clickup.com/oauth/authorize?... in the browser, capture ?code= on localhost,
 //   4. token exchange at https://mcp.clickup.com/oauth/token (code_verifier, no secret) -> MCP access_token,
 //   5. create a per-user Anthropic Vault + a static_bearer credential { mcp.clickup.com/mcp, <token> },
-//   6. upsert the user_clickup_credentials row (PostgREST if SUPABASE_* set, else print the INSERT SQL).
+//   6. upsert the user_data_and_config row (PostgREST if SUPABASE_* set, else print the INSERT SQL).
 // The access token is NEVER printed or written to disk — it is write-only in the Vault.
 //
 // Usage (run on a machine WITH a browser, logged into ClickUp AS the user being onboarded):
@@ -116,7 +116,7 @@ let vaultId = null;
   // 0) optional duplicate guard (avoid orphan vaults on re-run; clear the row first to re-onboard)
   if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
     const existing = await jf('check existing row',
-      `${SUPABASE_URL}/rest/v1/user_clickup_credentials?clickup_user_id=eq.${encodeURIComponent(CLICKUP_USER_ID)}&select=clickup_user_id,status,vault_id`,
+      `${SUPABASE_URL}/rest/v1/user_data_and_config?clickup_user_id=eq.${encodeURIComponent(CLICKUP_USER_ID)}&select=clickup_user_id,status,vault_id`,
       { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } });
     if (Array.isArray(existing) && existing.length) {
       die(`a row already exists for user ${CLICKUP_USER_ID} (status ${existing[0].status}, vault ${existing[0].vault_id}). `
@@ -172,16 +172,16 @@ let vaultId = null;
   // 6) upsert the mapping row (or print the SQL)
   const credIds = { [MCP_URL]: credId };
   if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
-    await jf('upsert row', `${SUPABASE_URL}/rest/v1/user_clickup_credentials`, {
+    await jf('upsert row', `${SUPABASE_URL}/rest/v1/user_data_and_config`, {
       method: 'POST',
       headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({ clickup_user_id: CLICKUP_USER_ID, clickup_username: USERNAME, clickup_email: EMAIL, vault_id: vaultId, vault_credential_ids: credIds, status: 'active' }),
     });
-    console.log('✓ user_clickup_credentials row upserted');
+    console.log('✓ user_data_and_config row upserted');
   } else {
     console.log('\nSUPABASE_* not set — send this to the operator/assistant to run (no secret in it):\n');
     console.log(
-      `insert into user_clickup_credentials (clickup_user_id, clickup_username, clickup_email, vault_id, vault_credential_ids)\n` +
+      `insert into user_data_and_config (clickup_user_id, clickup_username, clickup_email, vault_id, vault_credential_ids)\n` +
       `values ('${CLICKUP_USER_ID}', ${sqlStr(USERNAME)}, ${sqlStr(EMAIL)}, '${vaultId}', '${JSON.stringify(credIds)}'::jsonb)\n` +
       `on conflict (clickup_user_id) do update set vault_id=excluded.vault_id, vault_credential_ids=excluded.vault_credential_ids, status='active', updated_at=now(), revoked_at=null;`
     );
