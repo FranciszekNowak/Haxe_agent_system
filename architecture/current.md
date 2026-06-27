@@ -239,14 +239,22 @@ parsing or repair. The fragile free-text JSON contract and its hand-rolled `pars
 strip / preamble narrowing / schema-aware quote-and-control-char repair, ADR-059) are **deleted** —
 structurally eliminating the routine, alert-less collapse of image/doc comments to plain text. The only
 remaining fallback fires a loud `output-adapter/no-deliver-output` WARN and text-renders `output_message`
-when the agent did not call the tool (a protocol violation, never a silent drop). The bare lane
-(`Image Resolver (v1)` → *Resolve & Explode Blocks*) still runs the legacy `parseBlockArray` helper pending
-ADR-063 Block 4. The adapter also supports `embed_input` (re-embedding an image already attached to the task)
+when the agent did not call the tool (a protocol violation, never a silent drop). The bare lane has the same
+treatment (ADR-063 Block 4): `Invoke Model (v1)` forces a `deliver_output` tool call on the LiteLLM
+`/v1/chat/completions` completion (`tool_choice`), `Parse Response` captures the block array from
+`message.tool_calls[].function.arguments` (the provider serializes the tool input as validated JSON — one
+`JSON.parse`, no hand-repair), and `Image Resolver (v1)` → *Resolve & Explode Blocks* consumes it directly;
+the bare lane's `parseBlockArray` twin **and** `Execute LLM Call (v1)`'s tolerant `Parse Output Blocks` node
+are **deleted**, with the same loud `multimodal/no-deliver-output` WARN + text fallback. The adapter also supports `embed_input` (re-embedding an image already attached to the task)
 by resolving the agent's attachment ref against the input image refs into a `{type:attachment}` op inline —
 no re-upload, mirroring the bare lane. **Cutover state:** the managed render is built and committed but goes
 live with the persona-contract flip in ADR-063 Block 5 (Blocks 3/4/5 deploy together); until then the live
-managed lane still emits and parses the free-text protocol, so `render-agent-output.json` and
-`agent-orchestrator.json` are deliberately repo-ahead-of-live.
+managed lane still emits and parses the free-text protocol, so `render-agent-output.json`,
+`agent-orchestrator.json`, `invoke-model.json`, `execute-llm-call.json` and `image-resolver.json` are
+deliberately repo-ahead-of-live. (The forced-tool-call round-trip was verified live against LiteLLM on a
+working model group; note the bare lane's upstream `ANTHROPIC_API_KEY` in the VPS `.env` is currently stale —
+all `haxe-*-direct` Claude models 401 — and must be refreshed before any bare-lane go-live. The dormant bare
+lane masks this today; the managed lane uses separate Anthropic Agent API creds and is unaffected.)
 
 **Reliability:** an auth dead-man's-switch (`Managed Agents Auth Monitor (v1)`), the CU-rules sync +
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the
@@ -1257,7 +1265,7 @@ failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent S
 | **`Assemble Context and Build Prompt (v1)`** (Stage A) | Assemble Parent Context + Assemble Task Context + Build Prompt (research call retired, Block 8) | **LIVE** |
 | **`Execute Agent Session (v1)`** (id `Rtb1cZbmUqmfGD98`, Stage B — **managed**) | Anthropic Managed Agents session: resolve tier agent (`agent_routing`) + env → upload input images (Files API) → create/send → poll to idle → service custom-tool loop → session USD cost + enumerate produced docs | **LIVE — default Stage B** |
 | **`Render Agent Output (v1)`** (id `vPbbN4UQj0LAAtiV`, managed) | Output adapter: consume the agent's structured `deliver_output` block array (`output_blocks` + `delivered_via_tool`) → `rendered_delta` + `image_manifest` (produced-image bytes from the `agent-output-images` carrier); no parser/repair — loud `no-deliver-output` WARN + text fallback only if the tool was not called (ADR-063) | **LIVE (Block 3 repo-built; deploys with Block 5)** |
-| **`Execute LLM Call (v1)`** (id `9qdJA4xnAGbxqkt9`, Stage B — **bare failover**) | Invoke Model → drafted reply + cost (LiteLLM lane; selected by `config.agent_lane='bare'`) | **LIVE (dormant failover)** |
+| **`Execute LLM Call (v1)`** (id `9qdJA4xnAGbxqkt9`, Stage B — **bare failover**) | Invoke Model → drafted reply + cost (LiteLLM lane; selected by `config.agent_lane='bare'`). ADR-063 Block 4: consumes the structured `deliver_output` block array (`output_blocks_json` + `delivered_via_tool`) straight from Invoke Model; the tolerant `Parse Output Blocks` free-text parser is **deleted** | **LIVE (dormant failover; Block 4 repo-built, deploys with Block 5)** |
 | **`Post Reply (v1)`** (Stage C) | Post draft comment, status flip, office-doc + image attachments (owns CU side-effects). The cost-field write moved to the shared `Write Cost Field (v1)` (ADR-057) | **LIVE** |
 | **`Write Cost Field (v1)`** (id `GoFPwWsSQOHnrClH`, ADR-057) | Shared cost-field writer called by **both** Stage-B lanes: `SUM(agent_runs.cost_pln)` for the task → write CU `[AI] Koszt akcji [PLN]` → return `{total}` (the cumulative task total for the CU field; the managed footer no longer uses it — it shows the per-execution cost, ADR-060). Fail-soft (DB/CU error → WARN, returns 0) | **LIVE** |
 | **`Sync Agent Definitions (v1)`** (id `4K1w78hJ7JhsUwdN`) + **`Agent Rules Freshness Check (v1)`** (id `7lakbgmrH93ygiyZ`) | Bake CU global-rules into the four tier agents' `system` (idempotent create/version-update) + a freshness dead-man's-switch (stale rules → WARN/CRITICAL). Both every 6h | **LIVE** |
@@ -1265,7 +1273,7 @@ failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent S
 | **`Haxe Image MCP (v1)`** (id `c4vnNLb9usfHJWg3`) → **`Image MCP Tool Handler (v1)`** (id `zxY41zZWRbXon2Eq`) → **`Image Tool Handler (v1)`** (id `vpGswBj2kR2D85hl`) | Self-hosted image MCP (n8n MCP Server Trigger, bearer) the agents call in-harness for `generate_image` (ADR-055) → resolves `reference_file_ids` against `agent_input_file_map` by **`file_id` OR `source_ref`** (the agent is only ever shown `source_ref`s, incl. zip-inner `<uuid>.zip:N` — ADR-059) → `Generate Images Parallel (v1)` unchanged → Files-API upload + carrier persist + per-image cost. Client-side `generate_image` custom tool is the dormant rollback | **LIVE** |
 | **`Managed Agents Auth Monitor (v1)`** (id `X3GEjMgmByZgDJnt`) + **`Image MCP Health Monitor (v1)`** (id `Er1JlLYAQLkIk7yB`) + **`Fable 5 Access Monitor (v1)`** (id `Moh1coo5pPmuSTmD`) | Dead-man's-switches: Anthropic auth probe (6h), image-MCP `initialize` probe (6h), bare-lane Fable reachability (daily) — all alert via `Post Alert (v1)` | **LIVE** |
 | **`Assemble Parent Context (v1)`** | Assemble labelled task context (task + ancestor chain + fields) | **LIVE** |
-| **`Invoke Model (v1)`** | Centralized model-call seam: route → LiteLLM → exact PLN cost → log. **Text + multimodal-INPUT only** since ADR-051 Block 5 (image generation moved to `Generate Images Parallel`) | **LIVE** |
+| **`Invoke Model (v1)`** | Centralized model-call seam: route → LiteLLM → exact PLN cost → log. **Text + multimodal-INPUT only** since ADR-051 Block 5 (image generation moved to `Generate Images Parallel`). ADR-063 Block 4: forces a `deliver_output` tool call on the completion (`tools`+`tool_choice` on the primary/fallback/retry bodies) and `Parse Response` captures the block array from `message.tool_calls[].function.arguments` → `output_blocks_json` + `delivered_via_tool` (one `JSON.parse`, no free-text repair) | **LIVE** |
 | **`Generate Images Parallel (v1)`** (id `2keb6XVWq5PG0leK`, ADR-051) | Concurrent image-gen batch: `Promise.all` over a bounded pool (cap `config.image_concurrency_cap`=4) fires all of a run's `generate` images at once (wall-clock ≈ slowest single, not the sum); inline image-resolution (ADR-045) + per-image one-tier-below fallback; reuses `Log Model Run` for per-image cost; returns per-image results + `warnings[]`. Auth via the image-scoped LiteLLM key in Supabase Vault (`get_litellm_image_key()`). Cap raised 4→5 (migration 033). **Block 7 (2026-06-16): timeout is non-blocking** — `Fire Images Concurrently` carries an internal **840 s soft-deadline** (`Promise.race`) that returns partial results (un-generated images → `success:false` + an `image-batch/timeout-partial` WARN, never a CRITICAL) below the raised global **`N8N_RUNNERS_TASK_TIMEOUT=900 s`** (15 min, fits 2 `gpt-image-2` waves); per-call HTTP timeout 240→300 s clamped to remaining budget; a failed/not-generated image now bills **0** (`Explode Results` applies the floor only on success). | **LIVE — the sole image-gen path: `Image Resolver`'s generate branch calls it (Block 4), and `Invoke Model`'s dead image branch was deleted (Block 5, 2026-06-15)** |
 | **`Assemble Task Context (v1)`** | Triggering-task comment + threaded-reply fetch (open-ended search + Layer-B retired, ADR-054 Block 3b) | **LIVE** |
 | **`CU Webhook Producer (v1)`** | Comment-webhook trigger → verify → detect mention → dedup/loop-breaker → **`queue.enabled`? enqueue (`POST /enqueue`, impact fetched) : synchronous `Run Agent Spine` fallback** (ADR-056 Block 3) | **LIVE (@-mention, queue cutover)** |
@@ -1389,10 +1397,10 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   widen); 0 CRITICAL / 0 WARN, drift clean (38/38), cost rows attributed via `Log Model Run`. The
   **tier-additive cached system prefix** (ADR-061 decision detail 3) is deferred to **ADR-062** (Proposed).
 - **Stage B (bare, dormant failover) — `Execute LLM Call (v1)`** (`n8n/workflows/execute-llm-call.json`, id `9qdJA4xnAGbxqkt9`,
-  10 nodes): `Invoke Model (v1)` → drafted reply + cost; forwards `image_blocks_json` to Invoke Model.
-  **Multimodal output (Block 12, 2026-06-13):** the drafting model now returns the **output-block list**, so
-  Stage B runs `Call Invoke Model → Parse Output Blocks (tolerant JSON parse; un-parseable → single text block)
-  → Call Image Resolver (znDqcfgXK6CNte20) → Call Write Cost Field (GoFPwWsSQOHnrClH, the shared field writer) →
+  9 nodes): `Invoke Model (v1)` → drafted reply + cost; forwards `image_blocks_json` to Invoke Model.
+  **Structured output (ADR-063 Block 4, supersedes the Block-12 free-text protocol):** `Invoke Model (v1)` forces a
+  `deliver_output` tool call and returns the block array as `output_blocks_json` + `delivered_via_tool`, so
+  Stage B runs `Call Invoke Model → Call Image Resolver (znDqcfgXK6CNte20) → Call Write Cost Field (GoFPwWsSQOHnrClH, the shared field writer) →
   [Has Warnings? → Alert Resolver Warnings] → Return LLM Result` (sole terminal). The resolver is called
   **before** the cost write so per-`generate` `image_gen` rows are counted; `Return LLM Result` carries
   `rendered_delta` / `image_manifest` /
@@ -1765,7 +1773,12 @@ post never sets status or `[AI] Finalny…`.
   sub-workflow upstream of Stage C that *produces* the `image_manifest` + `rendered_delta` above from the drafting
   model's output-block list. Inputs: `output_blocks_json` (text / `embed_input` / `generate` blocks), `impact`,
   `input_image_refs_json` (from Read Input, for embed resolution), `clickup_task_id` + passthrough; it also forwards
-  `model`/`cost_pln` (the text-run attribution) to the caller. Graph: `When Called → Lookup Image Config → Resolve
+  `model`/`cost_pln` (the text-run attribution) to the caller. **ADR-063 Block 4:** `output_blocks_json` is now the
+  agent's **structured `deliver_output` block array** (captured by `Invoke Model (v1)` from a forced tool call), and
+  two new inputs `delivered_via_tool` + `output_message` ride alongside; `Resolve & Explode Blocks` consumes the
+  blocks directly — the hand-rolled `parseBlockArray` repair routine (fence/preamble/quote-repair) is **deleted**,
+  with a loud `multimodal/no-deliver-output` WARN + `output_message` text fallback only if the tool was not called.
+  Graph: `When Called → Lookup Image Config → Resolve
   & Explode Blocks → Classify Block (Switch: text/embed/generate/drop) → {text↦Merge | Resolve Embed | Build Batch
   Request → Call Generate Batch | Build Dropped Block} → Merge Branches → Assemble Output` (the sole branch-free
   terminal). It returns `{image_manifest, rendered_delta, total_image_cost_pln, image_models, warnings}`.

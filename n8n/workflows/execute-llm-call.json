@@ -61,7 +61,7 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [224, 304],
-      "notes": "onError=continueErrorOutput so LLM failures route to local Reset+Alert instead of errorWorkflow with no task context. Drafting call returns completion = output-block-list JSON (Block 12).",
+      "notes": "onError=continueErrorOutput so LLM failures route to local Reset+Alert instead of errorWorkflow with no task context. ADR-063 Block 4: the bare drafting call now FORCES deliver_output (tool_choice in Invoke Model) and returns the answer as STRUCTURED output_blocks_json + delivered_via_tool (the Anthropic/LiteLLM tool-call API serializes the block array as validated JSON) — the free-text completion + tolerant Parse Output Blocks parser are gone. completion is kept only as the no-deliver-output text fallback.",
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -91,23 +91,12 @@
       "onError": "continueErrorOutput"
     },
     {
-      "id": "parse-output-blocks",
-      "name": "Parse Output Blocks",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [448, 304],
-      "notes": "Tolerant parse completion -> output_blocks_json. Strips a ```json fence, falls back to first [...] substring, then to a single {type:text,md:completion} block. Unify-risk safety net (malformed JSON -> renders as prose, never raw JSON, never a crash).",
-      "parameters": {
-        "jsCode": "// Block 12: tolerant parse of the drafting model's completion into an output-block list.\n// Un-parseable / non-array output is wrapped as a single text block so it renders as prose\n// (the full-unify format-reliability mitigation). Never throws.\nconst mr = $('Call Invoke Model').first().json;\nconst raw = (mr.completion || '').toString();\nfunction tryParse(s){ try { const v = JSON.parse(s); return Array.isArray(v) ? v : null; } catch(e){ return null; } }\nlet s = raw.trim();\nconst fence = s.match(/^```(?:json)?\\s*([\\s\\S]*?)\\s*```$/i);\nif (fence) s = fence[1].trim();\nlet blocks = tryParse(s);\nif (!blocks) {\n  const i = s.indexOf('['); const j = s.lastIndexOf(']');\n  if (i !== -1 && j !== -1 && j > i) blocks = tryParse(s.slice(i, j + 1));\n}\nif (!blocks || !blocks.length) { blocks = [{ type: 'text', md: raw }]; }\nreturn [{ json: { output_blocks_json: JSON.stringify(blocks), completion: raw } }];"
-      }
-    },
-    {
       "id": "call-image-resolver",
       "name": "Call Image Resolver",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [672, 304],
-      "notes": "Block 12: turns the output-block list into {image_manifest, rendered_delta, total_image_cost_pln, image_models, warnings}. input_image_refs_json = input image refs (image_blocks_json, now carrying source_ref) for embed_input resolution. NO onError: a resolver throw is a genuine stage failure -> propagates to the orchestrator's global Error Handler (CRITICAL + status rollback, ADR-025 reactive layer), no partial post. Internal failures (gen/embed/ceiling) come back as warnings, not throws. Runs BEFORE Sum Task Cost so image_gen agent_runs rows are counted.",
+      "notes": "ADR-063 Block 4: turns the agent's STRUCTURED deliver_output blocks (output_blocks_json + delivered_via_tool, captured by Invoke Model from the forced tool call) into {image_manifest, rendered_delta, total_image_cost_pln, image_models, warnings}. output_message carries Invoke Model's completion as the no-deliver-output text fallback only. input_image_refs_json = input image refs (image_blocks_json, carrying source_ref) for embed_input resolution. NO onError: a resolver throw is a genuine stage failure -> propagates to the orchestrator's global Error Handler (CRITICAL + status rollback, ADR-025 reactive layer), no partial post. Internal failures (gen/embed/ceiling) come back as warnings, not throws. Runs BEFORE Sum Task Cost so image_gen agent_runs rows are counted.",
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -117,14 +106,16 @@
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
-            "output_blocks_json": "={{ $json.output_blocks_json }}",
+            "output_blocks_json": "={{ $('Call Invoke Model').first().json.output_blocks_json }}",
             "impact": "={{ $('When Called').first().json.impact }}",
             "input_image_refs_json": "={{ $('When Called').first().json.image_blocks_json || '[]' }}",
             "clickup_task_id": "={{ $('When Called').first().json.clickup_task_id }}",
             "triggered_by": "={{ $('When Called').first().json.triggered_by }}",
             "invocation_type": "={{ $('When Called').first().json.invocation_type }}",
             "caller_user_id": "={{ $('When Called').first().json.caller_user_id }}",
-            "process_type": "={{ $('When Called').first().json.process_type }}"
+            "process_type": "={{ $('When Called').first().json.process_type }}",
+            "delivered_via_tool": "={{ $('Call Invoke Model').first().json.delivered_via_tool }}",
+            "output_message": "={{ $('Call Invoke Model').first().json.completion }}"
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,
@@ -299,7 +290,7 @@
       "main": [
         [
           {
-            "node": "Parse Output Blocks",
+            "node": "Call Image Resolver",
             "type": "main",
             "index": 0
           }
@@ -307,17 +298,6 @@
         [
           {
             "node": "Reset Status on Failure",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Parse Output Blocks": {
-      "main": [
-        [
-          {
-            "node": "Call Image Resolver",
             "type": "main",
             "index": 0
           }

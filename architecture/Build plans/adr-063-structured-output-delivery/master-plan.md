@@ -35,8 +35,40 @@ multimodal spec §1.
 | 1 | Define `deliver_output` tool contract (one shared block schema, incl. doc block) | ✅ DONE — ADR-063 (Proposed) defines the contract; canonical input_schema + per-type/per-lane field table + doc-block resolution rules |
 | 2 | Managed lane: register tool in `Build System`; `Poll Round` terminal detection; `Build Final Output` emits structured `output_blocks` | ✅ DONE — registered live (Anthropic agent def v18 returns `deliver_output`); forced session exec 4425 → `outcome=delivered`, `output_blocks` captured clean; dormant (contract unchanged until Block 5) |
 | 3 | `Render Agent Output → Parse Blocks`: consume structured blocks; delete `parseBlockArray()`; loud WARN only if `deliver_output` missing | ✅ DONE — repo-built (not yet deployed; deploys with Block 5). `Parse Blocks` consumes `output_blocks_json`/`delivered_via_tool`; `parseBlockArray()` + parse-fallback/preamble/quote-repair deleted; only fallback = `output-adapter/no-deliver-output` WARN + text-render of `output_message`. Orchestrator `Call Render Agent Output` now passes `output_blocks_json` (stringified) + `delivered_via_tool`. Doc/embed/image-fetch/mdToOps assembly unchanged. Unit-verified (4 cases incl. Polish typographic quote); `test-image-delivery.mjs --text` green (Post Reply boundary intact); 2-image variant fails pre-existing/upstream in live Gemini image-gen (empty b64), unrelated to Block 3 (nothing deployed). |
-| 4 | Bare-lane parity: `Invoke Model`/`Execute LLM Call` tool + `tool_choice`; `Image Resolver → Resolve & Explode Blocks` delete parse twin | pending |
+| 4 | Bare-lane parity: `Invoke Model`/`Execute LLM Call` tool + `tool_choice`; `Image Resolver → Resolve & Explode Blocks` delete parse twin | ✅ DONE — repo-built (not deployed; deploys with Block 5). `Invoke Model` forces `deliver_output` (OpenAI `tools`+`tool_choice` on primary/fallback/retry bodies), `Parse Response` captures `message.tool_calls[].function.arguments` → `output_blocks_json`+`delivered_via_tool`; `Execute LLM Call`'s tolerant `Parse Output Blocks` node DELETED (Invoke Model emits structured blocks directly); `Image Resolver → Resolve & Explode Blocks` consumes structured blocks, `parseBlockArray` twin DELETED. Unit-verified (14 cases incl. Polish typographic quote + no-deliver-output fallback). **Live-probed the forced-tool-call round-trip on LiteLLM:** `haxe-gemini-flash` → HTTP 200, clean `deliver_output` call, `arguments` valid JSON, typographic-quote block intact. **Infra finding (separate, pre-existing):** the bare lane's upstream `ANTHROPIC_API_KEY` in the VPS `.env` is stale — all `haxe-*-direct` Claude models 401 (`invalid x-api-key`); dormant lane masks it; managed lane unaffected (separate Agent-API creds). Must be refreshed before any bare-lane go-live. |
 | 5 | Persona contract text (ClickUp SSOT) → "call deliver_output"; write back current.md, finalize ADR-063, supersede spec §1/§3.1 + ADR-053 #4 | pending |
+
+## Key facts carried forward (from Block 4)
+
+- **Bare lane is OpenAI-shaped, not the Agent API.** The bare drafting call goes through LiteLLM
+  `/v1/chat/completions`, so the tool is declared in **OpenAI function format**
+  (`{type:'function', function:{name, description, parameters}}`) and forced with
+  `tool_choice:{type:'function', function:{name:'deliver_output'}}`. `function.parameters` is the **canonical
+  ADR-063 input_schema verbatim** (KEEP IN SYNC with the managed `custom` tool in `sync-agent-definitions.json
+  → Build System`; one schema, both lanes). The block array comes back as
+  `message.tool_calls[0].function.arguments` — a **provider-serialized JSON string** parsed with **one
+  `JSON.parse`** (still machine-serialized, not model-hand-written prose, so the defect class is gone).
+- **Where the tool/capture live:** `Invoke Model (v1)` — `Resolve Routing` emits `deliver_output_tool` +
+  `tool_choice`; `Call Model Text`'s `request_body` and the `Retry Text-Only` safety-net `jsonBody` both add
+  `tools`+`tool_choice` (the shared fallback seam `Call Model with Fallback (v1)` only swaps `model`, so the
+  tool survives the fallback automatically); `Parse Response` captures the call → `output_blocks` +
+  `delivered_via_tool`, flowed through `Normalize Model Result` → `Shape Output` as `output_blocks_json`
+  (stringified) + `delivered_via_tool`.
+- **`Execute LLM Call (v1)` lost a node:** `Parse Output Blocks` (the tolerant free-text parser) is **deleted**;
+  `Call Invoke Model` wires straight to `Call Image Resolver`, passing `output_blocks_json` +
+  `delivered_via_tool` + `output_message` (= Invoke Model `completion`, the no-tool fallback text). Now 9 nodes.
+- **`Image Resolver (v1)` → `Resolve & Explode Blocks`** deletes `parseBlockArray` and consumes the structured
+  blocks (mirrors `Render Agent Output → Parse Blocks`): two new `When Called` inputs `delivered_via_tool` +
+  `output_message`; the only fallback is `!delivered_via_tool && blocks.length===0` → one text block from
+  `output_message` + a loud `multimodal/no-deliver-output` WARN. The explode/route/ceiling/embed/generate logic
+  downstream is unchanged (bare-lane `generate` blocks still carry `prompt`/`aspect`/`size`/`reference_refs`).
+- **NOT deployed (deploys with Blocks 3/5).** The bare lane is dormant in production (`agent_lane=managed`), so
+  deploying it alone would not regress live traffic — but it is bundled with the Block 5 go-live for one cut-over.
+  `invoke-model.json`, `execute-llm-call.json`, `image-resolver.json` are repo-ahead-of-live (drift expected).
+- **⚠ Bare-lane blocker for go-live:** the VPS `.env` `ANTHROPIC_API_KEY` (shared by all `haxe-*-direct`
+  LiteLLM models) returns Anthropic `invalid x-api-key` (401). The forced-tool-call mechanism is proven
+  (Gemini 200), but no Claude-direct bare run can complete until the key is refreshed. Not a Block-4 defect;
+  flagged to the operator (don't auto-edit `.env`).
 
 ## Key facts carried forward (from Block 3)
 
