@@ -805,16 +805,23 @@ Target: 7–9 weeks to v1.
     > `DOCLING_SERVE_ENG_LOC_NUM_WORKERS=2` + `OMP_NUM_THREADS=2` (2 workers × 2 threads = the box's 4 cores, no
     > oversubscription; excess conversions queue server-side) in **both** the repo and VPS `docker-compose.yml`
     > so a multi-document zip burst can't saturate the box and an image bump can't silently revert it.
-    > **CSV encoding fix (2026-06-27):** Docling decodes text input as UTF-8 strict, so a **Windows-1250 CSV**
-    > — Polish Excel's default export — made it return `200 status=failure, md_content=null`, which the reader
-    > degraded to `[BRAK: extraction_failed]` (the service handles CSV fine; the bug was the byte encoding, and
-    > CSV is uniquely exposed — raw plaintext with no encoding declaration, unlike HTML/XML or the UTF-8 zips
-    > DOCX/XLSX). `Read Input (v1)` gained a **`Transcode Text to UTF-8`** Code node at the shared
-    > `Merge Extractable → Docling Convert` seam (covers loose *and* zip-inner docs): for plaintext exts
-    > (`csv/txt/tsv/tab`) whose bytes fail a strict UTF-8 decode, it decodes Windows-1250 and re-encodes UTF-8;
-    > binary formats and already-valid-UTF-8 text pass through untouched. Verified end-to-end on a CP1250 and a
-    > UTF-8 Polish CSV (both extract, diacritics intact, 0 WARN). Single legacy fallback is Windows-1250 (Polish/
-    > Windows shop); a general charset detector isn't available in the Code sandbox.
+    > **CSV encoding fix (2026-06-27):** Docling decodes text input as UTF-8 **strict**, so *any* non-UTF-8 CSV
+    > made it return `200 status=failure, md_content=null`, which the reader degraded to
+    > `[BRAK: extraction_failed]` (the service handles CSV fine; the bug was the byte encoding, and CSV is
+    > uniquely exposed — raw plaintext with no encoding declaration, unlike HTML/XML or the UTF-8 zips DOCX/XLSX).
+    > Verified empirically: Docling fails on `cp1250`, `iso-8859-2`, `cp1252`, **and** `utf-16` LE/BE; only
+    > `utf-8` / `ascii` / `utf-8-BOM` pass. `Read Input (v1)` gained a **`Transcode Text to UTF-8`** Code node at
+    > the shared `Merge Extractable → Docling Convert` seam (covers loose *and* zip-inner docs). For plaintext
+    > exts (`csv/txt/tsv/tab`) it normalises encoding: (1) **BOM wins deterministically** — UTF-8 BOM (stripped),
+    > UTF-16 LE (`FF FE`), UTF-16 BE (`FE FF`) are decoded and re-encoded UTF-8; (2) else valid strict UTF-8
+    > (incl. ASCII) passes through untouched; (3) else single-byte legacy → **Windows-1250** (Polish Windows ANSI
+    > default). Binary formats (pdf/docx/xlsx/img) are skipped *before* any binary read, so they're never
+    > corrupted. Verified end-to-end on CP1250, UTF-16-LE, and UTF-8-BOM Polish CSVs (all extract, ś/ź/ż/ł
+    > diacritics intact, clean headers, 0 WARN). **Known residual:** a BOM-less `cp1252`/`iso-8859-2` *foreign*
+    > export can't be auto-distinguished from `cp1250` without a charset-detection library (unavailable in the
+    > n8n Code sandbox), so it falls back to Windows-1250 — acceptable for a Polish/Windows shop where CP1250 is
+    > the only realistic BOM-less single-byte source. If genuine CP1252/ISO traffic ever appears, the right fix
+    > is a detector library in a service, not a heuristic in the sandbox.
     > **Config drift incident (2026-06-08):** The VPS `docker-compose.yml` predated ADR-030 and lacked the
     > `ANTHROPIC_API_KEY` passthrough. LiteLLM's router surfaced the resulting 401 as a 429 cooldown, causing
     > ~8 h of misdiagnosis. Fixed by redeploying `docker-compose.yml` via scp. See ADR-033 for the deploy
