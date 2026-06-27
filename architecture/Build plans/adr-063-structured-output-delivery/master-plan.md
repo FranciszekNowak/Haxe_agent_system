@@ -33,10 +33,33 @@ multimodal spec §1.
 |-------|-------|--------|
 | 0 | Verify assumptions (tool registration, input round-trip, bare-lane feasibility) | ✅ DONE — GO (see block-0-findings.md) |
 | 1 | Define `deliver_output` tool contract (one shared block schema, incl. doc block) | ✅ DONE — ADR-063 (Proposed) defines the contract; canonical input_schema + per-type/per-lane field table + doc-block resolution rules |
-| 2 | Managed lane: register tool in `Build System`; `Poll Round` terminal detection; `Build Final Output` emits structured `output_blocks` | pending |
+| 2 | Managed lane: register tool in `Build System`; `Poll Round` terminal detection; `Build Final Output` emits structured `output_blocks` | ✅ DONE — registered live (Anthropic agent def v18 returns `deliver_output`); forced session exec 4425 → `outcome=delivered`, `output_blocks` captured clean; dormant (contract unchanged until Block 5) |
 | 3 | `Render Agent Output → Parse Blocks`: consume structured blocks; delete `parseBlockArray()`; loud WARN only if `deliver_output` missing | pending |
 | 4 | Bare-lane parity: `Invoke Model`/`Execute LLM Call` tool + `tool_choice`; `Image Resolver → Resolve & Explode Blocks` delete parse twin | pending |
 | 5 | Persona contract text (ClickUp SSOT) → "call deliver_output"; write back current.md, finalize ADR-063, supersede spec §1/§3.1 + ADR-053 #4 | pending |
+
+## Key facts carried forward (from Block 2)
+
+- The managed session output (`Build Final Output` → `Final Return`) now carries **`output_blocks`**
+  (parsed array, the agent's `deliver_output` blocks) and **`delivered_via_tool`** (bool), alongside the
+  legacy `output_message`. When `delivered_via_tool` is true, **`output_message` is empty** (the text
+  lives in the blocks). Block 3 (`Render Agent Output → Parse Blocks`) must consume `output_blocks` when
+  `delivered_via_tool`/non-empty, and only fall back to `output_message` (loud WARN) when the agent did
+  NOT call `deliver_output`.
+- New terminal outcome value `'delivered'` in `Poll Round` (sits beside done/deadline/terminated/
+  max_rounds/poll_error). It maps to `status='completed'` in `Build Final Output`. Routing unchanged:
+  `Has Pending Tool?` is TRUE only for `outcome==='pending_tool'`, so `'delivered'` falls through to the
+  terminal `Build Final Output` automatically.
+- **Cut-over safety:** the tool is registered but DORMANT — the `Build System` contract text still
+  mandates the free-text JSON array and the tool description is deliberately non-directive, so the agent
+  does not call `deliver_output` in production yet. The contract flip is Block 5; Block 3 (render consumes
+  `output_blocks`) lands first so the channel is never half-cut-over.
+- **Left idle, by design:** a `deliver_output` terminal leaves the Anthropic session idle with the tool
+  call un-acked (no `user.custom_tool_result`). Kept the terminal path branch-free per CLAUDE.md; idle
+  sessions time out on their own. Optional future enhancement: post an ack on a side branch.
+- Verified via `test-subworkflow.mjs Rtb1cZbmUqmfGD98` (forced deliver_output user_message) → exec 4425;
+  agent def re-pushed via sync exec 4423 (CONV 12→13, `force:true`). Test `agent_runs` row + temp inputs
+  cleaned up.
 
 ## Key facts carried forward (from Block 1)
 
