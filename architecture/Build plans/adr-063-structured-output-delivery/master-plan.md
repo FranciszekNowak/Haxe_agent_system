@@ -32,11 +32,22 @@ multimodal spec §1.
 | Block | Scope | Status |
 |-------|-------|--------|
 | 0 | Verify assumptions (tool registration, input round-trip, bare-lane feasibility) | ✅ DONE — GO (see block-0-findings.md) |
-| 1 | Define `deliver_output` tool contract (one shared block schema, incl. doc block) | pending |
+| 1 | Define `deliver_output` tool contract (one shared block schema, incl. doc block) | ✅ DONE — ADR-063 (Proposed) defines the contract; canonical input_schema + per-type/per-lane field table + doc-block resolution rules |
 | 2 | Managed lane: register tool in `Build System`; `Poll Round` terminal detection; `Build Final Output` emits structured `output_blocks` | pending |
 | 3 | `Render Agent Output → Parse Blocks`: consume structured blocks; delete `parseBlockArray()`; loud WARN only if `deliver_output` missing | pending |
 | 4 | Bare-lane parity: `Invoke Model`/`Execute LLM Call` tool + `tool_choice`; `Image Resolver → Resolve & Explode Blocks` delete parse twin | pending |
 | 5 | Persona contract text (ClickUp SSOT) → "call deliver_output"; write back current.md, finalize ADR-063, supersede spec §1/§3.1 + ADR-053 #4 | pending |
+
+## Key facts carried forward (from Block 1)
+
+- Canonical `deliver_output` `input_schema` lives in **ADR-063 § "Canonical input_schema"** — Block 2
+  copies it verbatim into `sync-agent-definitions.json → Build System` `tools[]` (and Block 4 into the
+  bare lane). Top-level is `{ blocks: [...] }`; item `required:["type"]` only (per-type/per-lane fields
+  documented in the ADR's field table, not as item-level `required`).
+- Block types: `text` (`md`), `image` (`mode:generate|embed_input`; managed-generate carries `ref`=
+  generate_image file_id, bare-generate carries `prompt`), `doc` (`filename` — agent never supplies a
+  file_id). Doc resolution (Block 3): match `filename` → authoritative `doc_files[]`; append
+  unreferenced docs; WARN `output-adapter/doc-ref-not-found` if a doc block names a non-produced file.
 
 ## Key facts carried forward (from Block 0)
 
