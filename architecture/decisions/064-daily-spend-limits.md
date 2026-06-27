@@ -2,9 +2,12 @@
 
 ## Status
 
-Accepted — 2026-06-27. Implemented across three blocks: Block 1 (DB foundation +
-table rename) DONE and LIVE; Block 2 (pre-execution gate) and Block 3 (end-of-message
-warning) follow in the same work session.
+Accepted — 2026-06-27. **DONE and LIVE** across three blocks: Block 1 (DB foundation +
+table rename), Block 2 (pre-execution gate at the orchestrator entry), Block 3
+(end-of-message warning in Post Reply). All verified live: a user-cap block posted the
+Polish notice + WARN with the spine skipped (exec 4720); the non-blocked path flowed
+through the gate into the spine (exec 4726); and the warning line appended at 80% of a
+lowered cap.
 
 ## Context
 

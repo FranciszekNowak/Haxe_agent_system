@@ -347,15 +347,15 @@
       "parameters": {
         "conditions": {
           "options": {
-            "caseSensitive": true,
+            "version": 3,
             "leftValue": "",
-            "typeValidation": "loose",
-            "version": 3
+            "caseSensitive": true,
+            "typeValidation": "loose"
           },
           "conditions": [
             {
               "id": "h1",
-              "leftValue": "={{ Array.isArray($json.image_manifest) ? $json.image_manifest.length > 0 : (typeof $json.image_manifest === 'string' && $json.image_manifest.trim() !== '' && $json.image_manifest.trim() !== '[]') }}",
+              "leftValue": "={{ Array.isArray($('When Called').first().json.image_manifest) ? $('When Called').first().json.image_manifest.length > 0 : (typeof $('When Called').first().json.image_manifest === 'string' && $('When Called').first().json.image_manifest.trim() !== '' && $('When Called').first().json.image_manifest.trim() !== '[]') }}",
               "rightValue": "",
               "operator": {
                 "type": "boolean",
@@ -521,7 +521,7 @@
       "notes": "Converges text + image paths. Computes run_payload_bytes = UTF-8 bytes of {rendered_comment,image_manifest} (proxy/lower-bound for execution-data weight; recorded for ALL runs) and appends the Polish size footer line. runOnceForEachItem avoids the multi-incoming aggregator trap.",
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const wc = $('When Called').first().json;\nconst ops = Array.isArray($json.ops) ? $json.ops : [];\nlet manifest = wc.image_manifest;\nif (typeof manifest === 'string') { try { manifest = JSON.parse(manifest || '[]'); } catch (e) { manifest = []; } }\nif (!Array.isArray(manifest)) manifest = [];\n\n// Attribution footer (Block 11): name model per modality (text + image) + aggregate cost.\nconst textModel = wc.model || '—';\nlet imgModels = wc.image_models;\nif (typeof imgModels === 'string') { try { imgModels = JSON.parse(imgModels); } catch (e) { imgModels = imgModels ? [imgModels] : []; } }\nimgModels = Array.isArray(imgModels) ? imgModels.filter(Boolean) : [];\nconst totalCost = (Number(wc.cost_pln || 0) + Number(wc.total_image_cost_pln || 0)).toFixed(4);\nconst attribution = imgModels.length\n  ? ('Przygotowane przez agenta AI (tekst: ' + textModel + ', obraz: ' + imgModels.join(', ') + '; koszt łączny: ' + totalCost + ' PLN). Do weryfikacji — nie finalizuje zadania.')\n  : ('Przygotowane przez agenta AI (model: ' + textModel + ', koszt: ' + totalCost + ' PLN). Do weryfikacji — nie finalizuje zadania.');\nconst out = ops.slice();\nlet webSources = [];\ntry { const raw = wc.web_sources; webSources = Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : []); } catch(e) {}\nif (webSources.length) {\n  out.push({ text: 'Źródła' });\n  out.push({ text: '\\n', attributes: { header: 2 } });\n  for (const s of webSources) {\n    out.push({ text: (s.title || s.url), attributes: { link: s.url } });\n    out.push({ text: '\\n', attributes: { list: 'bullet' } });\n  }\n}\nout.push({ text: '\\n—\\n' });\nout.push({ text: attribution, attributes: { italic: true } });\nout.push({ text: '\\n' });\nconst payloadStr = JSON.stringify({ rendered_comment: out, image_manifest: manifest });\nlet bytes;\ntry { bytes = Buffer.byteLength(payloadStr, 'utf8'); } catch (e) { bytes = payloadStr.length; }\nconst fmt = bytes >= 1048576 ? (bytes / 1048576).toFixed(2).replace('.', ',') + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB';\nout.push({ text: '\\nrozmiar danych przebiegu: ' + fmt + '\\n', attributes: { italic: true } });\nreturn { json: { ops: out, run_payload_bytes: bytes, attachment_ids: $json.attachment_ids || [] } };"
+        "jsCode": "const wc = $('When Called').first().json;\nconst ops = Array.isArray($json.ops) ? $json.ops : [];\nlet manifest = wc.image_manifest;\nif (typeof manifest === 'string') { try { manifest = JSON.parse(manifest || '[]'); } catch (e) { manifest = []; } }\nif (!Array.isArray(manifest)) manifest = [];\n\n// Attribution footer (Block 11): name model per modality (text + image) + aggregate cost.\nconst textModel = wc.model || '—';\nlet imgModels = wc.image_models;\nif (typeof imgModels === 'string') { try { imgModels = JSON.parse(imgModels); } catch (e) { imgModels = imgModels ? [imgModels] : []; } }\nimgModels = Array.isArray(imgModels) ? imgModels.filter(Boolean) : [];\nconst totalCost = (Number(wc.cost_pln || 0) + Number(wc.total_image_cost_pln || 0)).toFixed(4);\nconst attribution = imgModels.length\n  ? ('Przygotowane przez agenta AI (tekst: ' + textModel + ', obraz: ' + imgModels.join(', ') + '; koszt łączny: ' + totalCost + ' PLN). Do weryfikacji — nie finalizuje zadania.')\n  : ('Przygotowane przez agenta AI (model: ' + textModel + ', koszt: ' + totalCost + ' PLN). Do weryfikacji — nie finalizuje zadania.');\nconst out = ops.slice();\nlet webSources = [];\ntry { const raw = wc.web_sources; webSources = Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : []); } catch(e) {}\nif (webSources.length) {\n  out.push({ text: 'Źródła' });\n  out.push({ text: '\\n', attributes: { header: 2 } });\n  for (const s of webSources) {\n    out.push({ text: (s.title || s.url), attributes: { link: s.url } });\n    out.push({ text: '\\n', attributes: { list: 'bullet' } });\n  }\n}\nout.push({ text: '\\n—\\n' });\nout.push({ text: attribution, attributes: { italic: true } });\nout.push({ text: '\\n' });\nconst payloadStr = JSON.stringify({ rendered_comment: out, image_manifest: manifest });\nlet bytes;\ntry { bytes = Buffer.byteLength(payloadStr, 'utf8'); } catch (e) { bytes = payloadStr.length; }\nconst fmt = bytes >= 1048576 ? (bytes / 1048576).toFixed(2).replace('.', ',') + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB';\nout.push({ text: '\\nrozmiar danych przebiegu: ' + fmt + '\\n', attributes: { italic: true } });\nconst sp = (() => { try { return $('Get Spend Status').first().json || {}; } catch(e){ return {}; } })();\nif (sp && sp.warn) {\n  const uPct = Math.round(Number(sp.user_ratio||0)*100), cPct = Math.round(Number(sp.company_ratio||0)*100);\n  const uStr = '⚠️ Wykorzystano ' + uPct + '% Twojego dziennego limitu wydatków (' + Number(sp.user_spend||0).toFixed(2) + ' / ' + Number(sp.user_limit||0).toFixed(2) + ' PLN).';\n  const cStr = '⚠️ Wykorzystano ' + cPct + '% firmowego dziennego limitu wydatków (' + Number(sp.company_spend||0).toFixed(2) + ' / ' + Number(sp.company_limit||0).toFixed(2) + ' PLN).';\n  if (sp.warn_reason === 'company') out.push({ text: '\\n' + cStr + '\\n', attributes: { italic: true } });\n  else if (sp.warn_reason === 'both') out.push({ text: '\\n' + uStr + '\\n' + cStr + '\\n', attributes: { italic: true } });\n  else out.push({ text: '\\n' + uStr + '\\n', attributes: { italic: true } });\n}\nreturn { json: { ops: out, run_payload_bytes: bytes, attachment_ids: $json.attachment_ids || [] } };"
       }
     },
     {
@@ -845,20 +845,35 @@
         },
         "options": {}
       }
+    },
+    {
+      "id": "6ecf3c29-a1d1-4f5f-a29a-d0d126085c42",
+      "name": "Get Spend Status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [160, 380],
+      "notes": "ADR-064 end-of-message warning: get_spend_status(reviewer_user_id) at reply time (post-run -> the just-finished run's cost is already counted). Finalize Comment appends a Polish warning line when warn=true (>60% user / >70% company). onError continueRegularOutput + alwaysOutputData so a DB miss just omits the warning, never blocks the reply. Covers both lanes since both call Post Reply (v1).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from get_spend_status($1);",
+        "options": {
+          "queryReplacement": "={{ [ $('When Called').first().json.reviewer_user_id || '' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
     }
   ],
   "connections": {
-    "When Called": {
-      "main": [
-        [
-          {
-            "node": "Has Images?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Is @mention?": {
       "main": [
         [
@@ -1251,6 +1266,28 @@
         [
           {
             "node": "Alert Docs Dropped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Get Spend Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Spend Status": {
+      "main": [
+        [
+          {
+            "node": "Has Images?",
             "type": "main",
             "index": 0
           }

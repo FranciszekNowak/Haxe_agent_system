@@ -672,6 +672,35 @@ do retries cluster?
 
 ---
 
+## Spend limits — LIVE (ADR-064, 2026-06-27)
+
+Daily spend caps with a pre-execution gate and an end-of-message warning. Per-user
+**40 PLN/day** (default; overridable per user via `user_data_and_config.daily_spend_limit_pln`)
+and company-wide **100 PLN/day** across all users. A run is **blocked** once already-incurred
+spend reaches a cap; users are **warned** at message-end past 60% (own cap) / 70% (company cap).
+Day boundary is the **Europe/Warsaw calendar day** (resets at 00:00 Warsaw).
+
+- **One measurement, one place:** `get_spend_status(p_user_id)` (migration 047) computes both
+  `SUM(cost_pln)` aggregates over today's rows, the limits, ratios, and block/warn flags in a
+  single SQL function. Both consumers call it.
+- **The gate** runs at the single spine chokepoint — the Agent Orchestrator's `When Called`
+  entry, which both the synchronous mention producer and the queued Spine HTTP Ingress invoke.
+  Checking at execution time (not enqueue time) bounds queue overshoot to one in-flight run.
+  Blocked → a Polish notice is posted to the user (which cap, resets at midnight) + a WARN via
+  `Post Alert (v1)`, and the spine never runs (no model spend). The manual Form Trigger path is
+  left ungated.
+- **The warning** is appended inside `Post Reply (v1)` (covers both lanes) from a post-run
+  `get_spend_status` read, so the just-finished run's cost is already counted.
+- **Soft cap, by design:** cost is logged after a run completes, so the gate sees only
+  already-incurred spend; one run may overshoot by its own cost (~1–3 PLN vs a 40 PLN cap).
+- **Config:** `spend.company_daily_limit_pln`, `spend.user_daily_limit_pln_default`,
+  `spend.user_warn_pct`, `spend.company_warn_pct`, and `spend.enabled` (kill-switch) in the
+  `config` table. **Fail-open:** a `get_spend_status` error lets the run through + WARNs (a DB
+  hiccup must not freeze all agent work). Migration 047 also renamed `user_clickup_credentials`
+  → `user_data_and_config` (it now holds per-user data *and* config).
+
+---
+
 ## 6. Email
 
 Gmail-native. The agent creates Gmail **drafts**; a human reviews and sends. No
