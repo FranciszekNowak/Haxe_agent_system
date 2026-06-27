@@ -221,8 +221,8 @@ capability.
 **Stage B (managed):** `Execute Agent Session (v1)` (resolve tier agent + persistent environment, upload
 input images to the Files API, create/send the session, poll to idle, service the client-side custom-tool
 loop — retained for ADR-054's future Google tool, dormant for image — and compute the session USD cost) →
-`Render Agent Output (v1)` (parse the agent's fenced block-array → `rendered_delta` + `image_manifest`,
-fetching produced-image bytes from the `agent-output-images` carrier) → `Post Reply (v1)` (text + inline
+`Render Agent Output (v1)` (consume the agent's structured `deliver_output` block array → `rendered_delta`
++ `image_manifest`, fetching produced-image bytes from the `agent-output-images` carrier) → `Post Reply (v1)` (text + inline
 images + office-doc attachments). **Image generation** runs via the self-hosted **image MCP server**
 (ADR-055: `Haxe Image MCP (v1)` → `Image MCP Tool Handler (v1)` → `Image Tool Handler (v1)` → `Generate
 Images Parallel (v1)`); the client-side `generate_image` custom tool is the documented rollback.
@@ -231,15 +231,22 @@ Images Parallel (v1)`); the client-side `generate_image` custom tool is the docu
 image generation (MCP → carrier → inline ClickUp image), image input / vision (Files API), and
 office-document output (xlsx via a Skill → ClickUp attachment, attachment id recorded on `agent_runs`). One
 session `agent_runs` cost row per run (plus per-image rows); `Log Model Run (v1)` keeps sole FX/PLN
-ownership. The output adapter repairs models' common JSON defects via a shared `parseBlockArray` helper
-(```json fence strip → prose preamble/suffix narrowing → JSON parse → **schema-aware** quote/control-char
-repair) before any plain-text fallback: an unescaped double-quote inside a string value is treated as the
-real terminator only when the next token is grammar-consistent with the **known block-key set** — this fixes
-the typographic-quote-before-comma misfire that previously collapsed a valid block array to raw text
-(ADR-059). The identical helper runs in the managed lane (`Render Agent Output (v1)` → *Parse Blocks*) and
-the bare lane (`Image Resolver (v1)` → *Resolve & Explode Blocks*; KEEP IN SYNC). The adapter also supports
-`embed_input` (re-embedding an image already attached to the task) by resolving the agent's attachment ref
-against the input image refs into a `{type:attachment}` op inline — no re-upload, mirroring the bare lane.
+ownership. The managed output adapter now consumes the agent's **structured `deliver_output` block array**
+directly (ADR-063): the drafting model submits its final answer by *calling* the `deliver_output` custom
+tool, the Anthropic API returns that input as validated parsed JSON (captured by `Execute Agent Session (v1)`
+as `output_blocks` + `delivered_via_tool`), and `Render Agent Output (v1)` → *Parse Blocks* reads it with no
+parsing or repair. The fragile free-text JSON contract and its hand-rolled `parseBlockArray` helper (fence
+strip / preamble narrowing / schema-aware quote-and-control-char repair, ADR-059) are **deleted** —
+structurally eliminating the routine, alert-less collapse of image/doc comments to plain text. The only
+remaining fallback fires a loud `output-adapter/no-deliver-output` WARN and text-renders `output_message`
+when the agent did not call the tool (a protocol violation, never a silent drop). The bare lane
+(`Image Resolver (v1)` → *Resolve & Explode Blocks*) still runs the legacy `parseBlockArray` helper pending
+ADR-063 Block 4. The adapter also supports `embed_input` (re-embedding an image already attached to the task)
+by resolving the agent's attachment ref against the input image refs into a `{type:attachment}` op inline —
+no re-upload, mirroring the bare lane. **Cutover state:** the managed render is built and committed but goes
+live with the persona-contract flip in ADR-063 Block 5 (Blocks 3/4/5 deploy together); until then the live
+managed lane still emits and parses the free-text protocol, so `render-agent-output.json` and
+`agent-orchestrator.json` are deliberately repo-ahead-of-live.
 
 **Reliability:** an auth dead-man's-switch (`Managed Agents Auth Monitor (v1)`), the CU-rules sync +
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the
@@ -1249,7 +1256,7 @@ failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent S
 | **`Agent Orchestrator (v1)`** (was "Agent Spine"/"Main Orchestrator", id `a8XKaijkMFNBpRBa`) | Thin orchestrator: set status → A → **lane switch (`config.agent_lane`)** → B → C + shared Reset+Alert | **LIVE** |
 | **`Assemble Context and Build Prompt (v1)`** (Stage A) | Assemble Parent Context + Assemble Task Context + Build Prompt (research call retired, Block 8) | **LIVE** |
 | **`Execute Agent Session (v1)`** (id `Rtb1cZbmUqmfGD98`, Stage B — **managed**) | Anthropic Managed Agents session: resolve tier agent (`agent_routing`) + env → upload input images (Files API) → create/send → poll to idle → service custom-tool loop → session USD cost + enumerate produced docs | **LIVE — default Stage B** |
-| **`Render Agent Output (v1)`** (id `vPbbN4UQj0LAAtiV`, managed) | Output adapter: parse the agent's fenced block-array → `rendered_delta` + `image_manifest` (produced-image bytes from the `agent-output-images` carrier); control-char JSON repair before fallback | **LIVE** |
+| **`Render Agent Output (v1)`** (id `vPbbN4UQj0LAAtiV`, managed) | Output adapter: consume the agent's structured `deliver_output` block array (`output_blocks` + `delivered_via_tool`) → `rendered_delta` + `image_manifest` (produced-image bytes from the `agent-output-images` carrier); no parser/repair — loud `no-deliver-output` WARN + text fallback only if the tool was not called (ADR-063) | **LIVE (Block 3 repo-built; deploys with Block 5)** |
 | **`Execute LLM Call (v1)`** (id `9qdJA4xnAGbxqkt9`, Stage B — **bare failover**) | Invoke Model → drafted reply + cost (LiteLLM lane; selected by `config.agent_lane='bare'`) | **LIVE (dormant failover)** |
 | **`Post Reply (v1)`** (Stage C) | Post draft comment, status flip, office-doc + image attachments (owns CU side-effects). The cost-field write moved to the shared `Write Cost Field (v1)` (ADR-057) | **LIVE** |
 | **`Write Cost Field (v1)`** (id `GoFPwWsSQOHnrClH`, ADR-057) | Shared cost-field writer called by **both** Stage-B lanes: `SUM(agent_runs.cost_pln)` for the task → write CU `[AI] Koszt akcji [PLN]` → return `{total}` (the cumulative task total for the CU field; the managed footer no longer uses it — it shows the per-execution cost, ADR-060). Fail-soft (DB/CU error → WARN, returns 0) | **LIVE** |
@@ -1364,8 +1371,9 @@ ADR-036 Block-5 follow-up). The five Core-model steps are distributed across the
   **not** wired into `embed_input`/`reference_file_ids` (those resolve only against the floor's top-level
   attachment metadata). The image branch stays dormant (image generation runs via the MCP
   server); compute the session USD cost; enumerate produced office-docs. `Render Agent Output (v1)` then turns the
-  agent's block-array into the Post Reply contract (`rendered_delta` + `image_manifest`, fetching produced
-  images from the carrier). Verified live across text / web-research / image-gen / vision / office-doc (Block 9).
+  agent's structured `deliver_output` block array (`output_blocks`, ADR-063) into the Post Reply contract
+  (`rendered_delta` + `image_manifest`, fetching produced images from the carrier). Verified live across text /
+  web-research / image-gen / vision / office-doc (Block 9).
   **ADR-061 Block 3 — end-to-end + scope verified (2026-06-26, ADR-061 Accepted):** the full spine was
   driven via the orchestrator `When Called` with the producer's exact inputs on the heavy test task
   `869dux9ne`. A **trivial-on-heavy** "2+2" run produced a **floor-only** Stage A prompt (~5.4k chars /

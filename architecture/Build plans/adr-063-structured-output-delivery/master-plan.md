@@ -34,9 +34,33 @@ multimodal spec §1.
 | 0 | Verify assumptions (tool registration, input round-trip, bare-lane feasibility) | ✅ DONE — GO (see block-0-findings.md) |
 | 1 | Define `deliver_output` tool contract (one shared block schema, incl. doc block) | ✅ DONE — ADR-063 (Proposed) defines the contract; canonical input_schema + per-type/per-lane field table + doc-block resolution rules |
 | 2 | Managed lane: register tool in `Build System`; `Poll Round` terminal detection; `Build Final Output` emits structured `output_blocks` | ✅ DONE — registered live (Anthropic agent def v18 returns `deliver_output`); forced session exec 4425 → `outcome=delivered`, `output_blocks` captured clean; dormant (contract unchanged until Block 5) |
-| 3 | `Render Agent Output → Parse Blocks`: consume structured blocks; delete `parseBlockArray()`; loud WARN only if `deliver_output` missing | pending |
+| 3 | `Render Agent Output → Parse Blocks`: consume structured blocks; delete `parseBlockArray()`; loud WARN only if `deliver_output` missing | ✅ DONE — repo-built (not yet deployed; deploys with Block 5). `Parse Blocks` consumes `output_blocks_json`/`delivered_via_tool`; `parseBlockArray()` + parse-fallback/preamble/quote-repair deleted; only fallback = `output-adapter/no-deliver-output` WARN + text-render of `output_message`. Orchestrator `Call Render Agent Output` now passes `output_blocks_json` (stringified) + `delivered_via_tool`. Doc/embed/image-fetch/mdToOps assembly unchanged. Unit-verified (4 cases incl. Polish typographic quote); `test-image-delivery.mjs --text` green (Post Reply boundary intact); 2-image variant fails pre-existing/upstream in live Gemini image-gen (empty b64), unrelated to Block 3 (nothing deployed). |
 | 4 | Bare-lane parity: `Invoke Model`/`Execute LLM Call` tool + `tool_choice`; `Image Resolver → Resolve & Explode Blocks` delete parse twin | pending |
 | 5 | Persona contract text (ClickUp SSOT) → "call deliver_output"; write back current.md, finalize ADR-063, supersede spec §1/§3.1 + ADR-053 #4 | pending |
+
+## Key facts carried forward (from Block 3)
+
+- **`Render Agent Output (v1)` → `Parse Blocks` now consumes structured blocks.** New `When Called` inputs:
+  `output_blocks_json` (the session's `output_blocks` array, stringified by the orchestrator) and
+  `delivered_via_tool`. Logic: parse `output_blocks_json`; if `delivered_via_tool` is true **or** the array
+  is non-empty, use it as-is; otherwise (agent never called `deliver_output`) wrap `output_message` as one
+  `text` block and fire **one** loud WARN `output-adapter/no-deliver-output`. `parseBlockArray()` and all its
+  repair paths (fence strip, `preamble-stripped`, schema-aware quote/control-char repair, `parse-fallback`)
+  are **deleted**. The image-fetch / `mdToOps` / `{type:image_ref}` / `embed_input` / `embed-ref-not-found`
+  assembly downstream is **unchanged**; doc blocks are still skipped here (office docs flow orchestrator →
+  Post Reply via `doc_files`, never through this adapter).
+- **Orchestrator wiring:** `Call Render Agent Output` now also maps
+  `output_blocks_json = JSON.stringify($('Call Execute Agent Session').first().json.output_blocks || [])`
+  and `delivered_via_tool = …delivered_via_tool || false`. Arrays cross the workflow boundary as a JSON
+  string (repo `*_json` convention); the Parse Blocks code also tolerates a raw array or a `{blocks:[…]}`
+  wrapper defensively.
+- **NOT deployed live (deliberate).** Deploying Block 3 alone would regress production: with Block 5's persona
+  flip not yet done, live managed runs still emit free-text in `output_message` with `delivered_via_tool=false`
+  / empty `output_blocks`, so Parse Blocks would dump the raw fenced-JSON string as plain text + WARN on every
+  run. Blocks 3/4/5 deploy **together** at the Block 5 go-live. `render-agent-output.json` and
+  `agent-orchestrator.json` are therefore repo-ahead-of-live (`check-workflow-drift.mjs` will show this — expected).
+- **Bare-lane parity (Block 4) mirrors this:** `Image Resolver (v1)` → `Resolve & Explode Blocks` deletes its
+  `parseBlockArray` twin the same way; Block 4 also adds the tool + forced `tool_choice` to the bare completion.
 
 ## Key facts carried forward (from Block 2)
 
