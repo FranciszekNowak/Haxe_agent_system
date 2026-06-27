@@ -100,6 +100,16 @@ already serves Średni + `__default__`); the Fable agent is left dormant in the 
 
 ## Amendment — output adapter JSON robustness (2026-06-22, Block 9)
 
+> **SUPERSEDED by ADR-063 (2026-06-27).** This amendment (the free-text fenced-JSON block-array contract and
+> the `parseBlockArray()` control-char / quote-repair routine it describes) was patched repeatedly and kept
+> recurring — the fragile "LLM hand-writes JSON, we hand-parse and repair" contract was itself the defect.
+> ADR-063 replaces it with the **`deliver_output` custom tool**: the agent submits its final answer by
+> *calling* the tool, and the Anthropic API returns the input as validated parsed JSON, so the parse/repair
+> step (and the `output-adapter/parse-fallback` WARN) **no longer exists**. `parseBlockArray()` and its
+> bare-lane twin are deleted. The `embed_input` support described below is retained (the renderer still
+> resolves it into an inline `{type:attachment}` op). See
+> `architecture/decisions/063-structured-tool-call-output-delivery.md`.
+
 Block-9 cross-modality testing surfaced a real user-facing defect: the agents emit their final block-array
 as a fenced ```json``` payload, but models frequently write multi-line markdown with **literal (unescaped)
 control characters inside the JSON string values**, which makes `JSON.parse` throw. The adapter's original

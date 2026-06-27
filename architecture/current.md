@@ -247,14 +247,22 @@ treatment (ADR-063 Block 4): `Invoke Model (v1)` forces a `deliver_output` tool 
 the bare lane's `parseBlockArray` twin **and** `Execute LLM Call (v1)`'s tolerant `Parse Output Blocks` node
 are **deleted**, with the same loud `multimodal/no-deliver-output` WARN + text fallback. The adapter also supports `embed_input` (re-embedding an image already attached to the task)
 by resolving the agent's attachment ref against the input image refs into a `{type:attachment}` op inline —
-no re-upload, mirroring the bare lane. **Cutover state:** the managed render is built and committed but goes
-live with the persona-contract flip in ADR-063 Block 5 (Blocks 3/4/5 deploy together); until then the live
-managed lane still emits and parses the free-text protocol, so `render-agent-output.json`,
-`agent-orchestrator.json`, `invoke-model.json`, `execute-llm-call.json` and `image-resolver.json` are
-deliberately repo-ahead-of-live. (The forced-tool-call round-trip was verified live against LiteLLM on a
-working model group; note the bare lane's upstream `ANTHROPIC_API_KEY` in the VPS `.env` is currently stale —
-all `haxe-*-direct` Claude models 401 — and must be refreshed before any bare-lane go-live. The dormant bare
-lane masks this today; the managed lane uses separate Anthropic Agent API creds and is unaffected.)
+no re-upload, mirroring the bare lane. **Cutover: DONE and LIVE (ADR-063 Block 5, 2026-06-27).** All five
+workflows (`render-agent-output.json`, `agent-orchestrator.json`, `invoke-model.json`, `execute-llm-call.json`,
+`image-resolver.json`) are deployed, and the persona output-format contract was flipped from the free-text JSON
+block-array to *"call `deliver_output`"* in `sync-agent-definitions.json → Build System` (CONV 13→14), re-synced
+to all agents (now version 19). Verified end-to-end on a realistic image+document task (managed lane, full spine):
+the agent called `deliver_output`, returned structured `output_blocks` (text + `mode:generate` image + `doc`),
+`outcome=delivered`, render produced an inline image manifest with **zero** warnings, and Post Reply posted the
+threaded comment with the inline image and the `Analiza_produktu.xlsx` attachment — **no `parse-fallback` path
+exists to take, and zero alerts fired**. (The forced-tool-call round-trip was also verified live against LiteLLM
+for the bare lane; note the bare lane's upstream `ANTHROPIC_API_KEY` in the VPS `.env` is currently stale — all
+`haxe-*-direct` Claude models 401 — and must be refreshed before any bare-lane go-live. The dormant bare lane
+masks this today; the managed lane uses separate Anthropic Agent API creds and is unaffected.) **Doc-block note:**
+the renderer **skips** `doc` blocks — office docs attach via the authoritative `doc_files[]` enumeration
+(`Execute Agent Session → Build Final Output` → orchestrator → Post Reply), so a produced document is never
+dropped; the `doc` block is an optional placement/caption marker whose ordering is **not yet honored** (ADR-063
+documents this as deferred).
 
 **Reliability:** an auth dead-man's-switch (`Managed Agents Auth Monitor (v1)`), the CU-rules sync +
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the
@@ -1264,8 +1272,8 @@ failover** lane, selected by `config.agent_lane='bare'`. The monolithic `Agent S
 | **`Agent Orchestrator (v1)`** (was "Agent Spine"/"Main Orchestrator", id `a8XKaijkMFNBpRBa`) | Thin orchestrator: set status → A → **lane switch (`config.agent_lane`)** → B → C + shared Reset+Alert | **LIVE** |
 | **`Assemble Context and Build Prompt (v1)`** (Stage A) | Assemble Parent Context + Assemble Task Context + Build Prompt (research call retired, Block 8) | **LIVE** |
 | **`Execute Agent Session (v1)`** (id `Rtb1cZbmUqmfGD98`, Stage B — **managed**) | Anthropic Managed Agents session: resolve tier agent (`agent_routing`) + env → upload input images (Files API) → create/send → poll to idle → service custom-tool loop → session USD cost + enumerate produced docs | **LIVE — default Stage B** |
-| **`Render Agent Output (v1)`** (id `vPbbN4UQj0LAAtiV`, managed) | Output adapter: consume the agent's structured `deliver_output` block array (`output_blocks` + `delivered_via_tool`) → `rendered_delta` + `image_manifest` (produced-image bytes from the `agent-output-images` carrier); no parser/repair — loud `no-deliver-output` WARN + text fallback only if the tool was not called (ADR-063) | **LIVE (Block 3 repo-built; deploys with Block 5)** |
-| **`Execute LLM Call (v1)`** (id `9qdJA4xnAGbxqkt9`, Stage B — **bare failover**) | Invoke Model → drafted reply + cost (LiteLLM lane; selected by `config.agent_lane='bare'`). ADR-063 Block 4: consumes the structured `deliver_output` block array (`output_blocks_json` + `delivered_via_tool`) straight from Invoke Model; the tolerant `Parse Output Blocks` free-text parser is **deleted** | **LIVE (dormant failover; Block 4 repo-built, deploys with Block 5)** |
+| **`Render Agent Output (v1)`** (id `vPbbN4UQj0LAAtiV`, managed) | Output adapter: consume the agent's structured `deliver_output` block array (`output_blocks` + `delivered_via_tool`) → `rendered_delta` + `image_manifest` (produced-image bytes from the `agent-output-images` carrier); no parser/repair — loud `no-deliver-output` WARN + text fallback only if the tool was not called (ADR-063) | **LIVE (ADR-063 deployed 2026-06-27)** |
+| **`Execute LLM Call (v1)`** (id `9qdJA4xnAGbxqkt9`, Stage B — **bare failover**) | Invoke Model → drafted reply + cost (LiteLLM lane; selected by `config.agent_lane='bare'`). ADR-063 Block 4: consumes the structured `deliver_output` block array (`output_blocks_json` + `delivered_via_tool`) straight from Invoke Model; the tolerant `Parse Output Blocks` free-text parser is **deleted** | **LIVE (dormant failover; ADR-063 deployed 2026-06-27 — bare go-live still gated on refreshing the stale VPS `ANTHROPIC_API_KEY`)** |
 | **`Post Reply (v1)`** (Stage C) | Post draft comment, status flip, office-doc + image attachments (owns CU side-effects). The cost-field write moved to the shared `Write Cost Field (v1)` (ADR-057) | **LIVE** |
 | **`Write Cost Field (v1)`** (id `GoFPwWsSQOHnrClH`, ADR-057) | Shared cost-field writer called by **both** Stage-B lanes: `SUM(agent_runs.cost_pln)` for the task → write CU `[AI] Koszt akcji [PLN]` → return `{total}` (the cumulative task total for the CU field; the managed footer no longer uses it — it shows the per-execution cost, ADR-060). Fail-soft (DB/CU error → WARN, returns 0) | **LIVE** |
 | **`Sync Agent Definitions (v1)`** (id `4K1w78hJ7JhsUwdN`) + **`Agent Rules Freshness Check (v1)`** (id `7lakbgmrH93ygiyZ`) | Bake CU global-rules into the four tier agents' `system` (idempotent create/version-update) + a freshness dead-man's-switch (stale rules → WARN/CRITICAL). Both every 6h | **LIVE** |

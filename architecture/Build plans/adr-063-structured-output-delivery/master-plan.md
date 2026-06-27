@@ -36,7 +36,36 @@ multimodal spec §1.
 | 2 | Managed lane: register tool in `Build System`; `Poll Round` terminal detection; `Build Final Output` emits structured `output_blocks` | ✅ DONE — registered live (Anthropic agent def v18 returns `deliver_output`); forced session exec 4425 → `outcome=delivered`, `output_blocks` captured clean; dormant (contract unchanged until Block 5) |
 | 3 | `Render Agent Output → Parse Blocks`: consume structured blocks; delete `parseBlockArray()`; loud WARN only if `deliver_output` missing | ✅ DONE — repo-built (not yet deployed; deploys with Block 5). `Parse Blocks` consumes `output_blocks_json`/`delivered_via_tool`; `parseBlockArray()` + parse-fallback/preamble/quote-repair deleted; only fallback = `output-adapter/no-deliver-output` WARN + text-render of `output_message`. Orchestrator `Call Render Agent Output` now passes `output_blocks_json` (stringified) + `delivered_via_tool`. Doc/embed/image-fetch/mdToOps assembly unchanged. Unit-verified (4 cases incl. Polish typographic quote); `test-image-delivery.mjs --text` green (Post Reply boundary intact); 2-image variant fails pre-existing/upstream in live Gemini image-gen (empty b64), unrelated to Block 3 (nothing deployed). |
 | 4 | Bare-lane parity: `Invoke Model`/`Execute LLM Call` tool + `tool_choice`; `Image Resolver → Resolve & Explode Blocks` delete parse twin | ✅ DONE — repo-built (not deployed; deploys with Block 5). `Invoke Model` forces `deliver_output` (OpenAI `tools`+`tool_choice` on primary/fallback/retry bodies), `Parse Response` captures `message.tool_calls[].function.arguments` → `output_blocks_json`+`delivered_via_tool`; `Execute LLM Call`'s tolerant `Parse Output Blocks` node DELETED (Invoke Model emits structured blocks directly); `Image Resolver → Resolve & Explode Blocks` consumes structured blocks, `parseBlockArray` twin DELETED. Unit-verified (14 cases incl. Polish typographic quote + no-deliver-output fallback). **Live-probed the forced-tool-call round-trip on LiteLLM:** `haxe-gemini-flash` → HTTP 200, clean `deliver_output` call, `arguments` valid JSON, typographic-quote block intact. **Infra finding (separate, pre-existing):** the bare lane's upstream `ANTHROPIC_API_KEY` in the VPS `.env` is stale — all `haxe-*-direct` Claude models 401 (`invalid x-api-key`); dormant lane masks it; managed lane unaffected (separate Agent-API creds). Must be refreshed before any bare-lane go-live. |
-| 5 | Persona contract text (ClickUp SSOT) → "call deliver_output"; write back current.md, finalize ADR-063, supersede spec §1/§3.1 + ADR-053 #4 | pending |
+| 5 | Persona contract text → "call deliver_output"; deploy Blocks 3/4/5; end-to-end DoD; write back current.md, finalize ADR-063, supersede spec §1/§3.1 + ADR-053 #4 | ✅ DONE — 2026-06-27 (see Block 5 facts below) |
+
+## Key facts carried forward (from Block 5) — PLAN COMPLETE
+
+- **Contract flipped in the repo-master, not ClickUp.** The output-format contract is **not** in the ClickUp
+  global-rules doc (q7wz-44812) — that doc is, by its own stated scope, "soft" universal rules and
+  deliberately excludes hard technical constraints the system enforces. The output-format contract is
+  repo-mastered in `sync-agent-definitions.json → Build System` (the `contract` const, baked into the agent
+  `system` at sync time). Block 5 rewrote that const from "return ONLY a JSON block array as your final
+  message" to "deliver your final answer by **calling `deliver_output`**; nothing outside the tool call
+  reaches the recipient", added the `doc` block type, **CONV 13→14**, and re-synced (`force:true`, exec 4508)
+  → all agents upserted to **version 19**, `all_synced=true`. The `deliver_output` tool itself was already
+  registered in Block 2; Block 5 only made the contract *mandate the call*.
+- **One cut-over, workflows-first.** Deployed the 5 graph workflows, then immediately deployed + force-ran
+  the sync, so the new render (consumes structured blocks) was live before agents began calling the tool —
+  keeping the brief gap to a downgrade-to-text-with-WARN, never an empty message. Re-exported all 6;
+  `check-workflow-drift.mjs` → all 40 match live.
+- **DoD passed end-to-end (managed lane, full spine, exec 4512).** Realistic image+document task: agent
+  **called `deliver_output`** (`delivered_via_tool=true`) → structured `output_blocks` (text + `mode:generate`
+  image + `doc`), `outcome=delivered` → render `image_manifest` (1 inline image) + 74-op `rendered_delta`,
+  **zero warnings** → Post Reply posted the threaded comment with the **inline image** + **`.xlsx`
+  attachment**. **Zero alerts** in the window; `output-adapter/parse-fallback` is gone (no such path exists).
+  Text-only Post Reply regression green. Test `agent_runs` rows + the disposable task were deleted.
+- **Doc-block reconciliation (honest, surfaced).** Block 3's renderer **skips** `doc` blocks; office docs
+  attach via the authoritative `doc_files[]` enumeration → Post Reply (ADR-063 safety-net rule #3, the live
+  floor). So doc rules #1/#3 are LIVE; per-block placement/caption (#2) and the `doc-ref-not-found` WARN (#4)
+  are **deferred** (not implemented). The persona contract was written to match — the `doc` block is an
+  *optional* marker, not a promise of ordering/caption. Recorded in ADR-063 §"Office-doc block resolution".
+- **Bare lane stays dormant; go-live still gated** on refreshing the stale VPS `ANTHROPIC_API_KEY` (all
+  `haxe-*-direct` 401) — a separate pre-existing infra issue, flagged to the operator (don't auto-edit `.env`).
 
 ## Key facts carried forward (from Block 4)
 

@@ -1,7 +1,7 @@
 # ADR-063: Structured tool-call output delivery (`deliver_output` contract)
 
-Status: **Proposed** (contract defined in Block 1; finalized → Accepted in Block 5 once both
-lanes consume it and the end-to-end DoD passes). Master plan:
+Status: **Accepted** (2026-06-27 — both lanes consume the contract; the managed lane is deployed and
+verified end-to-end, the bare lane is repo-built and dormant pending a VPS key refresh). Master plan:
 `architecture/Build plans/adr-063-structured-output-delivery/master-plan.md`.
 
 ## Context
@@ -148,6 +148,20 @@ The `doc` block adds **placement + captioning** without weakening that robustnes
 Filename matching is exact-then-basename-normalized (Block 3 detail); the safety net makes a near
 miss non-fatal regardless.
 
+**Implementation status (Block 5, 2026-06-27 — what actually shipped vs. deferred).** Block 3 built the
+renderer to **skip `doc` blocks entirely**: office docs are attached by the *authoritative*
+`doc_files[]` enumeration (`Execute Agent Session → Build Final Output` → orchestrator → Post Reply),
+which is exactly safety-net rule #3 above and is the long-standing, robust behavior. So of the four rules:
+**#1 (agent supplies `filename`, never a file_id) and #3 (every produced doc is attached) are LIVE**, while
+**#2 (place/caption a doc at its block's `order`) and #4 (`doc-ref-not-found` WARN) are NOT yet implemented**
+— the renderer never reads `doc` blocks. The end-to-end DoD confirmed this is correct and non-lossy: the
+agent emitted a `doc` block for `Analiza_produktu.xlsx`, the file was enumerated and attached, and nothing
+was dropped. The persona contract (Block 5) was written to match this reality — it tells the agent that
+saving the file to session outputs is sufficient for attachment and that the `doc` block is an *optional*
+marker (it does **not** promise per-block ordering or a rendered caption). Per-block doc placement/caption
+remains a clean future enhancement (read `doc` blocks in `Render Agent Output → Parse Blocks`, match
+`filename` → `doc_files[]`, attach at `order`, WARN on a non-produced filename) and would close rules #2/#4.
+
 ### Worked example
 
 ```json
@@ -179,10 +193,23 @@ miss non-fatal regardless.
 - **Supersession:** ADR-053 #4 (free-text fenced block array) and multimodal spec §1 / §3.1 are
   superseded by this contract; ADR-059's parser becomes dead code removed in Blocks 3/4. The
   supersession is finalized (status Accepted, spec text rewritten) in Block 5.
-- **Scope of Block 1:** this ADR defines and documents the contract only. No workflow, persona, or
-  `current.md` change is made yet — wiring is Blocks 2 (managed register + capture), 3 (managed
-  render consumes / parser deleted), 4 (bare-lane parity), 5 (persona SSOT + docs write-back +
-  finalize ADR). Until then the live system still uses the free-text protocol.
+- **Rollout (all blocks complete, 2026-06-27):** Block 2 registered the tool + captured its input
+  (managed), Block 3 made the managed renderer consume structured blocks (parser deleted), Block 4 gave
+  the bare lane parity (forced `tool_choice`, twin parser deleted), and Block 5 flipped the persona
+  output-format contract (`sync-agent-definitions.json → Build System`, CONV 13→14, re-synced to agents
+  v19) and deployed all five workflows together for a single cut-over.
+
+- **End-to-end verification (Block 5 DoD, managed lane, full spine).** A realistic image+document task
+  (`869dwgvea`, now deleted) ran through the live orchestrator (exec 4512): the agent **called
+  `deliver_output`** (`delivered_via_tool=true`), returning structured `output_blocks` (text +
+  `mode:generate` image `file_011CcTfHKZPdT7GC4aLjvRN2` + `doc` `Analiza_produktu.xlsx`),
+  `outcome=delivered`. `Render Agent Output` produced an `image_manifest` with the inline image and a
+  74-op `rendered_delta` with **zero** warnings; Post Reply posted one threaded comment carrying the
+  **inline image** and the **`.xlsx` attachment**. **Zero alerts fired**, and there is no `parse-fallback`
+  path left to take. The text-only Post Reply regression was green. The bare-lane forced-tool-call
+  round-trip was proven live against LiteLLM (Block 4) but the lane is dormant; bare go-live remains gated
+  on refreshing the stale VPS `ANTHROPIC_API_KEY` (a separate, pre-existing infra issue — not an ADR-063
+  defect).
 
 ## Date
 
