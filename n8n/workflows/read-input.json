@@ -662,6 +662,18 @@
         "mode": "chooseBranch",
         "outputDataFrom": "input1"
       }
+    },
+    {
+      "id": "r-transcode-utf8",
+      "name": "Transcode Text to UTF-8",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1288, 800],
+      "notes": "Encoding normaliser feeding Docling (fix: CP1250 CSV failed extraction). Docling decodes text as UTF-8 strict; a Windows-1250 CSV (Polish Excel's default export) throws -> 200 status=failure, md_content=null -> Build Text Block emits [BRAK: extraction_failed]. Per item: ONLY plaintext exts (csv/txt/tsv/tab) AND bytes that fail strict UTF-8 decode -> decode as windows-1250, re-encode UTF-8, rewrite binary `data` (fileName/mime preserved). Binary formats (pdf/docx/xlsx/img) and already-valid-UTF-8 text pass through untouched (gate on ext set first -> never corrupts a zip-based office doc). No binary (fetch failed) -> pass through to [BRAK]. windows-1250 is the single legacy fallback (Polish/Windows shop); a general charset detector isn't available in the Code sandbox. Sits at the shared Merge Extractable -> Docling seam so it covers loose AND zip-inner docs in one place. Code node justified: encoding detection/transcode has no normal-node equivalent.",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const TEXT_EXT = new Set(['csv', 'txt', 'tsv', 'tab']);\nconst items = $input.all();\nfor (let i = 0; i < items.length; i++) {\n  const bin = items[i].binary && items[i].binary.data;\n  if (!bin) continue; // fetch failed / no binary -> let Docling + Build Text Block degrade to [BRAK]\n  const fromName = bin.fileName ? String(bin.fileName).split('.').pop() : '';\n  const ext = String((items[i].json && items[i].json.ext) || fromName || '').toLowerCase();\n  if (!TEXT_EXT.has(ext)) continue; // pdf/docx/xlsx/img: never touch (would corrupt a zip-based office doc)\n  const buf = await this.helpers.getBinaryDataBuffer(i, 'data');\n  let validUtf8 = true;\n  try { new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (e) { validUtf8 = false; }\n  if (validUtf8) continue; // already UTF-8 (incl. pure ASCII) -> Docling reads it fine\n  const text = new TextDecoder('windows-1250').decode(buf); // Polish Excel default codepage\n  const utf8 = Buffer.from(text, 'utf-8');\n  items[i].binary.data = await this.helpers.prepareBinaryData(utf8, bin.fileName, bin.mimeType);\n  items[i].json = Object.assign({}, items[i].json, { _transcoded_from: 'windows-1250' });\n}\nreturn items;"
+      }
     }
   ],
   "connections": {
@@ -860,17 +872,6 @@
         ]
       ]
     },
-    "Merge Extractable": {
-      "main": [
-        [
-          {
-            "node": "Docling Convert",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Build Zip Image Block": {
       "main": [
         [
@@ -1042,6 +1043,28 @@
         [
           {
             "node": "Await Caps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Extractable": {
+      "main": [
+        [
+          {
+            "node": "Transcode Text to UTF-8",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcode Text to UTF-8": {
+      "main": [
+        [
+          {
+            "node": "Docling Convert",
             "type": "main",
             "index": 0
           }
