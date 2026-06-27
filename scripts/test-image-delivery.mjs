@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // test-image-delivery.mjs — exercise the multimodal image-delivery path end-to-end.
 //
-// Generates real images through Invoke Model (v1) (returns base64), builds the in-memory
-// base64 image_manifest + a rendered_delta with {type:'image_ref'} placeholders, and drives
+// Generates real images through Generate Images Parallel (v1) (the production image-OUTPUT path,
+// LiteLLM POST /v1/images/generations — ADR-051 Block 5 moved image generation OUT of Invoke Model,
+// which is now text + multimodal-INPUT only and ALWAYS returns b64_json:null for an image request).
+// Builds the in-memory base64 image_manifest + a rendered_delta with {type:'image_ref'} placeholders, and drives
 // Post Reply (v1) Stage C — which converts base64->binary, uploads each as a ClickUp task
 // attachment, and posts ONE comment with the proven inline op {type:'attachment',{id,url}}
 // (ADR-036 Block 10). Base64 stays in-process (never printed). Useful whenever you touch the
@@ -26,7 +28,7 @@ const KEY = process.env.N8N_API_KEY;
 if (!KEY) { console.error('FATAL: N8N_API_KEY not set'); process.exit(2); }
 const H = { 'X-N8N-API-KEY': KEY, 'Content-Type': 'application/json' };
 const WEBHOOK_BASE = BASE.replace(/\/api\/v1\/?$/, '') + '/webhook';
-const INVOKE_MODEL = 'XcOIVdZnVCCWNPeb';
+const GEN_IMAGES = '2keb6XVWq5PG0leK';   // Generate Images Parallel (v1) — production image-OUTPUT path
 const POST_REPLY = 't17moGs7Vxo5ZcFv';
 const TASK = process.env.TEST_TASK || '869dhad2q';
 const REVIEWER = process.env.TEST_REVIEWER || '2521617';
@@ -80,15 +82,20 @@ async function callViaHarness(targetId, inputs, timeoutSec = 300) {
   }
 }
 
+// Generate ONE image via the production batch workflow (single-request batch -> single output item,
+// so the harness's respondWith:firstIncomingItem returns it). Output fields mirror Generate Images
+// Parallel's Assemble Batch Output: {success, b64_json, mime, model, cost_pln, warnings, ...}.
 const genImage = async (prompt) => {
   console.log(`  generating: "${prompt}"`);
-  const out = await callViaHarness(INVOKE_MODEL, {
-    prompt, impact: 'Niski', modality: 'image', requested_modality_of_output: 'image',
-    task_type: 'test', clickup_task_id: TASK, triggered_by: 'image_gen',
-    invocation_type: 'explicit', caller_user_id: REVIEWER,
+  const out = await callViaHarness(GEN_IMAGES, {
+    requests_json: JSON.stringify([{ placeholder_id: 'img', prompt, block_order: 0, caption: '', alt: '' }]),
+    impact: 'Niski', concurrency_cap: '1',
+    clickup_task_id: TASK, triggered_by: 'image_gen',
+    invocation_type: 'explicit', caller_user_id: REVIEWER, process_type: 'test',
   });
   const b64 = out.b64_json || '';
-  console.log(`    -> model=${out.model} modality=${out.output_modality} b64=${b64.length} chars mime=${out.mime} cost_pln=${out.cost_pln}`);
+  const warn = (out.warnings && out.warnings.length) ? ` warnings=${JSON.stringify(out.warnings)}` : '';
+  console.log(`    -> model=${out.model} success=${out.success} b64=${b64.length} chars mime=${out.mime} cost_pln=${out.cost_pln}${warn}`);
   return { b64, mime: out.mime || 'image/png' };
 };
 
