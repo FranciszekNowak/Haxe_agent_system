@@ -64,6 +64,10 @@
 // CONTRACT
 //   POST /enqueue
 //     { task_id, caller_user_id, impact, invocation_type, enqueued_at, payload, idempotency_key? }
+//     ADR-066: payload may carry { surface:'task'|'chat', surface_ref:{...} } (opaque carrier). task_id
+//     is required for surface=task (default) but may be NULL for surface=chat (the job keys on the
+//     channel+message instead). The consumer forwards surface+surface_ref to the spine and otherwise
+//     treats them as opaque (priority/dedup logic unchanged except chat's message-keyed jobId).
 //     -> 200 { ok:true, jobId, priority, deduped:bool }
 //     -> 400 { ok:false, error }   (bad contract)
 //     -> 500 { ok:false, error }   (enqueue failure -> CRITICAL alert)
@@ -112,6 +116,10 @@ if (!SPINE_INGRESS_URL) {
 const IMPACT_RANK = { 'Krytycznie ważne': 1, 'Wysoki': 2, 'Średni': 3, 'Niski': 4 };
 const EXPLICIT_INVOCATIONS = new Set(['explicit_mention', 'explicit_command']);
 const IMPACTS = new Set(Object.keys(IMPACT_RANK));
+// ADR-066 surface dimension. The surface + surface_ref ride INSIDE payload (opaque carrier) so the
+// consumer's priority/contract logic is otherwise untouched — it reads surface only to (a) relax the
+// task_id requirement for chat and (b) forward both to the spine. Default surface is 'task'.
+const SURFACES = new Set(['task', 'chat']);
 const INVOCATION_TYPES = new Set([
   'autonomous_webhook', 'due_date', 'explicit_mention', 'explicit_command', 'email', 'weekly_proposer',
 ]);
@@ -297,6 +305,14 @@ function computePriority(invocation_type, impact) {
 // dedup_comment_id rides in payload, any producer-sent idempotency_key is advisory.
 function deriveJobId(b, dedupWindowH) {
   const { task_id, invocation_type, enqueued_at, payload = {} } = b;
+  // CHAT surface (ADR-066): there is no task_id, so the dedup UNIT is the channel+message — each
+  // distinct chat message that @-mentions the bot is one request. The Block 2 poll producer already
+  // claims each message_id once (per-channel last-seen cursor + dedup claim), so this message-keyed
+  // jobId only ever collapses a true duplicate enqueue of the SAME message.
+  if (payload.surface === 'chat') {
+    const ref = payload.surface_ref || {};
+    return `c:${ref.channel_id}:${ref.message_id}`;
+  }
   if (EXPLICIT_INVOCATIONS.has(invocation_type) && payload.dedup_comment_id) {
     return `${task_id}:${invocation_type}:c${payload.dedup_comment_id}`;
   }
@@ -316,6 +332,11 @@ function resolveSpineFields(job) {
   const { task_id, invocation_type, caller_user_id, payload = {} } = job.data;
   const triggeredBy = payload.triggered_by || TRIGGERED_BY[invocation_type] || invocation_type;
   const spineInvocation = payload.invocation_type || SPINE_INVOCATION[invocation_type] || 'autonomous';
+  // ADR-066: forward the surface dimension to the spine. Default surface='task' with surface_ref
+  // pointing at the task id, so the existing task path is byte-for-byte unchanged in behaviour; the
+  // spine's per-surface read/delivery adapters branch on this (chat arm added in Block 2).
+  const surface = payload.surface || 'task';
+  const surface_ref = payload.surface_ref || { task_id };
   return {
     taskId: task_id,
     reviewer_user_id: payload.reviewer_user_id ?? caller_user_id,
@@ -324,6 +345,8 @@ function resolveSpineFields(job) {
     invocation_type: spineInvocation,
     triggering_comment_id: payload.triggering_comment_id ?? '',
     triggering_comment_text: payload.triggering_comment_text ?? '',
+    surface,
+    surface_ref,
   };
 }
 
@@ -710,12 +733,26 @@ app.get('/metrics', async (_req, res) => {
 
 app.post('/enqueue', async (req, res) => {
   const b = req.body || {};
-  const required = ['task_id', 'caller_user_id', 'impact', 'invocation_type', 'enqueued_at', 'payload'];
+  // ADR-066: surface rides inside payload. task_id is required for the task surface but NULL for chat
+  // (a chat job keys on channel+message, not a task). Validate payload-as-object first so the surface
+  // read below is safe.
+  if (typeof b.payload !== 'object' || b.payload === null || Array.isArray(b.payload)) {
+    return res.status(400).json({ ok: false, error: 'payload must be an object' });
+  }
+  const surface = b.payload.surface || 'task';
+  if (!SURFACES.has(surface)) return res.status(400).json({ ok: false, error: `invalid surface "${surface}"` });
+  const required = ['caller_user_id', 'impact', 'invocation_type', 'enqueued_at', 'payload'];
+  if (surface !== 'chat') required.push('task_id');
   const missing = required.filter((f) => b[f] === undefined || b[f] === null || b[f] === '');
   if (missing.length) return res.status(400).json({ ok: false, error: `missing required fields: ${missing.join(', ')}` });
+  if (surface === 'chat') {
+    const ref = b.payload.surface_ref || {};
+    if (!ref.channel_id || !ref.message_id) {
+      return res.status(400).json({ ok: false, error: 'chat surface requires payload.surface_ref.channel_id and payload.surface_ref.message_id' });
+    }
+  }
   if (!IMPACTS.has(b.impact)) return res.status(400).json({ ok: false, error: `invalid impact "${b.impact}"` });
   if (!INVOCATION_TYPES.has(b.invocation_type)) return res.status(400).json({ ok: false, error: `invalid invocation_type "${b.invocation_type}"` });
-  if (typeof b.payload !== 'object' || Array.isArray(b.payload)) return res.status(400).json({ ok: false, error: 'payload must be an object' });
 
   const priority = computePriority(b.invocation_type, b.impact);
   const jobId = deriveJobId(b, cfg.dedup_window_h);

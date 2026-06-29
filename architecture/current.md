@@ -2037,6 +2037,18 @@ The canonical design intent for the workflows still to build. **All producers ad
 land in priority band 5–8 (always behind interactive @-mentions), ranked by `[AI] Wpływ`. Producers read
 only `queue.enabled` and need no BullMQ knowledge.
 
+> **Surface dimension (ADR-066, Block 1 — LIVE).** The job contract now carries an optional `surface`
+> (`task` | `chat`, default `task`) and `surface_ref`, ridden **inside `payload`** as an opaque carrier so
+> the consumer's priority/contract logic is otherwise untouched. `task_id` is **required for `surface=task`
+> but may be null for `surface=chat`** (a chat job keys its idempotency jobId on `c:{channel_id}:{message_id}`
+> instead of the task id). The consumer forwards `surface` + `surface_ref` to the spine; the **Spine HTTP
+> Ingress (v1)** and the **Agent Orchestrator (v1) `When Called`** thread them through (restored across the
+> spend gate in `Resume After Gate`), defaulting to `surface=task` / `surface_ref.task_id=taskId`. Note the
+> ingress's `convertFieldsToString` delivers `surface_ref` to the orchestrator as a **JSON string**, so the
+> Block 2 chat read/delivery adapters must `JSON.parse` it. Block 1 adds the carrier only — the task path is
+> byte-for-byte unchanged (verified end-to-end); the **Chat poll producer** and the per-surface chat
+> read/delivery branches land in Block 2, with the §15.10 producer list reconciled then.
+
 - **Daily Due-Date Producer — BUILT (ADR-065, 2026-06-27), INACTIVE pending activation.** Built as
   `due-date-producer.json` (`Ubwr6fRmStFwwJfP`). Final shape diverges from this original sketch on three
   operator decisions: (1) "today" + the dedup window use **Europe/Warsaw** day boundaries (in-memory

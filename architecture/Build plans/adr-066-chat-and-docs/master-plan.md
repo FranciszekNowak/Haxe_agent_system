@@ -26,7 +26,7 @@ context)" → **ADR-061 (dynamic context loading)**; produce the **full build se
 |-------|-------|--------|
 | Part 1 | Land ADR-066 + master plan | **DONE** (commit `effdb99`) |
 | Block 0 | Capability gates G1–G5 | **DONE** (commit `f25c072`). Resolved: Chat reachable but **poll-only** (no webhook event, no automation); Doc surface dropped. See `block-0-findings.md` + ADR-066 amendment 2026-06-29. |
-| Block 1 | Surface dimension (`task` \| `chat`) on job + spine | **READY to build** — operator go pending |
+| Block 1 | Surface dimension (`task` \| `chat`) on job + spine | **DONE** — `surface`/`surface_ref` carrier in queue-consumer (deployed) + ingress + orchestrator; task path verified unchanged end-to-end (exec 5424, threaded reply, 0 alerts). current.md §15.10 carries the contract note. |
 | Block 2 | Chat **poll** producer + read + threaded-reply delivery | **READY to build** — operator go pending |
 | ~~Block 3~~ | ~~Doc path~~ | **REMOVED** — Docs route through Task/Chat (no notifications/Doc-comments API); no new build needed (agent already reads Docs via the ADR-054 MCP). |
 | Block 4 | Scope + idempotency test, write-backs | Pending; scope = Chat surface only. |
