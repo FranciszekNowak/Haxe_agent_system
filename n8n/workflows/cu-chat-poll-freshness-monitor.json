@@ -1,0 +1,192 @@
+{
+  "name": "CU Chat Poll Freshness Monitor (v1)",
+  "active": false,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Every 5 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [0, 200],
+      "notes": "ADR-066 proactive dead-man's switch for the Chat poll producer (60s cron). Runs every 5 min and WARNs if config.chat_poll_producer.last_run_at is missing or older than 10 min (~10 missed polls) — a silently-stopped poll cron means chat @-mentions go unanswered with nobody noticing. Activate TOGETHER with CU Chat Poll Producer; while the producer is inactive this would (correctly) WARN.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "formseed",
+      "name": "Run now (manual)",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [0, 380],
+      "webhookId": "cu-chat-poll-freshness-manual-seed",
+      "notes": "Manual harness to test the freshness check on demand.",
+      "parameters": {
+        "formTitle": "CU Chat Poll Freshness Check (manual run)",
+        "formDescription": "Press submit to check the chat poll heartbeat freshness.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "confirm",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "run"
+                  }
+                ]
+              },
+              "requiredField": true
+            }
+          ]
+        },
+        "responseMode": "lastNode"
+      }
+    },
+    {
+      "id": "checkfresh",
+      "name": "Check Heartbeat",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [240, 280],
+      "notes": "Reads config.chat_poll_producer.last_run_at. should_alert = true when the row is missing (coalesce default true) OR last run > 10 min ago. NO onError: a DB failure throws -> global Error Handler CRITICAL (a monitor that can't read its own signal must be LOUD).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select coalesce((now() - (select value from config where key='chat_poll_producer.last_run_at')::timestamptz) > interval '10 minutes', true) as should_alert, (select value from config where key='chat_poll_producer.last_run_at') as last_run;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "stale",
+      "name": "Stale?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [460, 280],
+      "notes": "should_alert=true -> Alert Stale; false (fresh) -> dead end.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "s1",
+              "leftValue": "={{ String($json.should_alert) }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "alertstale",
+      "name": "Alert Stale",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [700, 180],
+      "notes": "WARN via Post Alert (v1) when the chat poll heartbeat is stale/missing.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "cu-chat-poll/freshness",
+            "message": "Producent czatu (poll) NIE uruchomił się w ciągu ostatnich 10 min (dead-man's switch). Wzmianki @agenta na czacie mogą pozostawać bez odpowiedzi.",
+            "details": "=heartbeat last_run={{ $('Check Heartbeat').first().json.last_run }}; próg=10min; sprawdź workflow CU Chat Poll Producer (v1): aktywny? cron co 1 min? błędy w wykonaniach?"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Every 5 min": {
+      "main": [
+        [
+          {
+            "node": "Check Heartbeat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run now (manual)": {
+      "main": [
+        [
+          {
+            "node": "Check Heartbeat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Heartbeat": {
+      "main": [
+        [
+          {
+            "node": "Stale?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stale?": {
+      "main": [
+        [
+          {
+            "node": "Alert Stale",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}

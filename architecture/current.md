@@ -2045,9 +2045,24 @@ only `queue.enabled` and need no BullMQ knowledge.
 > Ingress (v1)** and the **Agent Orchestrator (v1) `When Called`** thread them through (restored across the
 > spend gate in `Resume After Gate`), defaulting to `surface=task` / `surface_ref.task_id=taskId`. Note the
 > ingress's `convertFieldsToString` delivers `surface_ref` to the orchestrator as a **JSON string**, so the
-> Block 2 chat read/delivery adapters must `JSON.parse` it. Block 1 adds the carrier only — the task path is
-> byte-for-byte unchanged (verified end-to-end); the **Chat poll producer** and the per-surface chat
-> read/delivery branches land in Block 2, with the §15.10 producer list reconciled then.
+> chat read/delivery adapters `JSON.parse` it.
+>
+> **Block 2 (ADR-066) — BUILT, verified, INACTIVE pending go-live.** The chat surface is now end-to-end:
+> the orchestrator routes Stage A on `surface` (a `Surface = chat?` IF → `Call Assemble Chat Context`
+> (`BppZsqTi46Bz5dsG`) for chat, the unchanged task reader otherwise) and **converges both into a Merge node
+> that keeps the name `Call Assemble Context`**, so every downstream `$('Call Assemble Context')` reference is
+> surface-agnostic and the task path stays byte-for-byte unchanged (regression verified: task @-mention runs
+> through the new Merge + cost gate, posts its comment, no new alerts). The chat reader returns the SAME
+> contract shape as the task reader (`clickup_task_id:''`, `image_blocks_json:'[]'`, floor = global rules
+> (bare lane only) + caller personal rules + triggering message + thread replies; everything else pulled via
+> the in-harness scoped ClickUp MCP — the "Doc-via-Chat" path). The task-bound writes are gated to
+> `surface=task`: `Set Status W trakcie`, `Call Write Cost Field` (a `Skip Cost If Chat?` IF bypasses it for
+> chat), and the render no-deliver-output WARN. Delivery: `Post Reply (v1)` gains a `Surface = chat?` branch
+> that builds markdown from the agent's block array and POSTs a **threaded reply under the invoking message**
+> (`/api/v3/.../messages/{message_id}/replies`, bot token), then dead-ends (no status flip / artifact record).
+> Chat delivery is **text/markdown only** in Block 2 (inline chat images deferred). Verified end-to-end via a
+> real poll → enqueue → consumer (priority 3) → spine → clean threaded reply (`agent_runs` logs with
+> `clickup_task_id=null`).
 
 - **Daily Due-Date Producer — BUILT (ADR-065, 2026-06-27), INACTIVE pending activation.** Built as
   `due-date-producer.json` (`Ubwr6fRmStFwwJfP`). Final shape diverges from this original sketch on three
@@ -2061,6 +2076,24 @@ only `queue.enabled` and need no BullMQ knowledge.
   centralized `Post Alert (v1)` seam at INFO (no dedicated GM Reports task exists; unification rule),
   and a paired `Due-Date Producer Freshness Monitor (v1)` (`q98HgAuUlqxg1CF4`) WARNs if the producer
   stops. Target: overnight drafts ready by morning. See ADR-065 for the full record.
+- **CU Chat Poll Producer — BUILT (ADR-066 Block 2, 2026-06-29), INACTIVE pending go-live.** Built as
+  `cu-chat-poll.json` (`euFWZ1fKGcRFPrv3`). Chat fires **no webhook**, so this is a **poll** producer
+  (latency ≈ the poll interval), not a webhook fast-path. Every 60s it stamps a `config` heartbeat, lists
+  the channels the **bot is a member of** (`GET /api/v3/.../chat/channels` as the bot — membership = token
+  scope), fetches each channel's recent messages, and keeps those **newer than a per-channel last-seen
+  cursor** (`chat_poll_cursor`, migration 049). New non-bot-authored messages are gated by the **tagged-users
+  endpoint** (the authoritative @-mention signal — message text `@Name` is unreliable; the id field is read
+  defensively against bot id `99811284`), claimed once in `agent_chat_dedup` (migration 049), and enqueued
+  `invocation_type=explicit_mention` (priority band 3, behind nothing but live task @-mentions) with
+  `surface=chat`, `surface_ref={channel_id,message_id}`, `caller_user_id`=author. **Cold start** (no cursor
+  row) seeds the cursor to the newest message **without** enqueuing (no history replay); the cursor advances
+  every poll so a message is never re-enqueued, and the bot's own (threaded, API-posted) replies neither
+  appear in the channel message list nor self-tag — triple self-trigger guard. Synchronous-spine fallback +
+  WARN on `/enqueue` failure (no dropped mention). A paired `CU Chat Poll Freshness Monitor (v1)`
+  (`Bg11rVUJXgvDabgn`, every 5 min, 10-min threshold) WARNs if the poll cron stops. **Docs route through
+  Task/Chat** (ClickUp exposes no notifications/mentions API and no Doc-comments API — ADR-066 Block 0); a
+  Doc mention is a Task/Chat mention referencing the Doc, which the agent reads via the ADR-054 MCP. See
+  ADR-066 for the full record.
 - **Gmail Email Workflow** — watches incoming mail → `POST /enqueue` with `invocation_type=email`;
   the spine reads the mail, calls Claude with caller-scoped context, creates a Gmail **draft**.
   Sent-folder watcher (every 15 min) enqueues post-send analysis (`invocation_type` per the contract).

@@ -27,9 +27,9 @@ context)" → **ADR-061 (dynamic context loading)**; produce the **full build se
 | Part 1 | Land ADR-066 + master plan | **DONE** (commit `effdb99`) |
 | Block 0 | Capability gates G1–G5 | **DONE** (commit `f25c072`). Resolved: Chat reachable but **poll-only** (no webhook event, no automation); Doc surface dropped. See `block-0-findings.md` + ADR-066 amendment 2026-06-29. |
 | Block 1 | Surface dimension (`task` \| `chat`) on job + spine | **DONE** — `surface`/`surface_ref` carrier in queue-consumer (deployed) + ingress + orchestrator; task path verified unchanged end-to-end (exec 5424, threaded reply, 0 alerts). current.md §15.10 carries the contract note. |
-| Block 2 | Chat **poll** producer + read + threaded-reply delivery | **IN PROGRESS** — foundation landed (migration 049: cursor + dedup tables + config, applied & verified); design locked; endpoints confirmed. Workflow build + live test remain. See "Block 2 build progress" below. |
+| Block 2 | Chat **poll** producer + read + threaded-reply delivery | **DONE (2026-06-29)** — built `assemble-chat-context.json` (`BppZsqTi46Bz5dsG`), `cu-chat-poll.json` (`euFWZ1fKGcRFPrv3`), `cu-chat-poll-freshness-monitor.json` (`Bg11rVUJXgvDabgn`); surface-gated `agent-orchestrator.json` (Merge convergence + `Surface = chat?` + `Skip Cost If Chat?`) and `post-reply.json` (chat threaded-reply branch). Verified: task-path regression unchanged; chat e2e via orchestrator (clean threaded reply); poll cold-start (seeds, no replay), negative path (non-mention not enqueued, cursor advances), and full producer→consumer→spine→delivery integration (priority-3 job → clean reply). Drift-check clean; current.md §15.10 reconciled. **Producers INACTIVE pending operator go-live + one real UI @-mention.** See "Block 2 build progress" below. |
 | ~~Block 3~~ | ~~Doc path~~ | **REMOVED** — Docs route through Task/Chat (no notifications/Doc-comments API); no new build needed (agent already reads Docs via the ADR-054 MCP). |
-| Block 4 | Scope + idempotency test, write-backs | Pending; scope = Chat surface only. |
+| Block 4 | Scope + idempotency test, write-backs | **Partly covered by Block 2** — idempotency (`message_id` dedup + per-channel cursor, no self-trigger) and priority band (3) verified; write-backs done. Remaining: the cross-department scope negative matrix on the Chat surface + the final real-UI-mention go-live confirmation. |
 
 > **Block 0 outcome + decisions (2026-06-29).** ClickUp has no notifications/mentions API and no
 > Doc-comments API. (1) **Doc surface dropped** — Doc work is a Task/Chat mention that references the
@@ -204,6 +204,44 @@ active poll producer would self-misfire / flood alerts in production.
    `Classify/Post Alert (v1)` seam for a chat-reply failure (`onError:continueErrorOutput`).
    **Scope note (honest):** chat delivery is **text/markdown only** in Block 2; inline chat images use a
    different mechanism than the task comment ops-array and are deferred (state this in the summary).
+
+#### Block 2 — build outcome (2026-06-29)
+
+**Done & verified.** Five artifacts deployed (ids in the block-status table). Drift-check clean; current.md
+§15.10 reconciled. Producers + monitor are **INACTIVE** — activate the poll's 60s cron + the 5-min monitor
+**together**, only after the operator does one real UI @-mention DoD (below).
+
+**Hard-won live API facts (verified against the bot token, workspace 761759):**
+- Raw v3 chat endpoints return `{ data:[...], next_cursor }` — read `.data` (NOT `channels`/`messages`).
+- **Bot (99811284) is a member of 14 channels**, incl. the test channel `4-6727129-8`. Listing channels as
+  the bot = its membership scope (no per-channel member flag needed).
+- Message shape: `{ id, content, user_id, date(ms int), type, parent_channel, replies_count, links{...} }` —
+  it is **`replies_count`, not `has_replies`**; the cursor key is `date`.
+- `tagged_users` wrapper is `{ data:[...], next_cursor }`. A message **posted via the API with markdown
+  `@Name` does NOT create a tag** (`data:[]`) — only a real **UI** @-mention populates tagged_users. So (a)
+  the positive-detection link genuinely needs a human UI mention to close, and (b) the bot's own API-posted
+  replies never self-tag.
+- **Bot replies are threaded** (`/messages/{id}/replies`) and do **not** appear in the channel
+  `/messages` list → the per-channel scan never re-sees them (self-trigger guard #2; #1 = skip
+  `user_id==99811284`, #3 = advance cursor).
+- Threaded reply delivery: `POST /api/v3/.../chat/messages/{message_id}/replies` body
+  `{type:'message', content:<md>, content_format:'text/md'}` → 201.
+
+**Two bugs caught and fixed during live test (don't reintroduce):**
+- **The agent returns its answer as a JSON block-array STRING in `output_message`** (the chat prompt asks for
+  a block array). The chat delivery must PARSE it (`output_blocks` first, then `output_message` if it starts
+  with `[`, else plain text) — using it raw posts literal `[{"type":"text",...}]`.
+- **A Postgres `executeQuery` node REPLACES `$json` with the query result.** The `Claim Message` node dropped
+  the candidate fields (`user_id`/`channel_id`/`message_id`/`content`) → `Build Enqueue Job` built an empty
+  job (consumer correctly 400'd "missing required fields: caller_user_id"). Fix: **echo the fields back
+  through the claim query** (`select … , $3 as user_id, $4 as content`) so downstream keeps them. This is the
+  general trap for any "claim-then-use-fields" Postgres gate.
+
+**Operator go-live DoD (the one remaining step):** with the poll INACTIVE, the operator @-mentions the bot in
+a chat channel via the **UI** (creates a real tag). Then activate `cu-chat-poll.json` + the freshness monitor,
+confirm the next poll detects it (`tagged_users` includes 99811284) → enqueues → threaded reply, and check
+`alerts-since.mjs` is clean. Everything upstream and downstream of that single tagged-users-positive read is
+already verified end-to-end.
 
 **Verify (DoD, autonomous):** drive the spine via `test-subworkflow.mjs` on the orchestrator `When Called`
 with chat inputs (`surface:'chat'`, `surface_ref` JSON **string** — the ingress passes it stringified, so

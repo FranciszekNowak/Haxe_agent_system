@@ -1,0 +1,375 @@
+{
+  "name": "Assemble Chat Context (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "taskId"
+            },
+            {
+              "name": "reviewer_user_id"
+            },
+            {
+              "name": "caller_username"
+            },
+            {
+              "name": "triggered_by"
+            },
+            {
+              "name": "invocation_type"
+            },
+            {
+              "name": "triggering_comment_id"
+            },
+            {
+              "name": "triggering_comment_text"
+            },
+            {
+              "name": "surface"
+            },
+            {
+              "name": "surface_ref"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "read-lane",
+      "name": "Read Lane",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [220, 160],
+      "notes": "ADR-066 chat Stage A: read config.agent_lane to gate the global-rules fold (managed has them cached in the agent system; bare folds them per-run). Fail-safe: onError continueRegularOutput + alwaysOutputData so an unreadable flag defaults to bare/full and never starves the run.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select value as agent_lane from public.config where key = 'agent_lane' limit 1;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "parse-ref",
+      "name": "Parse Surface Ref",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 160],
+      "notes": "ADR-066: the ingress passes surface_ref to the spine as a JSON STRING (convertFieldsToString). Parse it to {channel_id, message_id} for the chat reads. Defensive: accept an already-parsed object too.",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nlet ref = wc.surface_ref;\nif (typeof ref === 'string') { try { ref = JSON.parse(ref || '{}'); } catch (e) { ref = {}; } }\nif (!ref || typeof ref !== 'object') ref = {};\nreturn [{ json: { channel_id: String(ref.channel_id || ''), message_id: String(ref.message_id || '') } }];"
+      }
+    },
+    {
+      "id": "load-rules",
+      "name": "Load Agent Rules",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 60],
+      "notes": "Same global+personal rules Doc the task Stage A loads (workspace 761759 doc q7wz-16892, content text/md). onError continueRegularOutput + retry so a ClickUp blip degrades to no-rules (Build Chat Prompt WARNs), never throws.",
+      "parameters": {
+        "url": "https://api.clickup.com/api/v3/workspaces/761759/docs/q7wz-16892/pages?content_format=text%2Fmd",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "fetch-members",
+      "name": "Fetch Members",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 220],
+      "notes": "Resolve the caller's display name (for the personal-rules page lookup, keyed by 'Instrukcje dla agenta - <name>') and thread author names. Chat messages expose only user_id. onError continueRegularOutput + retry so a blip degrades to no name resolution (personal rules treated missing), never throws.",
+      "parameters": {
+        "url": "https://api.clickup.com/api/v2/team/761759",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "fetch-replies",
+      "name": "Fetch Thread Replies",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 380],
+      "notes": "Fetch the thread replies under the triggering message (bot token). The root message text arrives as triggering_comment_text from the producer; these are the follow-ups. onError continueRegularOutput + retry so an empty/failed fetch just yields no thread context.",
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v3/workspaces/761759/chat/messages/{{ $('Parse Surface Ref').first().json.message_id }}/replies",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "25"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "build-prompt",
+      "name": "Build Chat Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 300],
+      "notes": "ADR-066 chat Stage A floor: global rules (bare lane only — managed has them cached in the agent system), caller personal rules, the triggering chat message, and the thread replies. Returns the SAME contract shape Build Prompt (task Stage A) returns so the orchestrator's downstream (Context OK? -> lane -> Execute Agent Session -> Render -> Post Reply) works unchanged. clickup_task_id='' (no task); image_blocks_json='[]' (chat is text-only in Block 2). Anything beyond the floor the agent pulls via its in-harness scoped ClickUp MCP (the Doc-via-Chat path).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst ref = $('Parse Surface Ref').first().json || {};\nconst OPERATOR_ID = '2521617';\nconst OPERATOR_NAME = 'Franciszek Nowak';\n\n// lane (gates the global-rules fold)\nlet agent_lane = 'bare';\ntry { const v = String(($('Read Lane').first().json || {}).agent_lane || '').trim().toLowerCase(); if (v === 'managed' || v === 'bare') agent_lane = v; } catch (e) {}\nconst isManaged = agent_lane === 'managed';\n\nconst reviewer_user_id = String(wc.reviewer_user_id || OPERATOR_ID).trim();\nconst triggered_by = wc.triggered_by || 'explicit_mention';\nconst invocation_type = wc.invocation_type || 'explicit';\nconst triggering_text = String(wc.triggering_comment_text || '').trim();\n\n// resolve member id -> display name\nconst memberMap = {};\ntry {\n  const teams = (($('Fetch Members').first().json || {}).teams) || [];\n  for (const t of teams) { for (const m of (t.members || [])) { const u = m.user || {}; if (u.id != null) memberMap[String(u.id)] = u.username || u.email || ''; } }\n} catch (e) {}\nlet caller_username = String(wc.caller_username || '').trim();\nif (!caller_username) caller_username = memberMap[reviewer_user_id] || (reviewer_user_id === OPERATOR_ID ? OPERATOR_NAME : '');\n\n// rules doc pages (flatten)\nlet pages = [];\ntry { pages = $('Load Agent Rules').first().json.body || []; } catch (e) {}\nconst allPages = [];\n(function flat(arr){ for (const p of (arr||[])) { allPages.push(p); if (p.pages) flat(p.pages); } })(pages);\nconst globalPage = allPages.find(p => p.id === 'q7wz-44812');\nconst global_rules = (globalPage && globalPage.content) ? globalPage.content : '';\nconst global_rules_missing = isManaged ? false : !global_rules;\nconst personalPage = caller_username ? allPages.find(p => p.name === ('Instrukcje dla agenta - ' + caller_username)) : null;\nconst person_rules = (personalPage && personalPage.content) ? personalPage.content : '';\nconst person_rules_missing = !person_rules;\n\n// thread replies\nlet replies = [];\ntry { const rb = ($('Fetch Thread Replies').first().json || {}).body; replies = (rb && rb.data) || []; } catch (e) {}\nreplies = Array.isArray(replies) ? replies.slice().sort((a,b)=>Number(a.date||0)-Number(b.date||0)) : [];\n\nconst lines = [];\nif (global_rules && !isManaged) { lines.push('# Zasady ogólne agenta (obowiązują zawsze)'); lines.push(global_rules); lines.push(''); lines.push('---'); lines.push(''); }\nif (person_rules) { lines.push('# Preferencje osoby zlecającej (' + caller_username + ')'); lines.push(person_rules); lines.push(''); lines.push('---'); lines.push(''); }\n\nlines.push('# Wiadomość wywołująca tę akcję (czat ClickUp)');\nlines.push('Użytkownik ' + (caller_username || ('#' + reviewer_user_id)) + ' napisał na czacie:');\nlines.push('---');\nlines.push(triggering_text || '[treść wiadomości niedostępna]');\nlines.push('---');\nlines.push('');\nif (replies.length) {\n  lines.push('# Wątek — kolejne wiadomości (od najstarszej)');\n  for (const r of replies) { const who = memberMap[String(r.user_id)] || ('#' + (r.user_id || '?')); lines.push(who + ': ' + String(r.content || '')); }\n  lines.push('');\n}\n\nlines.push('# Kontekst');\nlines.push('To jest rozmowa na czacie ClickUp (nie zadanie). Nie ma przypisanego zadania ClickUp. Jeśli do odpowiedzi potrzebujesz danych z ClickUp (zadania, dokumenty, komentarze), użyj swoich narzędzi (scoped ClickUp MCP) — masz dostęp w zakresie uprawnień osoby pytającej.');\nlines.push('');\nlines.push('# Format odpowiedzi (OBOWIĄZKOWY)');\nlines.push('Zwróć WYŁĄCZNIE tablicę JSON bloków typu text — bez tekstu przed i po, bez ogrodzenia markdown:');\nlines.push('  { \"type\": \"text\", \"md\": \"…treść markdown po polsku…\" }');\nlines.push('Odpowiadaj zwięźle i konwersacyjnie (to czat, nie formalny komentarz do zadania). Całą treść umieść w blokach text (markdown: listy, pogrubienia, krótkie nagłówki gdy potrzebne). Nie dodawaj sekcji „Pytania do zlecającego/Decyzje/Sugestie do procesu” typowych dla zadań, chyba że pasują. Jeśli obrazy są potrzebne — w tej wersji czatu zwróć opis tekstowy (dostarczanie obrazów na czacie będzie później).');\nlines.push('Przykład: [{\"type\":\"text\",\"md\":\"Cześć! Oto co znalazłem: …\"}]');\n\nconst prompt = lines.join('\\n');\n\nreturn [{ json: {\n  prompt,\n  agent_lane,\n  impact: 'Średni',\n  modality: 'text',\n  task_type: '',\n  clickup_task_id: '',\n  triggered_by,\n  invocation_type,\n  reviewer_user_id,\n  caller_user_id: reviewer_user_id,\n  caller_username,\n  process_type: '',\n  assignee_user_id: '',\n  creator_user_id: '',\n  triggering_comment_id: '',\n  web_sources: '[]',\n  image_blocks_json: '[]',\n  input_warnings_json: '[]',\n  input_warnings_count: 0,\n  surface: 'chat',\n  surface_ref: JSON.stringify({ channel_id: ref.channel_id || '', message_id: ref.message_id || '' }),\n  global_rules_missing,\n  person_rules_missing\n} }];"
+      }
+    },
+    {
+      "id": "rules-missing",
+      "name": "Rules Health?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1160, 200],
+      "notes": "Silent-degradation guard: WARN if global rules are missing where required (bare lane) or the triggering message text is empty (producer/ingress mapping broke). person_rules_missing alone is NOT alerted for chat (common: a user without a personal page).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "or",
+          "conditions": [
+            {
+              "id": "h1",
+              "leftValue": "={{ $json.global_rules_missing }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "h2",
+              "leftValue": "={{ $json.prompt }}",
+              "rightValue": "[treść wiadomości niedostępna]",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "alert-rules",
+      "name": "Alert Chat Context Health",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1380, 120],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "assemble-chat-context/health",
+            "message": "Degradacja budowania kontekstu czatu: brak zasad ogólnych (bare) lub pusta treść wiadomości wywołującej.",
+            "details": "=channel={{ $('Parse Surface Ref').first().json.channel_id }}; message={{ $('Parse Surface Ref').first().json.message_id }}; global_rules_missing={{ $json.global_rules_missing }}; person_rules_missing={{ $json.person_rules_missing }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "return-ctx",
+      "name": "Return Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1380, 300],
+      "notes": "Single linear terminal (branch-free return) so the sub-workflow deterministically returns the chat context contract.",
+      "parameters": {
+        "jsCode": "return [{ json: $('Build Chat Prompt').first().json }];"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Read Lane",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Lane": {
+      "main": [
+        [
+          {
+            "node": "Parse Surface Ref",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Surface Ref": {
+      "main": [
+        [
+          {
+            "node": "Load Agent Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Thread Replies": {
+      "main": [
+        [
+          {
+            "node": "Build Chat Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Chat Prompt": {
+      "main": [
+        [
+          {
+            "node": "Rules Health?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rules Health?": {
+      "main": [
+        [
+          {
+            "node": "Alert Chat Context Health",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Chat Context Health": {
+      "main": [
+        [
+          {
+            "node": "Return Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Agent Rules": {
+      "main": [
+        [
+          {
+            "node": "Fetch Members",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Members": {
+      "main": [
+        [
+          {
+            "node": "Fetch Thread Replies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}
