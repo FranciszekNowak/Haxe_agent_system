@@ -20,6 +20,22 @@ in the real workflows and the queue-consumer service** so it is executable, not 
 Decisions locked with the operator: renumber to **ADR-066**; repoint "References: ADR-060 (floor-vs-tail
 context)" → **ADR-061 (dynamic context loading)**; produce the **full build sequence** (Blocks 0–4).
 
+## Block status
+
+| Block | Scope | Status |
+|-------|-------|--------|
+| Part 1 | Land ADR-066 + master plan | **DONE** (commit `effdb99`) |
+| Block 0 | Capability gates G1–G5 | **DONE — blocking finding.** Chat reachable (G4/G5 pass, G1 needs operator UI check); **Doc NOT reachable** (G2 + G3 fail: no notifications API, no Doc-comments API). See `block-0-findings.md`. |
+| Block 1 | Surface dimension on job + spine | Ready (Chat-scoped) — pending operator go |
+| Block 2 | Chat path | Ready — pending operator go |
+| Block 3 | Doc path | **BLOCKED** — designed mechanism impossible on current ClickUp API; awaiting operator decision on Doc options (see block-0-findings §Options) + an ADR-066 amendment |
+| Block 4 | Scope + idempotency test, write-backs | Pending; scope narrows to whatever surfaces ship |
+
+> **Block 0 outcome (2026-06-29):** ClickUp has no notifications/mentions API and no Doc-comments API,
+> so ADR-066's Doc path (poll the mentions feed → reply under the invoking Doc comment) cannot be built,
+> and its named G2 fallback (poll doc *comments*) is equally blocked. Chat is unaffected and buildable.
+> The plan below stands for Chat (Blocks 1–2); Block 3 is frozen until the operator picks a Doc option.
+
 ---
 
 ## Part 1 — Land the ADR (do first)
