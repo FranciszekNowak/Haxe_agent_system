@@ -27,7 +27,7 @@ context)" → **ADR-061 (dynamic context loading)**; produce the **full build se
 | Part 1 | Land ADR-066 + master plan | **DONE** (commit `effdb99`) |
 | Block 0 | Capability gates G1–G5 | **DONE** (commit `f25c072`). Resolved: Chat reachable but **poll-only** (no webhook event, no automation); Doc surface dropped. See `block-0-findings.md` + ADR-066 amendment 2026-06-29. |
 | Block 1 | Surface dimension (`task` \| `chat`) on job + spine | **DONE** — `surface`/`surface_ref` carrier in queue-consumer (deployed) + ingress + orchestrator; task path verified unchanged end-to-end (exec 5424, threaded reply, 0 alerts). current.md §15.10 carries the contract note. |
-| Block 2 | Chat **poll** producer + read + threaded-reply delivery | **READY to build** — operator go pending |
+| Block 2 | Chat **poll** producer + read + threaded-reply delivery | **IN PROGRESS** — foundation landed (migration 049: cursor + dedup tables + config, applied & verified); design locked; endpoints confirmed. Workflow build + live test remain. See "Block 2 build progress" below. |
 | ~~Block 3~~ | ~~Doc path~~ | **REMOVED** — Docs route through Task/Chat (no notifications/Doc-comments API); no new build needed (agent already reads Docs via the ADR-054 MCP). |
 | Block 4 | Scope + idempotency test, write-backs | Pending; scope = Chat surface only. |
 
@@ -141,6 +141,75 @@ Resolve G1–G5 against the **live** ClickUp API for the bot user, recording fin
 - **DoD:** a real Chat mention of the bot produces a scoped **threaded reply under the invoking message**
   within ~1 poll interval; the bot's own reply does **not** re-trigger; execution clean in
   `inspect-execution.mjs`; no unexplained alerts. Delete any test rows/messages after.
+
+#### Block 2 build progress (continuation record — 2026-06-29)
+
+Grounding + foundation done; the workflow build + live test remain. **Build the producer as ONE
+complete, tested unit and activate its 60s cron ONLY after the end-to-end DoD passes** — a half-built
+active poll producer would self-misfire / flood alerts in production.
+
+**DONE & verified**
+- **Migration 049 applied** (`049_chat_surface.sql`): `chat_poll_cursor` (`channel_id` PK,
+  `last_seen_ms` bigint, `last_message_id`, `updated_at`), `agent_chat_dedup` (`message_id` PK,
+  `channel_id`, `first_seen_at`), config `chat.poll_interval_s='60'` + `chat_poll_producer.last_run_at`
+  (seeded `now()` so the freshness monitor doesn't false-alarm pre-first-run).
+- **queue-consumer is already chat-aware** (Block 1): validates `payload.surface_ref.channel_id`+
+  `message_id`, jobId `c:<channel>:<message>`, forwards `surface`/`surface_ref`. No consumer change needed.
+
+**Design locked (operator, 2026-06-29)**
+- **Separate `assemble-chat-context` sub-workflow** for the chat read path; the orchestrator routes
+  Stage A on `surface` BEFORE the read, so the proven task Stage A (`Assemble Context`, verified exec
+  5424) stays byte-for-byte untouched. The chat reader returns the SAME contract shape `Build Prompt`
+  returns (`prompt`, `clickup_task_id:''`, `impact`, `caller_user_id`, `reviewer_user_id`,
+  `process_type:''`, `triggering_comment_id:''`, `image_blocks_json:'[]'`, `web_sources:'[]'`, …) so
+  everything downstream (Context OK? → lane → Execute Agent Session → Render → Post Reply) works
+  unchanged. Chat floor = global rules + caller personal rules + triggering message + thread replies;
+  the agent pulls anything else via its in-harness scoped ClickUp MCP (the "Doc-via-Chat" path).
+
+**Confirmed facts (don't re-derive)**
+- Bot user id (`AGENT_ID`) = **99811284**; bot ClickUp Member token = n8n credential **`QRrgf6hteyGWSJyv`**
+  ("ClickUp account") — used for ALL bot-side calls. The poll lists channels *as the bot* (its token
+  only sees channels it's a member of — membership = token scope; there is no per-channel member flag).
+- Workspace/team id = **761759**. ClickUp v3 Chat endpoints (all bot-token):
+  - list channels: `GET /api/v3/workspaces/761759/chat/channels` (paginated, `next_cursor`)
+  - channel messages: `GET /api/v3/workspaces/761759/chat/channels/{channel_id}/messages?limit=50`
+    — **newest-first**; message = `{id, content, user_id, date(ms int), type, has_replies}`. `content`
+    renders mentions as plain `@Name` text (unreliable — DON'T parse it).
+  - **tagged users** (the mention test): `GET /api/v3/workspaces/761759/chat/messages/{message_id}/tagged_users`
+    — **response shape undocumented; verify the user-id field name live** and match `99811284`. Filter
+    code must read the id defensively (array of objects vs `{data:[…]}`).
+  - threaded reply (delivery): `POST /api/v3/workspaces/761759/chat/messages/{message_id}/replies`
+    body `{type:"message", content:<markdown>, content_format:"text/md"}` → 201.
+- `agent_runs.clickup_task_id` is **nullable** → a chat run logs cleanly with no task.
+
+**Remaining artifacts + surface-gating (the actual build)**
+1. `n8n/workflows/assemble-chat-context.json` (NEW) — chat Stage A reader (rules + message + thread).
+2. `n8n/workflows/cu-chat-poll.json` (NEW) — Schedule(60s)+Form harness → Read Queue Flag → list bot
+   channels → per channel fetch first page → keep `date > chat_poll_cursor.last_seen_ms` → drop
+   bot-authored (`user_id == 99811284`) → tagged-users gate (bot mentioned) → `agent_chat_dedup` claim →
+   Build Enqueue Job (`task_id:null`, `impact:'Średni'`, `invocation_type:'explicit_mention'`,
+   `payload.surface:'chat'`, `surface_ref:{channel_id,message_id}`, `caller_user_id:user_id`) → `/enqueue`
+   → advance cursor → stamp `chat_poll_producer.last_run_at`. **Cold-start guard:** a channel with no
+   cursor row seeds to its newest message WITHOUT enqueuing (don't replay history).
+3. `n8n/workflows/cu-chat-poll-freshness-monitor.json` (NEW) — dead-man's-switch on
+   `chat_poll_producer.last_run_at` (stale threshold ~10 min, i.e. 10× interval; tighter than due-date's
+   26h) → WARN via Post Alert (v1). Mirror `due-date-producer-freshness-monitor.json`.
+4. `agent-orchestrator.json` (EDIT) — route Stage A on `surface` (task→`Call Assemble Context`,
+   chat→`Call Assemble Chat Context`); **gate `Set Status W trakcie` and `Call Write Cost Field` to
+   `surface=task`** (both write a task field — skip for chat). Thread `surface`/`surface_ref` to the
+   chat reader + to Post Reply. (Surface already carried on `When Called`/`Resume After Gate`, Block 1.)
+5. `post-reply.json` (EDIT) — add `surface`+`surface_ref` inputs; at the top, `IF surface=chat` →
+   post `completion` (markdown) to the `/replies` endpoint (channel from `surface_ref`), then dead-end
+   (skip `Set Status Zakończono` + `Record Artifact` — task-bound). Task branch unchanged. Reuse the
+   `Classify/Post Alert (v1)` seam for a chat-reply failure (`onError:continueErrorOutput`).
+   **Scope note (honest):** chat delivery is **text/markdown only** in Block 2; inline chat images use a
+   different mechanism than the task comment ops-array and are deferred (state this in the summary).
+
+**Verify (DoD, autonomous):** drive the spine via `test-subworkflow.mjs` on the orchestrator `When Called`
+with chat inputs (`surface:'chat'`, `surface_ref` JSON **string** — the ingress passes it stringified, so
+the chat reader + delivery must `JSON.parse` it), then a REAL @-bot chat message in a test channel end-to-end;
+`inspect-execution.mjs` node-by-node; `alerts-since.mjs`; confirm the bot's own reply does NOT re-trigger;
+delete test `agent_runs` rows + test messages; re-export touched workflows + `check-workflow-drift.mjs` clean.
 
 ### ~~Block 3 — Doc path~~ (REMOVED)
 Dropped per the Block 0 finding + operator decision: ClickUp has no notifications API and no Doc-comments
