@@ -25,16 +25,19 @@ context)" → **ADR-061 (dynamic context loading)**; produce the **full build se
 | Block | Scope | Status |
 |-------|-------|--------|
 | Part 1 | Land ADR-066 + master plan | **DONE** (commit `effdb99`) |
-| Block 0 | Capability gates G1–G5 | **DONE — blocking finding.** Chat reachable (G4/G5 pass, G1 needs operator UI check); **Doc NOT reachable** (G2 + G3 fail: no notifications API, no Doc-comments API). See `block-0-findings.md`. |
-| Block 1 | Surface dimension on job + spine | Ready (Chat-scoped) — pending operator go |
-| Block 2 | Chat path | Ready — pending operator go |
-| Block 3 | Doc path | **BLOCKED** — designed mechanism impossible on current ClickUp API; awaiting operator decision on Doc options (see block-0-findings §Options) + an ADR-066 amendment |
-| Block 4 | Scope + idempotency test, write-backs | Pending; scope narrows to whatever surfaces ship |
+| Block 0 | Capability gates G1–G5 | **DONE** (commit `f25c072`). Resolved: Chat reachable but **poll-only** (no webhook event, no automation); Doc surface dropped. See `block-0-findings.md` + ADR-066 amendment 2026-06-29. |
+| Block 1 | Surface dimension (`task` \| `chat`) on job + spine | **READY to build** — operator go pending |
+| Block 2 | Chat **poll** producer + read + threaded-reply delivery | **READY to build** — operator go pending |
+| ~~Block 3~~ | ~~Doc path~~ | **REMOVED** — Docs route through Task/Chat (no notifications/Doc-comments API); no new build needed (agent already reads Docs via the ADR-054 MCP). |
+| Block 4 | Scope + idempotency test, write-backs | Pending; scope = Chat surface only. |
 
-> **Block 0 outcome (2026-06-29):** ClickUp has no notifications/mentions API and no Doc-comments API,
-> so ADR-066's Doc path (poll the mentions feed → reply under the invoking Doc comment) cannot be built,
-> and its named G2 fallback (poll doc *comments*) is equally blocked. Chat is unaffected and buildable.
-> The plan below stands for Chat (Blocks 1–2); Block 3 is frozen until the operator picks a Doc option.
+> **Block 0 outcome + decisions (2026-06-29).** ClickUp has no notifications/mentions API and no
+> Doc-comments API. (1) **Doc surface dropped** — Doc work is a Task/Chat mention that references the
+> Doc; the agent reads it via the MCP and replies on the reachable surface (operator decision). (2)
+> **Chat has no webhook and no automation → it is a poll producer**, not a webhook fast-path: poll the
+> channels the bot is a member of every 60s, filter the bot @-mention, enqueue (operator decisions:
+> member-channels scope, 60s interval). Chat is therefore **not** near-instant — latency ≈ poll interval.
+> `surface` enum is `task | chat`. See the ADR-066 amendment for the superseded consequences.
 
 ---
 
@@ -100,15 +103,16 @@ Resolve G1–G5 against the **live** ClickUp API for the bot user, recording fin
 - **DoD:** every trigger/delivery surface confirmed reachable for the bot user, or its fallback chosen (G2).
   If a gate fails, stop and surface it before building dependent blocks.
 
+> **Post-Block-0 revision (2026-06-29):** Blocks 1–4 below are rewritten to the verified reality — Chat
+> is a **poll** producer (no webhook/automation), the Doc surface is dropped, and `surface ∈ {task | chat}`.
+
 ### Block 1 — Surface dimension on the job + spine
-- **queue-consumer (`app.mjs`):** allow `task_id` to be **null when `surface ∈ {chat, doc}`** (keep it
-  required for `surface` absent/`task`). When `task_id` is null, derive the explicit jobId from the surface
-  id instead: `c:${channel_id}:${comment_id}` (chat) / `d:${doc_id}:${page_id}:${comment_id}` (doc). Carry
-  `surface` + `surface_ref` through to the spine. Recommended: pass `surface`/`surface_ref` **inside
-  `payload`** (the opaque field) so the consumer's priority logic is untouched and the contract validator
-  only changes for the task_id nullability — the consumer needs surface only to forward it, not to prioritize.
-  (Add a top-of-file note that this realises the ADR-066 `surface` dimension; the ADR's "add to job contract"
-  is satisfied by the payload carrier.)
+- **queue-consumer (`app.mjs`):** allow `task_id` to be **null when `surface = chat`** (keep it required
+  for `surface` absent/`task`). When `task_id` is null, derive the explicit jobId from the surface id:
+  `c:${channel_id}:${message_id}`. Carry `surface` + `surface_ref` through to the spine **inside `payload`**
+  (the opaque field) so the consumer's priority logic and contract validator change only for the task_id
+  nullability — the consumer needs surface only to forward it, not to prioritize. (Top-of-file note: this
+  realises the ADR-066 `surface` dimension via the payload carrier.)
 - **Spine (`agent-orchestrator.json` + `spine-http-ingress.json`):** add `surface` + `surface_ref` inputs
   (default `surface=task`, `surface_ref.task_id=taskId` for the existing path). Make the read and delivery
   calls branch on `surface` (task branch = today's behaviour, unchanged).
@@ -117,57 +121,62 @@ Resolve G1–G5 against the **live** ClickUp API for the bot user, recording fin
   verify with `inspect-execution.mjs`; confirm no new alerts via `alerts-since.mjs`). Re-export touched
   workflows and run `check-workflow-drift.mjs`.
 
-### Block 2 — Chat path (webhook fast-path)
-- **Producer:** new `n8n/workflows/cu-chat-producer.json` — Chat automation ("Message is posted",
-  conditioned on bot mention) → webhook → (HMAC verify if the Chat automation signs; else the bot-mention
-  condition is the gate) → Detect bot mention → dedup claim on message id → Read Queue Flag → Build Enqueue
-  Job (`surface=chat`, `surface_ref={channel_id, comment_id}`, `invocation_type=explicit_mention`,
-  `caller_user_id` = mentioning user) → `/enqueue`, with synchronous fallback mirroring the task producer.
-- **Read adapter:** in the spine's Stage A, a Chat branch that reads the thread/message via the Chat API,
-  scoped to the invoker (ADR-054).
-- **Delivery adapter:** in `post-reply.json`, a Chat branch that posts a **threaded reply under the invoking
-  message** (`surface_ref.comment_id`), routed by `surface`. Reuse the existing `Classify Alert` →
-  `Post Alert (v1)` seam for failures.
-- **DoD:** a real Chat mention of the bot produces a scoped **threaded reply under the invoking message**;
-  execution clean in `inspect-execution.mjs`; no unexplained alerts. Delete any test rows/tasks after.
-
-### Block 3 — Doc path (mentions poll, Doc-gated)
-- **Producer:** new `n8n/workflows/cu-doc-mentions-poll.json` — cron at `queue.doc_poll_interval_s`
-  (default 60; add the config key alongside the other `queue.*` keys, append-only migration) → poll the
-  bot's unanswered-mentions feed → **filter to Doc-surface mentions only** (drop Task/Chat at the source per
-  G2) → for each: Build Enqueue Job (`surface=doc`, `surface_ref={doc_id, page_id, comment_id}`,
-  `invocation_type=explicit_mention`, `caller_user_id` = mentioning user) → `/enqueue`. Pair it with a
+### Block 2 — Chat path (poll producer)
+- **Producer:** new `n8n/workflows/cu-chat-poll.json` — cron at `chat.poll_interval_s` (default 60; add
+  the config key via append-only migration alongside the other producer config) → list the channels the
+  **bot is a member of** (`get_chat_channels` as the bot) → for each channel, fetch recent messages
+  (`get_chat_channel_messages`) and keep only those **newer than a per-channel last-seen cursor** (persist
+  the cursor in `config`/a small table; advance it each run) → keep messages that **@-mention the bot**
+  (via the message tagged-users endpoint, not text parsing) → dedup claim on `message_id` → Read Queue Flag
+  → Build Enqueue Job (`surface=chat`, `surface_ref={channel_id, message_id}`,
+  `invocation_type=explicit_mention`, `caller_user_id` = author `user_id`) → `/enqueue`. Pair it with a
   **freshness dead-man's-switch** monitor (mirror `due-date-producer-freshness-monitor.json`) so a stalled
-  poll WARNs instead of failing silently. Guard the poll to **drop the Alerts task / its own telemetry**
-  before enqueue (alert-inside-watched-scope loop rule).
-- **Read adapter:** Doc branch reads page text + the invoking comment via the **ADR-054 per-user MCP**
-  (reuse, don't rebuild), scoped to the invoker.
-- **Delivery adapter:** Doc branch posts a **threaded reply under the invoking Doc comment** (G3 endpoint);
-  **never edits the Doc body in place** (ADR-050; in-place editing is the deferred R3 capability).
-- **DoD:** a Doc-comment mention produces a threaded reply under that comment, scoped to the invoker, no
-  in-place edit; a Task or Chat mention appearing in the same poll batch is **dropped at the gate and never
-  enqueued** (verify via consumer logs / queue state).
+  poll WARNs. Guard against re-enqueuing the bot's **own** reply messages (skip messages authored by the bot).
+- **Read adapter:** in the spine's Stage A, a Chat branch that reads the thread/message via the Chat API,
+  scoped to the invoker (ADR-054). A Chat request that references a Doc reads the Doc via the same MCP —
+  this is the "Doc-via-Chat" path that replaces the dropped Doc surface.
+- **Delivery adapter:** in `post-reply.json`, a Chat branch that posts a **threaded reply under the invoking
+  message** (`parent_message_id = surface_ref.message_id`), routed by `surface`. Reuse the existing
+  `Classify Alert` → `Post Alert (v1)` seam for failures.
+- **DoD:** a real Chat mention of the bot produces a scoped **threaded reply under the invoking message**
+  within ~1 poll interval; the bot's own reply does **not** re-trigger; execution clean in
+  `inspect-execution.mjs`; no unexplained alerts. Delete any test rows/messages after.
+
+### ~~Block 3 — Doc path~~ (REMOVED)
+Dropped per the Block 0 finding + operator decision: ClickUp has no notifications API and no Doc-comments
+API, so an in-Doc mention trigger and a Doc-comment reply cannot be built. **Doc work routes through
+Task/Chat** — a mention referencing the Doc; the agent reads the Doc via the ADR-054 MCP (already returns
+Doc-page text) and replies on the reachable surface. No new build. (Original Doc-path text retained below,
+struck through, for the record.)
+
+<details><summary>Original Block 3 (not built)</summary>
+
+- **DoD (original, not built):** a Doc-comment mention produces a threaded reply under that comment, scoped
+  to the invoker, no in-place edit.
+
+</details>
 
 ### Block 4 — Scope + idempotency test, and write-backs
-- The poll gate drops Task/Chat mentions (verify they never enqueue). A Doc mention processes **exactly
-  once** (idempotency on the surface id, the rare-edge guard). A Marketing user's mention in a Doc **cannot
-  surface Purchasing data** (reuse the ADR-054 Block 5 cross-department negative matrix). Explicit mentions
-  land in the **high-priority band**. The 60s interval bounds Doc latency.
+- A Chat mention processes **exactly once** (idempotency on `message_id` + the per-channel last-seen cursor;
+  the bot's own replies are skipped, no self-trigger loop). A Marketing user's Chat mention **cannot surface
+  Purchasing data** (reuse the ADR-054 Block 5 cross-department negative matrix, on the Chat surface).
+  Explicit mentions land in the **high-priority band**. The 60s interval bounds Chat latency.
 - **Write-backs (mandatory before final commit):** reconcile `current.md` **§15.10** (producers now include
-  the **Chat webhook producer** and the **Doc-only mentions poll** + its freshness monitor); flip the ADR-066
-  status table / block-status; codify the new `queue.doc_poll_interval_s` migration; re-export every touched
+  the **Chat poll producer** + its freshness monitor; note Docs route through Task/Chat, no Doc producer);
+  flip this block-status table; codify the new `chat.poll_interval_s` migration; re-export every touched
   workflow with `export-workflows.mjs` and confirm `check-workflow-drift.mjs` is clean.
-- **DoD:** gate holds, scope holds, priority holds, drift-check clean.
+- **DoD:** idempotency holds (no re-fire, no self-loop), scope holds, priority holds, drift-check clean.
 
 ---
 
 ## Silent-failure coverage (state in each block summary)
-- **Stalled Doc poll** → freshness dead-man's-switch monitor (Block 3), WARN.
-- **Poll alert-loop** → drop own telemetry/Alerts task before enqueue (Block 3 guard).
-- **Chat/Doc reply post failure** → `onError: continueErrorOutput` → `Post Alert (v1)` WARN, main path still
+- **Stalled Chat poll** → freshness dead-man's-switch monitor (Block 2), WARN.
+- **Self-trigger loop** → skip messages authored by the bot; advance the per-channel last-seen cursor each
+  run so a message is never re-enqueued (Block 2 guard).
+- **Chat reply post failure** → `onError: continueErrorOutput` → `Post Alert (v1)` WARN, main path still
   returns (mirror `post-reply.json`'s existing reply-failed branch).
-- **Webhook backstop tradeoff (accepted):** gating the poll to Docs removes its old role as a Task/Chat
-  webhook backstop; Task/Chat reliability now rests on ClickUp's ~75-min webhook retry (ADR-066 Consequences).
+- **Chat trigger reliability:** there is no webhook retry to lean on (Chat is poll-only) — the cursor +
+  dedup mean a transient poll failure is recovered on the next interval rather than dropping the message.
 - **schema[] trap:** if any new surface adapter is wired as a `toolWorkflow`/MCP node, hand-maintain
   `workflowInputs.schema[]` and never let `export-workflows.mjs` overwrite it (CLAUDE.md gotcha).
 

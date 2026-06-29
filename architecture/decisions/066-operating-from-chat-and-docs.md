@@ -92,3 +92,35 @@ Chat and Doc mentions are `explicit_mention`, so they inherit the high-priority 
 - **Sync interaction:** Chat is the sync surface, because the webhook trigger is near-instant; latency-sensitive back-and-forth should run in Chat, and sync-sensitive Doc work should route through Chat or accept up to 60s. Note that even on Chat the agent's reply still takes the full agentic processing time (cold-start, reasoning, tool round-trips), so sync suits lightweight exchanges while heavy work stays async. Explicit mentions already hold the high-priority band (ADR-056 amendment), so sync mentions jump the overnight batch.
 - **Backstop tradeoff (accepted):** gating the poll to Docs removes its former role as a webhook backstop for Tasks and Chat. This is acceptable because ClickUp retries a failed webhook for ~75 minutes, so Task and Chat reliability comes from the webhook's own retry, not the poll. Dedup remains only as the rare-edge idempotency guard.
 - **The mentions poll is a new always-on producer**; it rides the existing queue-depth and dead-man's-switch monitoring (ADR-056), so a stalled poll alerts rather than failing silently.
+
+## Amendment (2026-06-29) — Doc surface dropped; Chat is poll-based, not a webhook fast-path
+
+Block 0 verification (see `architecture/Build plans/adr-066-chat-and-docs/block-0-findings.md`) refuted
+two load-bearing assumptions in the decision above. Reconciling the decision to ClickUp's actual public
+API:
+
+1. **No notifications/mentions API and no Doc-comments API exist.** ClickUp exposes no inbox/notifications
+   endpoint (the bot mentions-feed the Doc trigger polls does not exist) and no endpoint to read or create
+   a comment on a Doc/Doc page (the Doc threaded-reply delivery cannot be posted). The G2 fallback (poll
+   doc *comments*) is blocked for the same reason. **Decision: Docs are not a distinct surface.** Doc work
+   is invoked by @-mentioning the bot on a **Task or Chat** that references the Doc; the agent reads the
+   Doc via the ADR-054 per-user MCP (which already returns Doc-page text) and replies on that reachable
+   surface. R3 (in-place Doc edit) and R2 (native-AI bridge) remain rejected. Revisit a native Doc surface
+   only if ClickUp ships doc events or a Doc-comments API.
+
+2. **Chat has no webhook event and no Chat automation**, so it has no event-driven trigger at all (the
+   "webhook fast-path handles Tasks and Chat" claim holds only for Tasks). **Chat is therefore a poll
+   producer:** every `chat.poll_interval_s` (default 60) it reads the recent messages of each channel the
+   bot is a member of (the bot's own channel list *is* the watched set — self-managing opt-in: add the bot
+   to a channel to enable it there), detects messages newer than a per-channel last-seen cursor, keeps
+   those that @-mention the bot (via the message tagged-users endpoint), and enqueues them
+   (`invocation_type=explicit_mention`, `surface=chat`). Delivery is the confirmed threaded reply under the
+   invoking message (`parent_message_id`). Reads and scoping reuse ADR-054 via the message `user_id`.
+
+3. **`surface` enum narrows to `task | chat`** (no `doc`). The "always-on poll producer + freshness
+   dead-man's-switch" design survives, but it is the **Chat** poll, not a Doc poll.
+
+This supersedes the "Sync interaction" consequence: **Chat is no longer the sync/near-instant surface** —
+its latency is the poll interval (≤ ~60s) plus the usual agentic processing time. Tasks remain the only
+near-instant (webhook) surface. The "Backstop tradeoff" consequence is moot (there is no Doc poll to gate).
+
