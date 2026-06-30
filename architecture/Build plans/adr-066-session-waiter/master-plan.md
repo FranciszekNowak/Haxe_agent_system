@@ -60,7 +60,7 @@ to run because the session was abandoned mid-task.
 | 0 | Verify assumptions (A1–A6) | ✅ DONE — GO (see block-0-findings.md) |
 | 1 | Fail-loud guard: non-delivery never posts narration (+ CRITICAL alert) | ✅ DONE — verified live 2026-06-30 (commit pending) |
 | 2 | Doc-link serialization fix (Detect Mention + Assemble Task Context) | ✅ DONE — verified live on task 869dxn3d8 2026-06-30 |
-| 3 | Enable image embedding (image MCP handler signed URL + persona contract) — ADR-067 | ☐ TODO |
+| 3 | Enable image embedding (image MCP handler signed URL + persona contract) — ADR-067 | ✅ DONE — verified E2E 2026-06-30 (.pptx embeds the generated PNG) |
 | 4 | Waiter service skeleton: deploy, health, env, dead-man's-switch — ADR-066 draft | ☐ TODO |
 | 5 | Orchestrator split — async handoff (create session → hand to waiter → return) | ☐ TODO |
 | 6 | Waiter event loop: SSE/long-poll, client-tool servicing (delegate to n8n), deliver_output capture | ☐ TODO |
@@ -217,6 +217,39 @@ only + WARN; sandbox download failure → agent falls back to vector visuals.
 **DoD:** image-in-document task end-to-end; the attached `.pptx` actually contains the generated image
 (download+open or render check); inline image blocks still render; zero unexpected alerts. Update
 `current.md` + ADR-067; re-export image workflows + sync; drift clean.
+
+### Block 3 — execution notes (2026-06-30, DONE)
+
+- **A4 (sandbox egress) probed GO first.** Drove a disposable managed task that `curl`-ed
+  `hkeslnosxibeuesxndnz.supabase.co/storage/v1/...` → HTTP 400 (request reached Supabase; expected for an
+  unsigned/nonexistent object), agent reported network egressing. So the signed-URL-the-sandbox-downloads
+  design is viable (no need for the Files-API-download fallback). Same run also confirmed a **short** managed
+  task still delivers end-to-end through today's poll loop (the waiter is only needed for long tasks).
+- **Server.** New `Sign Output Image URL` node in `image-tool-handler.json` after the carrier write
+  (`Upload Output Image to Storage` → Sign → `Build Stored OK`), `POST /storage/v1/object/sign/agent-output-images/<file_id>`
+  `{expiresIn:3600}` via the `supabaseApi` service-role cred; `Build Stored OK` builds the absolute
+  `download_url`; `Aggregate` surfaces `images[].download_url` + an `image-tool/sign-failed` WARN on signing
+  failure. `image-mcp-tool-handler.json → Build MCP Output` now returns `images:[{file_id,download_url}]`
+  (still **no** base64). **Server half byte-verified:** a `test-subworkflow.mjs` generation returned a 427-char
+  signed URL that served the real PNG (HTTP 200, image/png, 174 KB, valid PNG magic).
+- **Contract.** `sync-agent-definitions.json → Build System` `CONV=16`: `generate_image` returns
+  `file_id`+`download_url`; embed inside an office doc by downloading from `download_url`, inline still by
+  `file_id`; download-fail → vector visuals. Re-synced (the CONV bump made all 3 agent definitions stale →
+  updated; `force` not needed).
+- **DoD E2E (two runs, disposable tasks).** Run 1 (`869dxuerr`): the agent generated a 1024×1024 PNG and built
+  a 147 KB `.pptx`; the file (downloaded from the Files API and unzipped) contained `ppt/media/image-1-1.png`
+  = a valid PNG 1024×1024 (byte-verified). Delivery to ClickUp was suppressed by the **Block 1 guard** because
+  Sonnet hit the pre-existing `output-adapter/deliver-output-empty` flake (`output_blocks=[]`, the CONV=15
+  blocks-as-string issue — unrelated to ADR-067), which `Session OK?` correctly treated as non-delivery
+  (incomplete notice, no narration, CRITICAL `non-delivery`). Run 2 (`869dxun5g`) delivered cleanly:
+  `output_blocks` proper (text+doc), `outcome=delivered`, zero warnings; the **ClickUp-attached** `prezentacja.pptx`
+  (downloaded from its public attachment URL) contained `ppt/media/image-1-1.png` = PNG 1024×1024. Inline path
+  untouched (only `download_url` added; `file_ids`/`image_manifest` unchanged). Only alert across the clean run
+  was the benign `assemble-context/context-health` WARN (test reviewer has no person-rules) — no `image-tool/*`
+  alerts. Re-exported the 3 workflows, drift-clean 42/42; disposable tasks + test `agent_runs` rows cleaned up.
+- **Carry-forward:** the `deliver-output-empty` Sonnet flake is a real, separate delivery risk for office-doc
+  tasks (Block 1 turns it into an incomplete notice rather than a silent empty post). It is out of ADR-067's
+  scope but worth a future hardening pass on `deliver_output` block coercion.
 
 ## Blocks 4–8 — External session waiter (ADR-066)
 

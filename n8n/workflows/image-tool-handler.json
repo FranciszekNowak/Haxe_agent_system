@@ -332,7 +332,7 @@
       "position": [2420, 300],
       "notes": "SOLE TERMINAL (single input via Merge -> branch-free deterministic return, CLAUDE.md). Returns the tool_result the session loop (Block 5) hands the agent: { status, file_ids[], images[{file_id,b64_json,mime,used_reference,...}], warnings[], message, count_* , clickup_task_id }. file_ids are what the agent embeds; images carry b64 for Block 6 delivery (uploaded files aren't downloadable). warnings are RETURNED, fired by Block 5 via Post Alert (v1) (mirrors Upload Input Images -> Stage B); the batch's own per-image cost rows + any throw-CRITICAL are already handled inside the batch.",
       "parameters": {
-        "jsCode": "const rows = $input.all().map(function(i){ return i.json; }).filter(Boolean);\nconst oks = rows.filter(function(r){ return r.ok === true && r.file_id; });\nconst uploadDrops = rows.filter(function(r){ return r.ok === false && r.kind === 'upload'; });\nconst genDrops = rows.filter(function(r){ return r.ok === false && r.kind === 'gen'; });\nconst batchFailedRow = rows.find(function(r){ return r.batch_failed === true; });\nconst sentinel = rows.find(function(r){ return r.no_work === true; });\nlet reqMeta = {};\nlet reqWarnings = [];\ntry { reqMeta = $('Build Requests').first().json || {}; reqWarnings = Array.isArray(reqMeta.warnings) ? reqMeta.warnings : []; } catch (e) {}\nconst warnings = [];\nfor (const w of reqWarnings) warnings.push(w);\nfor (const d of uploadDrops) warnings.push({ source: 'image-tool/upload-failed', err: 'generated image ' + (d.placeholder_id || '') + ' upload failed: ' + (d.err || 'unknown'), severity: 'WARN' });\nfor (const d of genDrops) warnings.push({ source: 'image-tool/generation-failed', err: 'image ' + (d.placeholder_id || '') + ' not generated: ' + (d.err || 'unknown'), severity: 'WARN' });\nif (batchFailedRow) warnings.push({ source: 'image-tool/batch-threw', err: 'image batch failed: ' + (batchFailedRow.err || 'unknown') + '; no images generated (the batch escalates its own CRITICAL)', severity: 'WARN' });\nconst seenStrings = {};\nfor (const r of rows) { if (Array.isArray(r.batch_warnings)) { for (const s of r.batch_warnings) { if (s && !seenStrings[s]) { seenStrings[s] = true; warnings.push({ source: 'image-tool/batch-degrade', err: s, severity: 'WARN' }); } } } }\nconst carrierDrops = rows.filter(function(r){ return r.carrier_failed === true; });\nfor (const d of carrierDrops) warnings.push({ source: 'image-tool/carrier-write-failed', err: 'produced image ' + (d.file_id || '') + ' bytes not persisted to delivery storage (' + (d.carrier_err || 'unknown') + '); the agent may reference a file_id that cannot be delivered to ClickUp', severity: 'WARN' });\nconst file_ids = oks.map(function(r){ return r.file_id; });\nconst images = oks.map(function(r){ return { file_id: r.file_id, b64_json: r.b64_json, mime: r.mime, used_reference: !!r.used_reference, placeholder_id: r.placeholder_id, caption: r.caption || '', alt: r.alt || '' }; });\nconst count_requested = (reqMeta.count_requested != null) ? reqMeta.count_requested : (oks.length + genDrops.length + uploadDrops.length);\nconst count_uploaded = file_ids.length;\nconst count_failed = Math.max(0, count_requested - count_uploaded);\nlet status, message;\nif (sentinel) {\n  status = 'failed';\n  message = sentinel.no_prompt\n    ? 'Image generation was not attempted: no prompt was provided to generate_image. Tell the user no image could be produced.'\n    : 'Image generation was not attempted: the image service credential is unavailable. Proceed without an image and note it could not be generated.';\n} else if (count_uploaded === 0) {\n  status = 'failed';\n  message = 'Image generation failed: no images were produced (' + count_requested + ' attempted). Proceed without the image and tell the user it could not be generated.';\n} else if (count_failed > 0) {\n  status = 'partial';\n  message = 'Generated and uploaded ' + count_uploaded + ' of ' + count_requested + ' image(s). Use these file_ids to embed the images in your output: ' + file_ids.join(', ') + '. ' + count_failed + ' image(s) failed.';\n} else {\n  status = 'ok';\n  message = 'Generated and uploaded ' + count_uploaded + ' image(s). Use these file_ids to embed the images in your output: ' + file_ids.join(', ') + '.';\n}\nlet taskId = '';\ntry { taskId = $('When Called').first().json.clickup_task_id || ''; } catch (e) {}\nreturn [{ json: { status: status, file_ids: file_ids, images: images, warnings: warnings, message: message, count_requested: count_requested, count_uploaded: count_uploaded, count_failed: count_failed, clickup_task_id: taskId } }];"
+        "jsCode": "const rows = $input.all().map(function(i){ return i.json; }).filter(Boolean);\nconst oks = rows.filter(function(r){ return r.ok === true && r.file_id; });\nconst uploadDrops = rows.filter(function(r){ return r.ok === false && r.kind === 'upload'; });\nconst genDrops = rows.filter(function(r){ return r.ok === false && r.kind === 'gen'; });\nconst batchFailedRow = rows.find(function(r){ return r.batch_failed === true; });\nconst sentinel = rows.find(function(r){ return r.no_work === true; });\nlet reqMeta = {};\nlet reqWarnings = [];\ntry { reqMeta = $('Build Requests').first().json || {}; reqWarnings = Array.isArray(reqMeta.warnings) ? reqMeta.warnings : []; } catch (e) {}\nconst warnings = [];\nfor (const w of reqWarnings) warnings.push(w);\nfor (const d of uploadDrops) warnings.push({ source: 'image-tool/upload-failed', err: 'generated image ' + (d.placeholder_id || '') + ' upload failed: ' + (d.err || 'unknown'), severity: 'WARN' });\nfor (const d of genDrops) warnings.push({ source: 'image-tool/generation-failed', err: 'image ' + (d.placeholder_id || '') + ' not generated: ' + (d.err || 'unknown'), severity: 'WARN' });\nif (batchFailedRow) warnings.push({ source: 'image-tool/batch-threw', err: 'image batch failed: ' + (batchFailedRow.err || 'unknown') + '; no images generated (the batch escalates its own CRITICAL)', severity: 'WARN' });\nconst seenStrings = {};\nfor (const r of rows) { if (Array.isArray(r.batch_warnings)) { for (const s of r.batch_warnings) { if (s && !seenStrings[s]) { seenStrings[s] = true; warnings.push({ source: 'image-tool/batch-degrade', err: s, severity: 'WARN' }); } } } }\nconst carrierDrops = rows.filter(function(r){ return r.carrier_failed === true; });\nfor (const d of carrierDrops) warnings.push({ source: 'image-tool/carrier-write-failed', err: 'produced image ' + (d.file_id || '') + ' bytes not persisted to delivery storage (' + (d.carrier_err || 'unknown') + '); the agent may reference a file_id that cannot be delivered to ClickUp', severity: 'WARN' });\nconst signFails = oks.filter(function(r){ return r.sign_failed === true; });\nfor (const d of signFails) warnings.push({ source: 'image-tool/sign-failed', err: 'produced image ' + (d.file_id || '') + ' has no signed download_url (' + (d.sign_err || 'unknown') + '); office-doc embedding may fall back to vector visuals (inline rendering by file_id still works)', severity: 'WARN' });\nconst file_ids = oks.map(function(r){ return r.file_id; });\nconst images = oks.map(function(r){ return { file_id: r.file_id, b64_json: r.b64_json, mime: r.mime, used_reference: !!r.used_reference, placeholder_id: r.placeholder_id, caption: r.caption || '', alt: r.alt || '', download_url: r.download_url || null }; });\nconst count_requested = (reqMeta.count_requested != null) ? reqMeta.count_requested : (oks.length + genDrops.length + uploadDrops.length);\nconst count_uploaded = file_ids.length;\nconst count_failed = Math.max(0, count_requested - count_uploaded);\nlet status, message;\nif (sentinel) {\n  status = 'failed';\n  message = sentinel.no_prompt\n    ? 'Image generation was not attempted: no prompt was provided to generate_image. Tell the user no image could be produced.'\n    : 'Image generation was not attempted: the image service credential is unavailable. Proceed without an image and note it could not be generated.';\n} else if (count_uploaded === 0) {\n  status = 'failed';\n  message = 'Image generation failed: no images were produced (' + count_requested + ' attempted). Proceed without the image and tell the user it could not be generated.';\n} else if (count_failed > 0) {\n  status = 'partial';\n  message = 'Generated and uploaded ' + count_uploaded + ' of ' + count_requested + ' image(s). Use these file_ids to embed the images in your output: ' + file_ids.join(', ') + '. ' + count_failed + ' image(s) failed.';\n} else {\n  status = 'ok';\n  message = 'Generated and uploaded ' + count_uploaded + ' image(s). Use these file_ids to embed the images in your output: ' + file_ids.join(', ') + '.';\n}\nif (count_uploaded > 0) { message += ' To embed an image INSIDE an office document (pptx/docx/xlsx/pdf), download its bytes from that image\\'s download_url (images[].download_url) into the session, then embed; inline image blocks still reference it by file_id.'; }\nlet taskId = '';\ntry { taskId = $('When Called').first().json.clickup_task_id || ''; } catch (e) {}\nreturn [{ json: { status: status, file_ids: file_ids, images: images, warnings: warnings, message: message, count_requested: count_requested, count_uploaded: count_uploaded, count_failed: count_failed, clickup_task_id: taskId } }];"
       }
     },
     {
@@ -442,15 +442,45 @@
       "waitBetweenTries": 2000
     },
     {
+      "id": "sign-output-image-url",
+      "name": "Sign Output Image URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2560, -180],
+      "notes": "ADR-067 Block 3: mint a short-TTL (1h) signed READ url for the produced image now persisted at agent-output-images/<file_id>, so the managed-agent sandbox can DOWNLOAD the bytes (egress confirmed, A4) and embed them INSIDE an office doc (pptx/docx/xlsx/pdf) — Files-API purpose=agent uploads are NOT downloadable, and on the MCP path the bytes never return to n8n. POST /storage/v1/object/sign/{bucket}/{path} {expiresIn} -> {signedURL:'/object/sign/...?token=…'} which Build Stored OK turns into an absolute download_url. Auth = predefined supabaseApi (service_role, signs private-bucket objects). TTL 1h: short relative to the 24h bucket purge (migration 037) yet long enough to survive a long agent session (waiter era). onError=continueErrorOutput -> Build Stored OK still emits the OK entry WITHOUT download_url + a sign_failed flag (Aggregate fires image-tool/sign-failed WARN; the image still embeds inline by file_id).",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://hkeslnosxibeuesxndnz.supabase.co/storage/v1/object/sign/agent-output-images/{{ $('Build OK Entry').item.json.file_id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ expiresIn: 3600 }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "credentials": {
+        "supabaseApi": {
+          "id": "54fKsl6xiVi9NhV1",
+          "name": "Supabase account"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
       "id": "e02ad4d4-6807-4c24-8478-48be6a195a79",
       "name": "Build Stored OK",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [2760, -120],
-      "notes": "ADR-053/055 Block 6: carrier write succeeded -> re-emit the original OK entry unchanged (file_id + b64_json + metadata) for Merge[5] -> Aggregate. The bytes are now in agent-output-images/<file_id>.",
+      "notes": "ADR-053/055 Block 6 + ADR-067 Block 3: carrier write succeeded -> re-emit the OK entry (file_id + b64_json + metadata) for Merge[5] -> Aggregate, NOW also attaching download_url from Sign Output Image URL's {signedURL} (absolute = storage base + relative path). Receives BOTH Sign outputs: on the success branch signedURL is present; on the error branch it is absent -> download_url null + sign_failed/sign_err set (Aggregate fires image-tool/sign-failed WARN). The bytes are in agent-output-images/<file_id>.",
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "return { json: $('Build OK Entry').item.json };"
+        "jsCode": "const e = $('Build OK Entry').item.json;\nconst sj = $json || {};\nconst BASE = 'https://hkeslnosxibeuesxndnz.supabase.co/storage/v1';\nconst signed = (sj && typeof sj.signedURL === 'string') ? sj.signedURL : '';\nlet download_url = null, sign_failed = false, sign_err = '';\nif (signed) { download_url = (signed.charAt(0) === '/') ? (BASE + signed) : signed; }\nelse { sign_failed = true; sign_err = String((sj.error && (sj.error.message || sj.error)) || sj.message || 'sign_failed').slice(0, 200); }\nreturn { json: Object.assign({}, e, { download_url: download_url, sign_failed: sign_failed, sign_err: sign_err }) };"
       },
       "alwaysOutputData": true
     },
@@ -702,7 +732,7 @@
       "main": [
         [
           {
-            "node": "Build Stored OK",
+            "node": "Sign Output Image URL",
             "type": "main",
             "index": 0
           }
@@ -710,6 +740,24 @@
         [
           {
             "node": "Build Carrier Dropped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign Output Image URL": {
+      "main": [
+        [
+          {
+            "node": "Build Stored OK",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Stored OK",
             "type": "main",
             "index": 0
           }

@@ -226,6 +226,14 @@ loop — retained for ADR-054's future Google tool, dormant for image — and co
 images + office-doc attachments). **Image generation** runs via the self-hosted **image MCP server**
 (ADR-055: `Haxe Image MCP (v1)` → `Image MCP Tool Handler (v1)` → `Image Tool Handler (v1)` → `Generate
 Images Parallel (v1)`); the client-side `generate_image` custom tool is the documented rollback.
+**Generated-image bytes are embeddable in office documents (ADR-067):** `generate_image` returns, per
+image, a `file_id` **and** a short-TTL (1h) signed `download_url` to the `agent-output-images` carrier
+object. Inline rendering still uses `file_id`; to embed an image **inside** a `.pptx`/`.docx`/`.xlsx`/`.pdf`
+the agent downloads the bytes from `download_url` into the session sandbox (sandbox egress to the carrier
+verified GO, 2026-06-30) and embeds them — a `purpose=agent` Files-API upload is not downloadable, so a
+`file_id` alone cannot be embedded. Persona contract `CONV=16`. Reliability: signing failure → `file_id`-only
++ an `image-tool/sign-failed` WARN (inline still renders); sandbox download failure → agent falls back to
+vector visuals.
 
 **Verified live across modalities** (Block 9): text, web research (in-harness, no n8n research workflows),
 image generation (MCP → carrier → inline ClickUp image), image input / vision (Files API), and

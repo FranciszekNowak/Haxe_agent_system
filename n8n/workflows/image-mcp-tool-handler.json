@@ -123,9 +123,9 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [1100, 220],
-      "notes": "Shape the MCP tool result the harness/agent reads: {status, file_ids[], message, count_*, warnings[]}. Drops images[].b64_json (the agent only needs file_ids; produced-image bytes for ClickUp delivery are a Block-6 concern — and Files-API uploads are NOT downloadable, so Block 6 needs a separate carrier; flagged). Merges this handler's pre_warnings (DB lookup) with Image Tool Handler's warnings.",
+      "notes": "Shape the MCP tool result the harness/agent reads: {status, file_ids[], images[{file_id,download_url}], message, count_*, warnings[]}. ADR-067 Block 3: surfaces a per-image download_url (short-TTL signed carrier url) so the agent can DOWNLOAD bytes into the sandbox and embed them inside an office doc; still DROPS images[].b64_json (no base64 in the tool result — context pollution; inline rendering is by file_id). Merges this handler's pre_warnings (DB lookup) with Image Tool Handler's warnings.",
       "parameters": {
-        "jsCode": "const h = $json || {};\nlet pre = []; try { pre = JSON.parse(($('Build Handler Inputs').first().json.pre_warnings_json) || '[]'); } catch (e) {}\nconst hw = Array.isArray(h.warnings) ? h.warnings : [];\nconst warnings = pre.concat(hw);\nreturn [{ json: {\n  status: h.status || 'failed',\n  file_ids: Array.isArray(h.file_ids) ? h.file_ids : [],\n  message: h.message || 'Image tool returned no message.',\n  count_uploaded: (h.count_uploaded != null) ? h.count_uploaded : 0,\n  count_failed: (h.count_failed != null) ? h.count_failed : 0,\n  warnings: warnings\n} }];"
+        "jsCode": "const h = $json || {};\nlet pre = []; try { pre = JSON.parse(($('Build Handler Inputs').first().json.pre_warnings_json) || '[]'); } catch (e) {}\nconst hw = Array.isArray(h.warnings) ? h.warnings : [];\nconst warnings = pre.concat(hw);\nconst images = (Array.isArray(h.images) ? h.images : []).map(function(i){ return { file_id: i.file_id, download_url: i.download_url || null }; });\nreturn [{ json: {\n  status: h.status || 'failed',\n  file_ids: Array.isArray(h.file_ids) ? h.file_ids : [],\n  images: images,\n  message: h.message || 'Image tool returned no message.',\n  count_uploaded: (h.count_uploaded != null) ? h.count_uploaded : 0,\n  count_failed: (h.count_failed != null) ? h.count_failed : 0,\n  warnings: warnings\n} }];"
       }
     },
     {
@@ -136,7 +136,7 @@
       "position": [1100, 400],
       "notes": "Defensive: Image Tool Handler (v1) threw (executeWorkflow error output). It is designed never to throw, so this is rare; returns a failed tool result + a CRITICAL warning so the harness gets a clean answer and the channel is alerted.",
       "parameters": {
-        "jsCode": "const e = $json || {};\nconst err = (e.error && (e.error.message || e.error)) || e.message || 'image tool handler threw';\nlet pre = []; try { pre = JSON.parse(($('Build Handler Inputs').first().json.pre_warnings_json) || '[]'); } catch (ex) {}\nconst warnings = pre.concat([{ source: 'image-mcp/handler-threw', err: String(err).slice(0, 400), severity: 'CRITICAL' }]);\nreturn [{ json: {\n  status: 'failed',\n  file_ids: [],\n  message: 'Image generation failed (internal error). Proceed without the image and tell the user it could not be generated.',\n  count_uploaded: 0,\n  count_failed: 0,\n  warnings: warnings\n} }];"
+        "jsCode": "const e = $json || {};\nconst err = (e.error && (e.error.message || e.error)) || e.message || 'image tool handler threw';\nlet pre = []; try { pre = JSON.parse(($('Build Handler Inputs').first().json.pre_warnings_json) || '[]'); } catch (ex) {}\nconst warnings = pre.concat([{ source: 'image-mcp/handler-threw', err: String(err).slice(0, 400), severity: 'CRITICAL' }]);\nreturn [{ json: {\n  status: 'failed',\n  file_ids: [],\n  images: [],\n  message: 'Image generation failed (internal error). Proceed without the image and tell the user it could not be generated.',\n  count_uploaded: 0,\n  count_failed: 0,\n  warnings: warnings\n} }];"
       }
     },
     {
