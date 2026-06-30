@@ -1,0 +1,173 @@
+{
+  "name": "Session Waiter Freshness Monitor (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Every 15m",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [0, 200],
+      "notes": "ADR-066 Block 4: 'handed-off-but-not-finished' reconciliation dead-man's switch. Every 15 min, calls public.check_stuck_waiter_sessions() — any waiter_sessions row still handed_off/running past config.session_waiter.stuck_after_minutes (default 50m, above the ~45m absolute budget so a healthy long task does not false-alarm). A stuck row means the session-waiter died/wedged AFTER taking the session, which the reactive Error Handler cannot catch. CRITICAL so the orphaned session is recovered. Active now; the table is empty until Block-5 handoffs populate it, so this stays silent until then, then immediately catches the first handed-off-but-not-finished session.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 380],
+      "notes": "Test entry for DoD verification via scripts/test-subworkflow.mjs. No inputs needed.",
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "checkstuck",
+      "name": "Check Stuck Sessions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [240, 280],
+      "notes": "Calls the SECURITY DEFINER getter public.check_stuck_waiter_sessions() (migration 049). Returns one row {stuck_count, details}; stuck = handed_off/running past config.session_waiter.stuck_after_minutes. NO onError: a DB failure throws -> global Error Handler CRITICAL (a monitor that can't read its own signal must be LOUD, not fail silent).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select stuck_count, details from public.check_stuck_waiter_sessions();",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "stuck",
+      "name": "Stuck?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [460, 280],
+      "notes": "stuck_count > 0 -> Alert Stuck; 0 (healthy) -> dead end.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "s1",
+              "leftValue": "={{ Number($json.stuck_count) || 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "alertstuck",
+      "name": "Alert Stuck Sessions",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [700, 180],
+      "notes": "CRITICAL via Post Alert (v1) when one or more sessions were handed to the waiter but never finished. Recover via the reconciliation cron / manually: the agent session may still be queryable on Anthropic's side (GET /v1/sessions/{id}/events).",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "session-waiter/freshness",
+            "message": "=Sesje przekazane do session-waiter NIE zakończyły się w wyznaczonym czasie ({{ $('Check Stuck Sessions').first().json.stuck_count }} szt.) — waiter mógł paść/zawiesić się po przejęciu sesji.",
+            "details": "=Zalegające: {{ $('Check Stuck Sessions').first().json.details }}. Próg: config.session_waiter.stuck_after_minutes. Sprawdź usługę session-waiter (docker logs) i odzyskaj sesję (cron reconciliacyjny / GET /v1/sessions/{id}/events)."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Every 15m": {
+      "main": [
+        [
+          {
+            "node": "Check Stuck Sessions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Check Stuck Sessions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Stuck Sessions": {
+      "main": [
+        [
+          {
+            "node": "Stuck?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stuck?": {
+      "main": [
+        [
+          {
+            "node": "Alert Stuck Sessions",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}

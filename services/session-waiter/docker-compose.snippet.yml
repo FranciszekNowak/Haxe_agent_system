@@ -1,0 +1,37 @@
+# Add this service to /opt/haxe-agents/docker-compose.yml (under `services:`) and re-export the repo
+# copy (n8n/docker-compose.yml is the master). Deploy with `docker compose up -d --build session-waiter`
+# (ADR-033 prefers up -d for config).
+#
+# Source must be present on the VPS at /opt/haxe-agents/session-waiter/ (scp the services/session-waiter/
+# dir there, sans node_modules) for the build context below.
+#
+# ENV: SUPABASE_URL / SUPABASE_SERVICE_KEY and ALERT_INTAKE_KEY are already in the stack .env (reused —
+# no new secrets; the managed Anthropic key is NOT here, it is handed at handoff per ADR-066 A6). The
+# internal URLs are non-secret topology, inlined here:
+#   - ALERT_INTAKE_URL -> the Storage Watchdog Intake (v1) webhook on n8n-main (internal hop) -> Post Alert.
+#   - N8N_BASE_URL     -> internal base for the Block-6/7 finish callback + tail/extract tool handlers.
+# expose:8080 only — internal; reachable at http://session-waiter:8080 from the n8n-internal network.
+
+  session-waiter:
+    build:
+      context: ./session-waiter
+    container_name: session-waiter
+    restart: unless-stopped
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      ALERT_INTAKE_URL: http://n8n-main:5678/webhook/storage-watchdog-7e06358ac257ad20
+      ALERT_INTAKE_KEY: ${ALERT_INTAKE_KEY}
+      N8N_BASE_URL: http://n8n-main:5678
+      PORT: "8080"
+    expose:
+      - "8080"                                 # internal only; reachable at http://session-waiter:8080
+    networks:
+      - n8n-internal
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s

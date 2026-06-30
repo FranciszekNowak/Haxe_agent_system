@@ -1,0 +1,17 @@
+{
+  "name": "haxe-session-waiter",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "External session-waiter for the Haxe managed-agent lane (ADR-066). Decouples an Anthropic Managed-Agents session's wall-clock from any single n8n execution: holds the long-running session, services client-side tools, and calls n8n back by webhook when the agent delivers. Block 4 = skeleton (health, structured logging, env, handoff persistence, reliability seam); the event loop + tool servicing land in Block 6.",
+  "main": "app.mjs",
+  "scripts": {
+    "start": "node app.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

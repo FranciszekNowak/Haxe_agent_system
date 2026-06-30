@@ -896,6 +896,18 @@ Target: 7–9 weeks to v1.
     (no ClickUp creds). BullMQ keys are prefixed `haxeq:*` so they never collide with n8n queue mode's `bull:*`
     on the shared `n8n-redis`.
   - `zip-extractor` (Node, `services/zip-extractor/`) — internal helper service (ADR-058); see that ADR for detail.
+  - `session-waiter` (Node 20, `services/session-waiter/`) — **ADR-066, deployed (skeleton, Block 4)**.
+    External async waiter for the **managed-agent** lane: decouples a long Anthropic Managed-Agents session
+    from any single n8n execution (the 840 s / single-Code-node ceiling that abandoned the 2026-06-30
+    `.pptx` run). Block 4 = `/health` (the dead-man's-switch target) + `/handoff` (persist a
+    `waiter_sessions` row) + structured logging with secret redaction; the event loop (SSE/long-poll the
+    session, service client tools via the n8n tail/extract handlers, `deliver_output` capture, finish
+    callback) is Block 6. `expose:8080` internal only; `mem_limit: 256m`; reuses `SUPABASE_*` +
+    `ALERT_INTAKE_KEY` (no new secrets; the managed key is handed at handoff per A6, never in env/.env/DB).
+    Production handoff gated behind `config.session_waiter.enabled` (seeded `false`). Reliability seam:
+    `Session Waiter Health Monitor (v1)` (pings `/health` every 10 min → CRITICAL if down) +
+    `Session Waiter Freshness Monitor (v1)` (`check_stuck_waiter_sessions()` every 15 min → CRITICAL for a
+    handed-off-but-not-finished session).
 - **Public endpoint**: `https://agents.haxe.ai` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing, 90-day). HTTP → HTTPS redirect active. See ADR-012.
 - **Build control plane**: Claude Code drives infrastructure via two MCP servers in `.mcp.json`:
   - **`n8n-mcp`** (`n8n-mcp@2.56.0`) — n8n REST API (`https://agents.haxe.ai/api/v1`); key from `N8N_API_KEY` (setx; expiry 2026-08-31). See ADR-017/018.

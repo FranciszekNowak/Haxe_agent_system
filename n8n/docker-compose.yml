@@ -265,6 +265,42 @@ services:
       retries: 5
       start_period: 10s
 
+  # External async managed-agent session waiter (ADR-066). Decouples an Anthropic Managed-Agents
+  # session's wall-clock from any single n8n execution: today the session is polled inside one n8n Code
+  # node (Execute Agent Session -> Poll Round) bounded by an 840 s soft deadline under n8n's ~900 s
+  # per-node kill, so a long task (the 2026-06-30 .pptx run, ~21 min) is abandoned mid-flight and its
+  # real answer is never consumed. This always-on Node service holds the session, services client-side
+  # tools, and calls n8n back by webhook when the agent delivers. Mirrors queue-consumer / zip-extractor;
+  # internal only, reachable at http://session-waiter:8080. Needs SUPABASE_URL + SUPABASE_SERVICE_KEY +
+  # ALERT_INTAKE_KEY in .env (all already present, reused). The managed Anthropic key is NOT in env — it
+  # is handed at handoff (A6) and re-derived from public.get_anthropic_key() in Block 6. Block 4 (this) =
+  # skeleton: /health (dead-man's-switch target) + /handoff (persist a waiter_sessions row) + structured
+  # logging; the event loop (SSE/long-poll, client-tool servicing, deliver_output capture, finish
+  # callback) is Block 6. Production handoff is gated behind config.session_waiter.enabled (seeded false).
+  session-waiter:
+    build:
+      context: ./session-waiter
+    container_name: session-waiter
+    restart: unless-stopped
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      ALERT_INTAKE_URL: http://n8n-main:5678/webhook/storage-watchdog-7e06358ac257ad20
+      ALERT_INTAKE_KEY: ${ALERT_INTAKE_KEY}
+      N8N_BASE_URL: http://n8n-main:5678
+      PORT: "8080"
+    expose:
+      - "8080"                 # internal only; reachable at http://session-waiter:8080
+    networks:
+      - n8n-internal
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
 volumes:
   n8n-postgres-data:
   n8n-redis-data:

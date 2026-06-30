@@ -61,7 +61,7 @@ to run because the session was abandoned mid-task.
 | 1 | Fail-loud guard: non-delivery never posts narration (+ CRITICAL alert) | ✅ DONE — verified live 2026-06-30 (commit pending) |
 | 2 | Doc-link serialization fix (Detect Mention + Assemble Task Context) | ✅ DONE — verified live on task 869dxn3d8 2026-06-30 |
 | 3 | Enable image embedding (image MCP handler signed URL + persona contract) — ADR-067 | ✅ DONE — verified E2E 2026-06-30 (.pptx embeds the generated PNG) |
-| 4 | Waiter service skeleton: deploy, health, env, dead-man's-switch — ADR-066 draft | ☐ TODO |
+| 4 | Waiter service skeleton: deploy, health, env, dead-man's-switch — ADR-066 draft | ✅ DONE — deployed + verified live 2026-06-30 |
 | 5 | Orchestrator split — async handoff (create session → hand to waiter → return) | ☐ TODO |
 | 6 | Waiter event loop: SSE/long-poll, client-tool servicing (delegate to n8n), deliver_output capture | ☐ TODO |
 | 7 | Finish-callback half in n8n: doc enumeration + cost + render + post (+ Block 1 guard) | ☐ TODO |
@@ -260,6 +260,43 @@ Re-architect managed sessions from synchronous held-poll to asynchronous waiter 
 `queue-consumer`): health endpoint, structured logging, env (managed key per A6, Supabase creds, n8n webhook
 base URLs), `restart: unless-stopped`. Reliability seam: n8n health dead-man's-switch pinging the waiter +
 a freshness check on "handed-off-but-not-finished within N min" → CRITICAL. Draft ADR-066.
+
+### Block 4 — execution notes (2026-06-30, DONE)
+
+- **Service deployed + verified live.** `services/session-waiter/` (Node 20 + express; mirrors
+  `queue-consumer`/`zip-extractor`). Built on the VPS via the stack compose (`docker compose up -d --build
+  session-waiter`); container **`Up (healthy)`, `restarts=0`**, no collateral restart of any other container
+  (all kept their prior uptimes). Internal only (`expose:8080`, `n8n-internal`, `mem_limit:256m`). The repo
+  `n8n/docker-compose.yml` is the compose master; the live VPS file was functionally identical (only comment/
+  whitespace drift) and was brought in line on deploy (backup `docker-compose.yml.bak-adr066`).
+- **Skeleton surface.** `GET /health` (cheap liveness — no DB round-trip, so a wedged Supabase can't make a
+  live waiter look dead) + `POST /handoff` (validate → upsert a `waiter_sessions` row → 202; the event loop is
+  Block 6). Structured JSON logging with **secret redaction** (the managed key arrives in the handoff body per
+  A6 and is never logged or persisted — re-derived from `get_anthropic_key()` in Block 6). Crash self-alert +
+  graceful shutdown. Verified locally: `/health` 200, `/handoff` 400-guard on missing `session_id`, structured
+  logs. Verified in prod: clean startup logs, env wired (no missing-`ALERT_INTAKE` WARN).
+- **Migration 049** (`waiter_sessions` table + RLS + `session_waiter.*` config knobs behind a validation
+  trigger + `check_stuck_waiter_sessions()` getter). Applied via Supabase MCP. Config seeded:
+  `enabled=false` (Block-5 cutover flag), `stuck_after_minutes=50` (> the ~45-min budget so a healthy long
+  task doesn't false-alarm), `absolute_budget_ms=2700000`. Advisors clean (only the expected
+  `rls_enabled_no_policy` INFO, matching migration 007's pattern; both new trigger functions pin
+  `search_path`). Getter unit-proven directly: a 70-min `handed_off` row → `stuck_count 1`; a 5-min `running`
+  row and a 90-min `finished/delivered` row → correctly excluded; empty table → `0`.
+- **Reliability seam — two n8n monitors, both ACTIVE, drift-clean 44/44.**
+  - **`Session Waiter Health Monitor (v1)`** (`5oUkOeAgprmnvauI`, every 10 min): `GET /health` → 2xx Healthy
+    (silent) / non-2xx|unreachable → CRITICAL `session-waiter/health`. **Live test:** `When Called` →
+    returned the waiter's real `/health` JSON via the Healthy branch, **no alert** — which also proves the
+    real internal path `n8n-main → session-waiter:8080`. (The down path is the same `onError` pattern as the
+    verified Image MCP Health Monitor; not exercised live to avoid taking down a healthy prod service.)
+  - **`Session Waiter Freshness Monitor (v1)`** (`0eCpWtpwgFB25Lz6`, every 15 min): calls the getter → any
+    handed-off-but-not-finished row past the threshold → CRITICAL `session-waiter/freshness`. **Live test:**
+    with a staged stuck row, `When Called` → **exactly 1 CRITICAL** in `alerts-since.mjs` with the correct
+    session/task/minutes detail, **0 WARN**, no health alert. Test row deleted afterward (the active 15-min
+    schedule now stays silent on the empty table).
+- **Carry-forward to Block 5:** nothing calls `/handoff` in production yet (orchestrator split is gated on
+  `config.session_waiter.enabled`, seeded `false`). The freshness seam already protects a premature cutover —
+  a handoff that never finishes trips the CRITICAL. **VPS access caution:** rapid SSH/scp bursts trip an
+  IP-wide connection rate-limit (clears in ~2-3 min); space VPS connections out.
 
 **Block 5 — orchestrator split.** `agent-orchestrator.json`: after context build, create the session + send
 first message (front half of today's `Execute Agent Session`), then POST carry-state to the waiter
