@@ -896,13 +896,17 @@ Target: 7–9 weeks to v1.
     (no ClickUp creds). BullMQ keys are prefixed `haxeq:*` so they never collide with n8n queue mode's `bull:*`
     on the shared `n8n-redis`.
   - `zip-extractor` (Node, `services/zip-extractor/`) — internal helper service (ADR-058); see that ADR for detail.
-  - `session-waiter` (Node 20, `services/session-waiter/`) — **ADR-066, deployed (Block 4 skeleton; Block 5
-    orchestrator handoff wired)**. External async waiter for the **managed-agent** lane: decouples a long
-    Anthropic Managed-Agents session from any single n8n execution (the 840 s / single-Code-node ceiling that
-    abandoned the 2026-06-30 `.pptx` run). Block 4 = `/health` (the dead-man's-switch target) + `/handoff`
-    (persist a `waiter_sessions` row) + structured logging with secret redaction; the event loop (SSE/long-poll
-    the session, service client tools via the n8n tail/extract handlers, `deliver_output` capture, finish
-    callback) is Block 6. `expose:8080` internal only; `mem_limit: 256m`; reuses `SUPABASE_*` +
+  - `session-waiter` (Node 20, `services/session-waiter/`, v1.1.0-block6) — **ADR-066, deployed (Block 4
+    skeleton; Block 5 orchestrator handoff; Block 6 event loop LIVE)**. External async waiter for the
+    **managed-agent** lane: decouples a long Anthropic Managed-Agents session from any single n8n execution (the
+    840 s / single-Code-node ceiling that abandoned the 2026-06-30 `.pptx` run). `/health` (the dead-man's-switch
+    target) + `/handoff` (persist a `waiter_sessions` row, return 202, then **drive the session in the
+    background**). The driver re-derives the managed key via `get_anthropic_key()` RPC (A6), **long-polls**
+    `GET /events` (truth) + session status — porting `Poll Round`'s `analyze()` — services pending client tools
+    by POSTing the `Session Waiter Tool Bridge (v1)` (which delegates to the SSOT tail/extract handlers), captures
+    `deliver_output` blocks, and POSTs the finish callback (Block 7) on terminal. Crash recovery: re-adopts any
+    `handed_off`/`running` row on startup. (Chose long-poll over SSE — A1's proven n8n-independent fallback, far
+    simpler than SSE reconnect/reconcile.) `expose:8080` internal only; `mem_limit: 256m`; reuses `SUPABASE_*` +
     `ALERT_INTAKE_KEY` (no new secrets; the managed key is handed at handoff per A6, never in env/.env/DB —
     in fact Block 5's handoff does **not** send the key at all; the waiter re-derives it from
     `get_anthropic_key()`). Reliability seam: `Session Waiter Health Monitor (v1)` (pings `/health` every

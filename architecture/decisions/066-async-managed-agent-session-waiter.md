@@ -4,8 +4,12 @@ Status: DRAFT (in progress — Blocks 4–8 of the adr-066-session-waiter master
 service skeleton + reliability seam + this draft; **Block 5 (orchestrator split) shipped + verified live
 2026-06-30** — the managed lane forks on `config.session_waiter.enabled` (seeded `false`): `mode='handoff'`
 runs the front half then `POST /handoff` and returns (no key in the body — the waiter re-derives it), while
-`mode='sync'` keeps today's poll loop. The event loop (6), finish-callback half (7) and cutover (8) follow.
-Finalized at Block 8.
+`mode='sync'` keeps today's poll loop. **Block 6 (waiter event loop) shipped + verified live E2E 2026-06-30**
+— the waiter (`app.mjs` v1.1.0-block6) re-derives the key via `get_anthropic_key()`, long-polls `GET /events`
+(porting `Poll Round`'s analysis), services client tools through the new `Session Waiter Tool Bridge (v1)`
+(delegating to the SSOT tail/extract handlers), captures `deliver_output`, and POSTs the finish callback;
+crash-recovery re-adopts in-flight rows on startup. A2 ≥30-min survival is baseline-GO (non-blocking). The
+finish-callback half (7) and cutover (8) follow. Finalized at Block 8.
 
 Context
 

@@ -63,7 +63,7 @@ to run because the session was abandoned mid-task.
 | 3 | Enable image embedding (image MCP handler signed URL + persona contract) — ADR-067 | ✅ DONE — verified E2E 2026-06-30 (.pptx embeds the generated PNG) |
 | 4 | Waiter service skeleton: deploy, health, env, dead-man's-switch — ADR-066 draft | ✅ DONE — deployed + verified live 2026-06-30 |
 | 5 | Orchestrator split — async handoff (create session → hand to waiter → return) | ✅ DONE — verified live 2026-06-30 (both paths) |
-| 6 | Waiter event loop: SSE/long-poll, client-tool servicing (delegate to n8n), deliver_output capture | ☐ TODO |
+| 6 | Waiter event loop: SSE/long-poll, client-tool servicing (delegate to n8n), deliver_output capture | ✅ DONE — verified live E2E 2026-06-30 (A2 baseline GO) |
 | 7 | Finish-callback half in n8n: doc enumeration + cost + render + post (+ Block 1 guard) | ☐ TODO |
 | 8 | Reliability + cutover behind `config.session_waiter.enabled`; reconciliation cron; finalize ADR-066 | ☐ TODO |
 
@@ -370,6 +370,60 @@ doc-files enumeration + cost computation now in `execute-agent-session.json → 
 (move/share) → `Call Render Agent Output` → `Call Post Reply (Managed)` → `Write Cost Field` → flip status.
 Integrate the Block 1 guard (non-delivery → incomplete-status comment + CRITICAL, never narration).
 Idempotent on `session_id` (no double-post).
+
+### Block 6 — execution notes (2026-06-30, DONE)
+
+- **`generate_image` reconciliation (load-bearing).** The plan's "generate_image is in-harness MCP — waiter
+  never sees it" is CORRECT: `sync-agent-definitions → Build System` documents that ADR-055 moved image gen to
+  the self-hosted `haxe_image` MCP server (`agent.mcp_tool_use`, `permission_policy=always_allow`), so it never
+  enters the pause/resume loop; `clickup_*` discovery is likewise MCP (ADR-054). The `Is generate_image?` branch
+  still in `execute-agent-session` is **legacy dead code** (pre-ADR-055). So the client-side custom tools the
+  waiter services are exactly: `deliver_output` (terminal), `extract_clickup_task`, and the 5 tail tools
+  (`get_task_comments`/`get_parent_chain`/`list_attachments`/`get_attachment`/`get_task_details`). Anything else
+  → resolved with a "tool not available" result (deadlock avoidance).
+- **Waiter event loop (`services/session-waiter/app.mjs`, v1.1.0-block6).** `/handoff` now persists + returns
+  202 + drives the session in the background (fire-and-forget). The driver: re-derives the managed key via
+  `POST /rest/v1/rpc/get_anthropic_key` (A6 — SECURITY DEFINER, service_role EXECUTE; the key is never in the
+  handoff body, never logged, never persisted) → **long-polls** `GET /events` (truth) + `GET /sessions/{id}`
+  (status), porting `Poll Round`'s `analyze()` verbatim (pending-tool / session-error / idle+replied detection)
+  → on a pending client tool POSTs the **Session Waiter Tool Bridge** → POSTs `user.custom_tool_result` →
+  resumes; on `deliver_output` captures `input.blocks`; on terminal POSTs the finish callback. **Chose long-poll
+  over SSE** (A1's proven, n8n-independent fallback; far simpler than SSE reconnect/reconcile/dedup, right for a
+  background batch agent — SSE noted as a future latency optimization). Absolute budget = the row's `deadline_at`
+  (handoff + 45 min) → `deadline` (non-delivery) past it. **Crash recovery:** on startup re-adopts any
+  `handed_off`/`running` row (resumes driving it); the freshness monitor is the backstop.
+- **Tool bridge (`Session Waiter Tool Bridge (v1)`, `mbAegTOPm4PhamhX`, ACTIVE).** Thin HTTP wrapper the waiter
+  POSTs to: `Webhook → Is extract? → Call Extract/Tail Handler → Build Bridge Response → Respond`. Delegates to
+  the SSOT handlers (`Ouo0BlYOw92DUXIh` tail, `y985MgyA5lCxOFCH` extract) — anti-duplication, the handlers stay
+  authoritative. **Authed** with `headerAuth` (X-Watchdog-Key = the shared waiter↔n8n key, reusing the Storage
+  Watchdog credential) because n8n `/webhook/*` is public via nginx and the tail handler reads task data with the
+  bot token. `Build Bridge Response` is `runOnceForEachItem` so the 4 incoming (extract/tail × success/error)
+  connections don't trigger per-connection re-runs (CLAUDE.md trap); handler failure → fail-soft content (the
+  waiter always resolves the tool, never deadlocks).
+- **DoD verified live E2E (flag ON, disposable task `869dy07tf`).** Orchestrator handed off → waiter logs
+  `handoff_persisted → drive_start → tool_serviced (get_task_details, round 1) → drive_terminal (delivered,
+  1 block) → finish_posted` in ~12 s. The bridge execution routed `get_task_details` to the Tail Handler (single
+  clean run) and returned the title+status; the agent's `deliver_output` block literally contained
+  `"## Wyniki — Tytuł: [TEST]… — Status: Open"` (proving the whole chain: client tool → bridge → handler → agent
+  → captured block). The finish-callback payload (caught by a TEMP sink at the real `session-waiter-finish` path,
+  now deleted) carried the full **24-field Block-7 contract** — `outcome=delivered`, `delivered_via_tool=true`,
+  `output_blocks[1]`, usage, duration 13 s, carry-state, `warnings=0`. Row → `status=delivered`, `finished_at`
+  set, **`carry_has_key=false`**. **0 CRITICAL** (only the benign `context-health` WARN). Flag restored to
+  `false`; test task/rows cleaned up.
+- **A2 (≥30-min survival) — baseline GO, ≥30-min re-probe pending (non-blocking).** New reusable probe
+  `Session Events Probe (v1)` (`2PUz84FsMenyJXUx`): given a `session_id`, fetches the key + `GET /events` +
+  status. Baseline on the just-delivered session returned **17 events retrievable** incl. both
+  `agent.custom_tool_use` (get_task_details + deliver_output). The session (`sesn_01G3DGXGqdN9t4TEPqtSWwQA`,
+  idle 19:12 UTC) is left alive for the ≥30-min retention re-probe — run
+  `node scripts/test-subworkflow.mjs 2PUz84FsMenyJXUx --file a2-input.json` after ~19:45 and confirm
+  `events_retrievable=true`+`has_deliver_output=true`. (The 06-30 incident already evidenced ~20 min + post-idle
+  retrieval; the 45-min absolute budget + freshness cron are the fallbacks regardless. Auto-scheduling was
+  unavailable in this session.)
+- **Carry-forward to Block 7/8.** (1) The finish payload shape is the Block-7 input contract (see above; a TEMP
+  sink proved it). (2) Block 7's finish half must be idempotent on `session_id` and must NOT re-fire front-half
+  warning sources (they ride in `warnings`). (3) Deadline / re-adoption / poll-error paths are code-complete +
+  happy-path-adjacent but get their LIVE test at Block 8 (which already mandates "simulate a stuck session + a
+  waiter restart mid-session"). (4) The tool bridge + probe are new ACTIVE workflows (drift-clean 49/49).
 
 **Block 8 — cutover + reliability.** Flip `config.session_waiter.enabled=true` (poll loop = documented
 rollback). Verify reconciliation cron + health monitor (simulate a stuck session + a waiter restart
