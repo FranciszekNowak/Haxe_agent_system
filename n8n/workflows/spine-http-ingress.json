@@ -41,7 +41,9 @@
             "triggered_by": "={{ $json.body.triggered_by }}",
             "invocation_type": "={{ $json.body.invocation_type }}",
             "triggering_comment_id": "={{ $json.body.triggering_comment_id }}",
-            "triggering_comment_text": "={{ $json.body.triggering_comment_text }}"
+            "triggering_comment_text": "={{ $json.body.triggering_comment_text }}",
+            "surface": "={{ $json.body.surface }}",
+            "surface_ref": "={{ $json.body.surface_ref }}"
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,

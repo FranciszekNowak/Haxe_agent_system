@@ -7,7 +7,7 @@
       "name": "Form Trigger",
       "type": "n8n-nodes-base.formTrigger",
       "typeVersion": 2.5,
-      "position": [-208, 48],
+      "position": [-352, 32],
       "webhookId": "agent-spine-v1-webhook-001",
       "parameters": {
         "formTitle": "Agent Orchestrator",
@@ -38,7 +38,7 @@
       "name": "When Called",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
-      "position": [-208, 416],
+      "position": [-464, 416],
       "parameters": {
         "workflowInputs": {
           "values": [
@@ -62,6 +62,12 @@
             },
             {
               "name": "triggering_comment_text"
+            },
+            {
+              "name": "surface"
+            },
+            {
+              "name": "surface_ref"
             }
           ]
         }
@@ -69,10 +75,10 @@
     },
     {
       "id": "call-assemble-context",
-      "name": "Call Assemble Context",
+      "name": "Call Assemble Task Context",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [16, 208],
+      "position": [16, 320],
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -103,7 +109,7 @@
       "name": "Set Status W trakcie",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [512, -64],
+      "position": [464, -64],
       "notes": "Fires immediately off BOTH triggers (parallel side-branch) so the requester sees '[AI] Status agenta = W trakcie' within ~1s of webhook receipt, not after the ~30s context build (repositioned 2026-06-11; was downstream of Assemble). Fire-and-forget: success output dead-ends, error -> Alert Status Failed (onError:continueErrorOutput) so a status-write failure never blocks the answer. Reads taskId from the trigger item. Post Reply (Stage C) flips the field to 'Zakończono' at the end.",
       "parameters": {
         "method": "POST",
@@ -159,7 +165,7 @@
       "name": "Call Execute LLM",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1216, 512],
+      "position": [1232, 560],
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -195,7 +201,7 @@
       "name": "If LLM Succeeded?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [1424, 512],
+      "position": [1456, 512],
       "parameters": {
         "conditions": {
           "options": {
@@ -235,7 +241,7 @@
       "name": "Call Post Reply",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1696, 496],
+      "position": [1728, 496],
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -255,7 +261,10 @@
             "image_manifest": "={{ $json.image_manifest }}",
             "rendered_delta": "={{ $json.rendered_delta }}",
             "image_models": "={{ $json.image_models }}",
-            "total_image_cost_pln": "={{ $json.total_image_cost_pln }}"
+            "total_image_cost_pln": "={{ $json.total_image_cost_pln }}",
+            "surface": "={{ $('Call Assemble Context').first().json.surface || 'task' }}",
+            "surface_ref": "={{ $('Call Assemble Context').first().json.surface_ref || '' }}",
+            "output_blocks_json": "={{ '[]' }}"
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,
@@ -269,7 +278,7 @@
       "name": "Context OK?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [336, 208],
+      "position": [400, 208],
       "notes": "Layer-B reliability guard (silent-failure mandate, 2026-06-11). Call Assemble Context has alwaysOutputData=true so an empty context build still emits an item; this IF gates on a non-empty `prompt`. true -> Call Execute LLM; false -> Alert Context Empty (CRITICAL). Without it, a 0-item Assemble return silently skipped Execute LLM + Post Reply and the run still reported success (the exact failure on task 869dm1z8y).",
       "parameters": {
         "conditions": {
@@ -330,7 +339,7 @@
       "name": "Alert LLM Failed",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1696, 672],
+      "position": [1744, 672],
       "notes": "CRITICAL via Post Alert (v1): model returned an empty completion -> no reply posted. Wired to the If LLM Succeeded? FALSE branch, which previously dead-ended silently (2026-06-11). onError:continueRegularOutput.",
       "parameters": {
         "workflowId": {
@@ -389,7 +398,7 @@
       "name": "Lane = managed?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [992, 304],
+      "position": [928, 320],
       "parameters": {
         "conditions": {
           "options": {
@@ -541,7 +550,7 @@
       "name": "Call Render Agent Output",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1728, 208],
+      "position": [1760, 208],
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -569,7 +578,7 @@
       "name": "Call Post Reply (Managed)",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [2064, 48],
+      "position": [2096, -48],
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -591,7 +600,10 @@
             "image_models": "={{ $('Call Render Agent Output').first().json.image_models }}",
             "total_image_cost_pln": "={{ $('Sum Execution Image Cost').first().json.image_total }}",
             "doc_attachments": "={{ $('Call Execute Agent Session').first().json.doc_files }}",
-            "session_id": "={{ $('Call Execute Agent Session').first().json.session_id }}"
+            "session_id": "={{ $('Call Execute Agent Session').first().json.session_id }}",
+            "surface": "={{ $('Call Assemble Context').first().json.surface || 'task' }}",
+            "surface_ref": "={{ $('Call Assemble Context').first().json.surface_ref || '' }}",
+            "output_blocks_json": "={{ JSON.stringify($('Call Execute Agent Session').first().json.output_blocks || []) }}"
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,
@@ -633,7 +645,7 @@
       "name": "Render Has Warnings?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [2064, 208],
+      "position": [2032, 352],
       "parameters": {
         "conditions": {
           "options": {
@@ -652,6 +664,15 @@
                 "type": "boolean",
                 "operation": "true",
                 "singleValue": true
+              }
+            },
+            {
+              "id": "rw2",
+              "leftValue": "={{ $('Call Assemble Context').first().json.surface }}",
+              "rightValue": "chat",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
               }
             }
           ]
@@ -692,7 +713,7 @@
       "name": "Call Write Cost Field",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1888, 96],
+      "position": [1936, -96],
       "notes": "Managed lane cost write-back (parity with the bare lane's in-workflow field write). Sums agent_runs.cost_pln for the task and writes CU '[AI] Koszt akcji [PLN]'; returns {total} used for the comment footer. Runs AFTER the session logged its cost row so the SUM includes it. onError=continueRegularOutput + the sub-workflow is internally fail-soft, so a cost-sync hiccup never blocks Post Reply. NOTE: managed image-gen cost rows now carry the real clickup_task_id (agent-supplied tool arg, ADR-057 amendment) so they ARE included in this cumulative per-task SUM. The PER-EXECUTION image cost for the comment footer is computed separately by the downstream Sum Execution Image Cost node (windowed by since_ts, ADR-060) — this SUM stays the all-time task total for the CU field.",
       "parameters": {
         "workflowId": {
@@ -718,7 +739,7 @@
       "name": "Sum Execution Image Cost",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
-      "position": [1976, 136],
+      "position": [1984, 144],
       "notes": "ADR-060: per-execution image cost for the managed footer. SUMs agent_runs.cost_pln for THIS task over the managed image-gen rows (triggered_by='image_mcp', migration 036) created since Resolve Lane's since_ts (captured before the session ran), i.e. only THIS execution's images. Feeds Call Post Reply (Managed).total_image_cost_pln so the footer = session text cost + this run's images. Cumulative CU field (Write Cost Field, by task, all-time) is unchanged. onError=continueRegularOutput + alwaysOutputData so a transient DB miss falls back to image_total 0 (Build/Post still run). Known limit: two concurrent runs on the SAME task overlap windows and can cross-count (rare; ADR-060).",
       "parameters": {
         "operation": "executeQuery",
@@ -744,15 +765,15 @@
       "name": "Img Cost Missing?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [2208, 320],
+      "position": [2192, 256],
       "notes": "ADR-060 reliability guard: TRUE when images WERE delivered this execution (render image_manifest non-empty) but the windowed image cost summed to 0 -> the per-execution image cost (footer + this-run attribution) is understated. Causes not already caught by the generation-time image-mcp/missing-task-id WARN: clock skew on since_ts, a triggered_by/filter mismatch, or all image rows landing null-task. Side branch -> Alert Image Cost Missing (WARN), never blocks Post Reply.",
       "parameters": {
         "conditions": {
           "options": {
-            "version": 2,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "loose"
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
           },
           "combinator": "and",
           "conditions": [
@@ -813,7 +834,7 @@
       "name": "Build Floor File Map",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1088, 416],
+      "position": [1088, 288],
       "notes": "ADR-061 Block 2b (Option E): the managed floor dropped the eager Files-API upload (input_images_json='[]' below), so the agent_input_file_map that generate_image reference_refs resolves against is no longer populated by Upload Input Images. Rebuild it here from Stage A's image_blocks_json: each top-level image -> a row keyed by source_ref (the attachment id the agent passes as a reference_ref) with url = the ClickUp attachment URL the external generator fetches. file_id is synthetic ('att_'+source_ref) — only the PK; the resolver matches source_ref OR file_id and returns url. Mirrors the {file_id,url,mime,source_ref} shape Upload Input Images persisted (url=ref). Empty (no images) -> empty file_map -> upsert no-op.",
       "parameters": {
         "jsCode": "const ctx = $('Call Assemble Context').first().json || {};\nlet blocks = [];\ntry { blocks = JSON.parse(ctx.image_blocks_json || '[]'); } catch (e) { blocks = []; }\nconst file_map = [];\nfor (const b of (Array.isArray(blocks) ? blocks : [])) {\n  const source_ref = String((b && b.source_ref) || '').trim();\n  const url = String((b && b.ref) || '').trim();\n  if (!source_ref || !url) continue;\n  file_map.push({ file_id: 'att_' + source_ref, url, mime: String((b && b.mime) || 'image/*'), source_ref });\n}\nreturn [{ json: { file_map } }];"
@@ -850,7 +871,7 @@
       "name": "Alert File Map Failed",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [1456, 544],
+      "position": [1504, 688],
       "notes": "ADR-061 Block 2b: a failed agent_input_file_map write silently degrades later generate_image reference_refs resolution (the agent can still answer text/embed, just can't reference-generate from input images) — fire a WARN on this side branch and reconverge to Call Execute Agent Session so the session still runs (degrade, don't break).",
       "parameters": {
         "workflowId": {
@@ -879,7 +900,7 @@
       "name": "Check Spend Limit",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
-      "position": [-30, 560],
+      "position": [-416, 560],
       "notes": "ADR-064 spend gate (single chokepoint). Runs get_spend_status(reviewer_user_id) before any spend-bearing work. Output 0 -> Spend Blocked?; error output 1 -> Alert Spend Check Failed -> Resume (FAIL-OPEN: a DB error must never freeze all agent work). Only the production When Called path is gated; the Form Trigger test path is left ungated.",
       "parameters": {
         "operation": "executeQuery",
@@ -905,15 +926,15 @@
       "name": "Spend Blocked?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [190, 560],
+      "position": [64, 544],
       "notes": "ADR-064: $json.blocked from get_spend_status. true -> post block notice + WARN, spine does NOT run (no model spend). false -> Resume After Gate -> normal spine. The spend.enabled=false kill-switch already forces blocked=false inside the function.",
       "parameters": {
         "conditions": {
           "options": {
-            "version": 2,
-            "leftValue": "",
             "caseSensitive": true,
-            "typeValidation": "loose"
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
           },
           "combinator": "and",
           "conditions": [
@@ -928,7 +949,8 @@
               }
             }
           ]
-        }
+        },
+        "options": {}
       }
     },
     {
@@ -936,11 +958,9 @@
       "name": "Resume After Gate",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [400, 470],
+      "position": [512, 560],
       "notes": "ADR-064: the Postgres gate replaces the item with the spend row, dropping the When Called fields Call Assemble Context reads ($json.taskId etc.). Restore the 7 trigger inputs here so the normal spine continues unchanged. Runs only on the When Called path (When Called is executed); the Form Trigger path stays ungated and untouched.",
       "parameters": {
-        "mode": "manual",
-        "includeOtherFields": false,
         "assignments": {
           "assignments": [
             {
@@ -984,6 +1004,18 @@
               "name": "triggering_comment_text",
               "value": "={{ $('When Called').first().json.triggering_comment_text }}",
               "type": "string"
+            },
+            {
+              "id": "r8",
+              "name": "surface",
+              "value": "={{ $('When Called').first().json.surface }}",
+              "type": "string"
+            },
+            {
+              "id": "r9",
+              "name": "surface_ref",
+              "value": "={{ $('When Called').first().json.surface_ref }}",
+              "type": "string"
             }
           ]
         },
@@ -995,7 +1027,7 @@
       "name": "Post Block Reply",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [190, 760],
+      "position": [192, 768],
       "notes": "ADR-064: tell the user (Polish) which cap was hit + that it resets at midnight Warsaw. Reply in-thread to triggering_comment_id; for an autonomous run with no comment, post a top-level task comment. The notice never @-tags the agent, so it can't re-trigger the producer webhook (no loop). onError continueRegularOutput so a post failure can't throw.",
       "parameters": {
         "method": "POST",
@@ -1023,7 +1055,7 @@
       "name": "Alert Spend Blocked",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [400, 760],
+      "position": [400, 768],
       "notes": "ADR-064: WARN via Post Alert (v1) whenever a run is blocked, so the operator sees who hit which cap.",
       "parameters": {
         "workflowId": {
@@ -1052,7 +1084,7 @@
       "name": "Alert Spend Check Failed",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [-30, 760],
+      "position": [-32, 768],
       "notes": "ADR-064 fail-open notice: the gate query errored, the run was let through. Covers the silent-degrade mode where a DB hiccup would otherwise either freeze all work (if fail-closed) or pass silently.",
       "parameters": {
         "workflowId": {
@@ -1075,25 +1107,114 @@
         "options": {}
       },
       "onError": "continueRegularOutput"
+    },
+    {
+      "id": "merge-assemble-ctx",
+      "name": "Call Assemble Context",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [240, 208],
+      "notes": "ADR-068 surface convergence: task Stage A (input 0) XOR chat Stage A (input 1). Keeps the name 'Call Assemble Context' so every downstream $('Call Assemble Context') ref stays surface-agnostic. Mirrors the Merge Input Source pass-through pattern.",
+      "parameters": {}
+    },
+    {
+      "id": "call-assemble-chat-context",
+      "name": "Call Assemble Chat Context",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [0, 64],
+      "notes": "ADR-068 chat Stage A reader. Returns the SAME contract as the task reader. surface_ref arrives as a JSON string (ingress convertFieldsToString); the reader parses it.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "BppZsqTi46Bz5dsG",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $json.taskId || '' }}",
+            "reviewer_user_id": "={{ $json.reviewer_user_id || '' }}",
+            "caller_username": "={{ $json.caller_username || '' }}",
+            "triggered_by": "={{ $json.triggered_by || '' }}",
+            "invocation_type": "={{ $json.invocation_type || '' }}",
+            "triggering_comment_id": "={{ $json.triggering_comment_id || '' }}",
+            "triggering_comment_text": "={{ $json.triggering_comment_text || '' }}",
+            "surface": "={{ $json.surface || '' }}",
+            "surface_ref": "={{ $json.surface_ref || '' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "surface-is-chat",
+      "name": "Surface = chat?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [-192, 224],
+      "notes": "ADR-068 Stage A surface router. surface=='chat' -> Call Assemble Chat Context; else (task/blank/Form path) -> Call Assemble Task Context + Set Status W trakcie (task-field write is task-surface only).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "sc1",
+              "leftValue": "={{ $json.surface }}",
+              "rightValue": "chat",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "skip-cost-if-chat",
+      "name": "Skip Cost If Chat?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1760, 48],
+      "notes": "ADR-068: the cumulative CU '[AI] Koszt akcji' field write is task-bound. surface=='chat' (true) -> skip Call Write Cost Field, go straight to Sum Execution Image Cost; task (false) -> Call Write Cost Field (unchanged). Reads surface off the surface-agnostic Call Assemble Context (Merge).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "scc1",
+              "leftValue": "={{ $('Call Assemble Context').first().json.surface }}",
+              "rightValue": "chat",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
     }
   ],
   "connections": {
-    "Form Trigger": {
-      "main": [
-        [
-          {
-            "node": "Call Assemble Context",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Set Status W trakcie",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Set Status W trakcie": {
       "main": [
         [],
@@ -1129,17 +1250,6 @@
         [
           {
             "node": "Alert LLM Failed",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Call Assemble Context": {
-      "main": [
-        [
-          {
-            "node": "Context OK?",
             "type": "main",
             "index": 0
           }
@@ -1258,7 +1368,7 @@
             "index": 0
           },
           {
-            "node": "Call Write Cost Field",
+            "node": "Skip Cost If Chat?",
             "type": "main",
             "index": 0
           }
@@ -1417,16 +1527,96 @@
         ]
       ]
     },
+    "Form Trigger": {
+      "main": [
+        [
+          {
+            "node": "Surface = chat?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Resume After Gate": {
+      "main": [
+        [
+          {
+            "node": "Surface = chat?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Surface = chat?": {
+      "main": [
+        [
+          {
+            "node": "Call Assemble Chat Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Assemble Task Context",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Set Status W trakcie",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Assemble Task Context": {
       "main": [
         [
           {
             "node": "Call Assemble Context",
             "type": "main",
             "index": 0
-          },
+          }
+        ]
+      ]
+    },
+    "Call Assemble Chat Context": {
+      "main": [
+        [
           {
-            "node": "Set Status W trakcie",
+            "node": "Call Assemble Context",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Call Assemble Context": {
+      "main": [
+        [
+          {
+            "node": "Context OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Cost If Chat?": {
+      "main": [
+        [
+          {
+            "node": "Sum Execution Image Cost",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Write Cost Field",
             "type": "main",
             "index": 0
           }

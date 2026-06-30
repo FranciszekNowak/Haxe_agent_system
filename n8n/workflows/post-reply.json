@@ -50,6 +50,15 @@
             },
             {
               "name": "session_id"
+            },
+            {
+              "name": "surface"
+            },
+            {
+              "name": "surface_ref"
+            },
+            {
+              "name": "output_blocks_json"
             }
           ]
         }
@@ -871,6 +880,104 @@
       "maxTries": 2,
       "waitBetweenTries": 2000,
       "alwaysOutputData": true
+    },
+    {
+      "id": "surface-chat",
+      "name": "Surface = chat?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [80, 40],
+      "notes": "ADR-068 delivery router. surface=='chat' -> post a threaded reply under the invoking chat message (text/markdown only in Block 2), then dead-end (no task status flip / artifact record — those are task-bound). Task (false) -> existing path (Get Spend Status -> ...).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "sc1",
+              "leftValue": "={{ $('When Called').first().json.surface }}",
+              "rightValue": "chat",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "build-chat-md",
+      "name": "Build Chat Markdown",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [300, -80],
+      "notes": "ADR-068: build the chat reply markdown. Prefer the managed session's output_message; when the agent delivered via tool (output_message empty, ADR-063) reconstruct from output_blocks text mds. Appends a short attribution footer. Parses surface_ref (JSON string) for the channel/message ids.",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nfunction blocksToMd(blocks){ if(!Array.isArray(blocks)) return ''; return blocks.filter(b=>b&&b.type==='text'&&b.md).map(b=>String(b.md)).join('\\n\\n').trim(); }\nlet md = '';\n// 1) deliver_output blocks (ADR-063 tool path)\nlet ob = wc.output_blocks_json;\nif (typeof ob === 'string') { try { ob = JSON.parse(ob || '[]'); } catch (e) { ob = []; } }\nmd = blocksToMd(ob);\n// 2) completion: the agent often returns the block ARRAY as its final text (chat prompt asks for a JSON block array)\nif (!md) {\n  const c = String(wc.completion || '').trim();\n  if (c.startsWith('[')) { try { md = blocksToMd(JSON.parse(c)); } catch (e) {} }\n  if (!md) md = c; // plain text fallback\n}\nif (!md) md = '(brak treści odpowiedzi)';\nconst model = wc.model || '—';\nconst cost = (Number(wc.cost_pln || 0) + Number(wc.total_image_cost_pln || 0)).toFixed(4);\nmd += '\\n\\n—\\n_Przygotowane przez agenta AI (model: ' + model + ', koszt: ' + cost + ' PLN). Do weryfikacji._';\nlet ref = wc.surface_ref;\nif (typeof ref === 'string') { try { ref = JSON.parse(ref || '{}'); } catch (e) { ref = {}; } }\nif (!ref || typeof ref !== 'object') ref = {};\nreturn [{ json: { content: md, channel_id: String(ref.channel_id || ''), message_id: String(ref.message_id || '') } }];"
+      }
+    },
+    {
+      "id": "post-chat-reply",
+      "name": "Post Chat Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, -80],
+      "notes": "ADR-068: POST a threaded reply under the invoking chat message (v3 chat replies endpoint, bot token). onError=continueErrorOutput -> Alert Chat Reply Failed (WARN); the main path still returns. Markdown only (chat image delivery deferred).",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v3/workspaces/761759/chat/messages/{{ $json.message_id }}/replies",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ type: 'message', content: $json.content, content_format: 'text/md' }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "alert-chat-reply-failed",
+      "name": "Alert Chat Reply Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [740, 40],
+      "notes": "ADR-068 WARN via Post Alert (v1): the chat threaded reply failed to post. The agent's answer was produced but not delivered to chat.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "post-reply/chat-reply",
+            "message": "Nie udało się opublikować odpowiedzi agenta na czacie ClickUp (wątek).",
+            "details": "=channel={{ $('Build Chat Markdown').first().json.channel_id }}; message={{ $('Build Chat Markdown').first().json.message_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -1272,8 +1379,37 @@
         ]
       ]
     },
+    "Get Spend Status": {
+      "main": [
+        [
+          {
+            "node": "Has Images?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "When Called": {
       "main": [
+        [
+          {
+            "node": "Surface = chat?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Surface = chat?": {
+      "main": [
+        [
+          {
+            "node": "Build Chat Markdown",
+            "type": "main",
+            "index": 0
+          }
+        ],
         [
           {
             "node": "Get Spend Status",
@@ -1283,11 +1419,23 @@
         ]
       ]
     },
-    "Get Spend Status": {
+    "Build Chat Markdown": {
       "main": [
         [
           {
-            "node": "Has Images?",
+            "node": "Post Chat Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Chat Reply": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Alert Chat Reply Failed",
             "type": "main",
             "index": 0
           }
