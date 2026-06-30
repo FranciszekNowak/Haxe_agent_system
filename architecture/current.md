@@ -905,8 +905,10 @@ Target: 7–9 weeks to v1.
     `GET /events` (truth) + session status — porting `Poll Round`'s `analyze()` — services pending client tools
     by POSTing the `Session Waiter Tool Bridge (v1)` (which delegates to the SSOT tail/extract handlers), captures
     `deliver_output` blocks, and POSTs the finish callback (Block 7) on terminal. Crash recovery: re-adopts any
-    `handed_off`/`running` row on startup. (Chose long-poll over SSE — A1's proven n8n-independent fallback, far
-    simpler than SSE reconnect/reconcile.) `expose:8080` internal only; `mem_limit: 256m`; reuses `SUPABASE_*` +
+    `handed_off`/`running` row on startup. (Long-poll is the robust first cut; each poll re-fetches the full
+    `GET /events` log, so **SSE-incremental + reconcile is Block 6.1, landing before the Block 8 cutover** to
+    avoid re-downloading a long session's growing transcript every 3 s.) `expose:8080` internal only;
+    `mem_limit: 256m`; reuses `SUPABASE_*` +
     `ALERT_INTAKE_KEY` (no new secrets; the managed key is handed at handoff per A6, never in env/.env/DB —
     in fact Block 5's handoff does **not** send the key at all; the waiter re-derives it from
     `get_anthropic_key()`). Reliability seam: `Session Waiter Health Monitor (v1)` (pings `/health` every

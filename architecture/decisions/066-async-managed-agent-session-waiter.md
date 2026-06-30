@@ -9,7 +9,10 @@ runs the front half then `POST /handoff` and returns (no key in the body — the
 (porting `Poll Round`'s analysis), services client tools through the new `Session Waiter Tool Bridge (v1)`
 (delegating to the SSOT tail/extract handlers), captures `deliver_output`, and POSTs the finish callback;
 crash-recovery re-adopts in-flight rows on startup. A2 ≥30-min survival is baseline-GO (non-blocking). The
-finish-callback half (7) and cutover (8) follow. Finalized at Block 8.
+shipped loop long-polls; because each poll re-fetches the full `GET /events` log, **the SSE-incremental event
+source the Decision below describes is Block 6.1** (consume the stream incrementally, keep `GET /events` only
+for reconnect/reconcile + deadlock safety) and must land before the Block 8 cutover. The finish-callback half
+(7) and cutover (8) follow. Finalized at Block 8.
 
 Context
 

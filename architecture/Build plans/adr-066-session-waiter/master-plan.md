@@ -63,9 +63,10 @@ to run because the session was abandoned mid-task.
 | 3 | Enable image embedding (image MCP handler signed URL + persona contract) — ADR-067 | ✅ DONE — verified E2E 2026-06-30 (.pptx embeds the generated PNG) |
 | 4 | Waiter service skeleton: deploy, health, env, dead-man's-switch — ADR-066 draft | ✅ DONE — deployed + verified live 2026-06-30 |
 | 5 | Orchestrator split — async handoff (create session → hand to waiter → return) | ✅ DONE — verified live 2026-06-30 (both paths) |
-| 6 | Waiter event loop: SSE/long-poll, client-tool servicing (delegate to n8n), deliver_output capture | ✅ DONE — verified live E2E 2026-06-30 (A2 baseline GO) |
+| 6 | Waiter event loop: long-poll, client-tool servicing (delegate to n8n), deliver_output capture | ✅ DONE — verified live E2E 2026-06-30 (A2 baseline GO) |
+| 6.1 | Streaming event source: SSE-incremental + `GET /events` reconcile (replaces the full-log re-fetch) | ☐ TODO — must land before Block 8 cutover |
 | 7 | Finish-callback half in n8n: doc enumeration + cost + render + post (+ Block 1 guard) | ☐ TODO |
-| 8 | Reliability + cutover behind `config.session_waiter.enabled`; reconciliation cron; finalize ADR-066 | ☐ TODO |
+| 8 | Reliability + cutover behind `config.session_waiter.enabled`; reconciliation cron; finalize ADR-066 | ☐ TODO (depends on 6.1) |
 
 Each block: read this file → do one verifiable unit → write back (`architecture/current.md` + ADR + this
 table) → commit → emit a handoff prompt.
@@ -387,11 +388,14 @@ Idempotent on `session_id` (no double-post).
   handoff body, never logged, never persisted) → **long-polls** `GET /events` (truth) + `GET /sessions/{id}`
   (status), porting `Poll Round`'s `analyze()` verbatim (pending-tool / session-error / idle+replied detection)
   → on a pending client tool POSTs the **Session Waiter Tool Bridge** → POSTs `user.custom_tool_result` →
-  resumes; on `deliver_output` captures `input.blocks`; on terminal POSTs the finish callback. **Chose long-poll
-  over SSE** (A1's proven, n8n-independent fallback; far simpler than SSE reconnect/reconcile/dedup, right for a
-  background batch agent — SSE noted as a future latency optimization). Absolute budget = the row's `deadline_at`
-  (handoff + 45 min) → `deadline` (non-delivery) past it. **Crash recovery:** on startup re-adopts any
-  `handed_off`/`running` row (resumes driving it); the freshness monitor is the backstop.
+  resumes; on `deliver_output` captures `input.blocks`; on terminal POSTs the finish callback. **Shipped
+  long-poll as the robust first cut** (A1's proven, n8n-independent path) — but this is a deliberate DEFERRAL,
+  not a claim that polling beats streaming: each poll re-fetches the **entire** `GET /events` log, so a long
+  session re-downloads its growing transcript every 3 s (≈ O(N²) bytes + JSON re-parse on a 256 MB container) —
+  wasteful exactly for the 20–45 min sessions this exists to support. **SSE-incremental is Block 6.1, and must
+  land before Block 8 cutover** (where real long sessions first run through it). Absolute budget = the row's
+  `deadline_at` (handoff + 45 min) → `deadline` (non-delivery) past it. **Crash recovery:** on startup re-adopts
+  any `handed_off`/`running` row (resumes driving it); the freshness monitor is the backstop.
 - **Tool bridge (`Session Waiter Tool Bridge (v1)`, `mbAegTOPm4PhamhX`, ACTIVE).** Thin HTTP wrapper the waiter
   POSTs to: `Webhook → Is extract? → Call Extract/Tail Handler → Build Bridge Response → Respond`. Delegates to
   the SSOT handlers (`Ouo0BlYOw92DUXIh` tail, `y985MgyA5lCxOFCH` extract) — anti-duplication, the handlers stay
@@ -425,10 +429,42 @@ Idempotent on `session_id` (no double-post).
   happy-path-adjacent but get their LIVE test at Block 8 (which already mandates "simulate a stuck session + a
   waiter restart mid-session"). (4) The tool bridge + probe are new ACTIVE workflows (drift-clean 49/49).
 
+**Block 6.1 — streaming event source (SSE-incremental).** Replace the full-log re-fetch with the design A1
+actually intended: consume the SSE stream as the **incremental event source + low-latency wakeup**, and keep
+`GET /events` only for reconnect/reconcile and the deadlock-safety invariant — so the waiter stops
+re-downloading the growing transcript every poll (kills the O(N²) bandwidth/CPU on long sessions) and reacts
+without the ~3 s poll lag. **Independent of Block 7** (can land in either order) but **must precede Block 8
+cutover**, since cutover is when real 20-min+ sessions first run through the waiter.
+
+- **Block 6.1.0 — verify assumptions first (live probe against a held session).** (a) Does
+  `GET /v1/sessions/{id}/events` support an **incremental cursor** (e.g. `?after=<event_id>` / pagination /
+  `order`)? If yes, even the fallback poll can fetch only the delta — lowers the stakes and is reused on
+  reconcile. (b) Does `GET /v1/sessions/{id}/events/stream` deliver **full event objects with stable ids**
+  (dedup key), or only "something changed" pings? Observe close/heartbeat cadence between turns. (c) Confirm a
+  pending tool is still resolvable across a stream drop (POST `user.custom_tool_result` after reconnect →
+  session resumes; no deadlock). Use the reusable `Session Events Probe (v1)` + a short live session; record
+  findings inline (mirror `block-0-findings.md`).
+- **Design.** Maintain an in-memory event map keyed by event id, fed incrementally from the SSE stream; run the
+  ported `analyze()` over the accumulated map (terminal/pending/idle detection unchanged). On stream
+  close/error → reconnect with backoff and do ONE `GET /events` (or cursor delta) **reconcile** (dedup by id)
+  to catch anything missed while disconnected. Preserve the load-bearing invariants verbatim: **always resolve
+  a pending tool** (service via the bridge → POST result → the stream delivers resumption), the absolute-budget
+  `deadline`, terminal `deliver_output` capture, and startup re-adoption. **Keep the long-poll path in the code
+  as the documented fallback** — if SSE is unavailable or errors repeatedly, degrade to polling (still correct),
+  never hang.
+- **Reliability.** SSE failure must degrade to poll, never deadlock; the reconnect-reconcile is what guarantees
+  no missed terminal/pending event. No alert-channel change.
+- **DoD.** Drive a real multi-tool session over SSE: parity with the Block 6 E2E (services tools via the bridge,
+  captures `deliver_output`, posts the finish callback, 0 unexpected alerts) **and** confirm via request-logging
+  that steady state does **no** full-log re-fetch (only on reconnect/reconcile). Force a mid-tool stream drop →
+  confirm reconnect + the pending tool still resolves (no deadlock). Re-run the A2 long-session shape. Bump the
+  waiter version; redeploy; update `current.md` + ADR-066; commit.
+
 **Block 8 — cutover + reliability.** Flip `config.session_waiter.enabled=true` (poll loop = documented
 rollback). Verify reconciliation cron + health monitor (simulate a stuck session + a waiter restart
 mid-session). Finalize ADR-066 (supersede the ADR-053/063 held-poll text); update `current.md` Stage-B;
-re-export all touched workflows; `check-workflow-drift.mjs` clean.
+re-export all touched workflows; `check-workflow-drift.mjs` clean. **Precondition: Block 6.1 (SSE) landed** —
+do not cut real long sessions over to the full-log-re-fetch poll.
 
 ## End-to-end verification (whole-plan DoD)
 
