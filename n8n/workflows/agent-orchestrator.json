@@ -488,6 +488,7 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [1264, 224],
+      "notes": "ADR-066 Block 5: 'mode' selects the sub-workflow tail. config.session_waiter.enabled=true -> mode='handoff' (front half only: create session + send first message, then return carry-state for the session-waiter) ; false (today) -> mode='sync' (synchronous poll loop, unchanged). The returned outcome drives Handoff? -> either Post Handoff to Waiter or Session OK?.",
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -504,7 +505,8 @@
             "caller_user_id": "={{ $('Call Assemble Context').first().json.caller_user_id }}",
             "process_type": "={{ $('Call Assemble Context').first().json.process_type }}",
             "triggered_by": "={{ $('Call Assemble Context').first().json.triggered_by }}",
-            "invocation_type": "={{ $('Call Assemble Context').first().json.invocation_type }}"
+            "invocation_type": "={{ $('Call Assemble Context').first().json.invocation_type }}",
+            "mode": "={{ ($('Read Waiter Flag').first().json.waiter_enabled === 'true') ? 'handoff' : 'sync' }}"
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,
@@ -512,6 +514,108 @@
         },
         "options": {}
       }
+    },
+    {
+      "id": "b1f0a6e2-0001-4a55-9a01-waiterflagread",
+      "name": "Read Waiter Flag",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1056, 96],
+      "notes": "ADR-066 Block 5: reads config.session_waiter.enabled (the async-handoff cutover flag, seeded false) + session_waiter.absolute_budget_ms in one row. Call Execute Agent Session reads waiter_enabled to pick mode (handoff|sync); Post Handoff to Waiter reads absolute_budget_ms. onError=continueRegularOutput + alwaysOutputData so a config-read failure degrades SAFELY to the synchronous path (waiter_enabled !== 'true' -> mode='sync').",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  max(value) filter (where key = 'session_waiter.enabled') as waiter_enabled,\n  max(value) filter (where key = 'session_waiter.absolute_budget_ms') as absolute_budget_ms\nfrom public.config\nwhere key in ('session_waiter.enabled','session_waiter.absolute_budget_ms');",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "b1f0a6e2-0002-4a55-9a02-handoffifgate0",
+      "name": "Handoff?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1472, 80],
+      "notes": "ADR-066 Block 5: routes on the sub-workflow's outcome. outcome==='handed_off' (mode='handoff' ran the front half only) -> TRUE -> Post Handoff to Waiter (no synchronous hold; status stays 'W trakcie'; Block 7's finish callback posts the real answer later). Any other outcome (sync path) -> FALSE -> Session OK? (today's publish/incomplete gate, unchanged).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "hoff1",
+              "leftValue": "={{ $json.outcome }}",
+              "rightValue": "handed_off",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "b1f0a6e2-0003-4a55-9a03-posthandoffhttp",
+      "name": "Post Handoff to Waiter",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1680, 80],
+      "notes": "ADR-066 Block 5: hands the just-created session off to the always-on session-waiter (internal http://session-waiter:8080/handoff, n8n-internal network). Carry-state = session_id + agent/model/clickup_scope/file_map_json (from the sub-workflow) + task/comment/caller/surface/impact (orchestrator context) + finish_callback_url (Block 7 webhook) + absolute_budget_ms (config). The managed key is DELIBERATELY NOT sent (A6): the waiter re-derives it from get_anthropic_key(). On failure -> Alert Handoff Failed (CRITICAL); the row never persists, so the freshness monitor cannot mask the orphan — the alert is the signal.",
+      "parameters": {
+        "method": "POST",
+        "url": "http://session-waiter:8080/handoff",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ session_id: $('Call Execute Agent Session').first().json.session_id, clickup_task_id: $('Call Assemble Context').first().json.clickup_task_id, triggering_comment_id: $('When Called').first().json.triggering_comment_id, caller_user_id: $('Call Assemble Context').first().json.caller_user_id, reviewer_user_id: $('When Called').first().json.reviewer_user_id, agent_id: $('Call Execute Agent Session').first().json.agent_id, model_id: $('Call Execute Agent Session').first().json.model_id, clickup_scope: $('Call Execute Agent Session').first().json.clickup_scope, surface: $('When Called').first().json.surface, surface_ref: $('When Called').first().json.surface_ref, impact: $('Call Assemble Context').first().json.impact, file_map_json: $('Call Execute Agent Session').first().json.file_map_json, finish_callback_url: 'http://n8n-main:5678/webhook/session-waiter-finish', absolute_budget_ms: Number($('Read Waiter Flag').first().json.absolute_budget_ms || 2700000) }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "b1f0a6e2-0004-4a55-9a04-alerthandofffl",
+      "name": "Alert Handoff Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1880, 0],
+      "notes": "ADR-066 Block 5: CRITICAL when POST /handoff to the session-waiter fails. The session is running on Anthropic's side but no waiter picked it up -> it would deliver into the void. Operator action: check the waiter (docker logs session-waiter) and the session; may need a manual finish. onError=continueRegularOutput so the alert can't itself break the run.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "session-waiter/handoff-post",
+            "message": "Przekazanie sesji do session-waiter nie powiodło się — sesja agenta działa, ale żaden waiter jej nie obsługuje (ryzyko utraty wyniku).",
+            "details": "=task={{ $('Call Assemble Context').first().json.clickup_task_id }}; session={{ $('Call Execute Agent Session').first().json.session_id }}; http_error={{ ($json.error && ($json.error.message || $json.error)) || $json.message || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "327820e7-8af5-4246-8fce-c76c3e8c8666",
@@ -1375,7 +1479,48 @@
       "main": [
         [
           {
+            "node": "Handoff?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Waiter Flag": {
+      "main": [
+        [
+          {
+            "node": "Call Execute Agent Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handoff?": {
+      "main": [
+        [
+          {
+            "node": "Post Handoff to Waiter",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Session OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Handoff to Waiter": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Alert Handoff Failed",
             "type": "main",
             "index": 0
           }
@@ -1485,7 +1630,7 @@
       "main": [
         [
           {
-            "node": "Call Execute Agent Session",
+            "node": "Read Waiter Flag",
             "type": "main",
             "index": 0
           }
@@ -1503,7 +1648,7 @@
       "main": [
         [
           {
-            "node": "Call Execute Agent Session",
+            "node": "Read Waiter Flag",
             "type": "main",
             "index": 0
           }

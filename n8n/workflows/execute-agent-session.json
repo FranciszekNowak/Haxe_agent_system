@@ -67,6 +67,9 @@
             },
             {
               "name": "clickup_scope"
+            },
+            {
+              "name": "mode"
             }
           ]
         }
@@ -278,6 +281,47 @@
       "notes": "Seed the carried loop state after the first message is sent: session_id (from Create Session), the absolute soft-deadline (now + 840s, mirrors the image batch's 840s<900s), tool_round 0, empty images, Upload Input Images' warnings, agent/model + passthrough metadata. Feeds Merge State (input 0).",
       "parameters": {
         "jsCode": "const bs = $('Build Setup').first().json;\nconst sess = ($('Create Session').first() || {}).json || {};\nconst SOFT_DEADLINE_MS = 840000;\nreturn [{ json: {\n  session_id: sess.id || '',\n  anthropic_key: bs.key,\n  file_map_json: bs.file_map_json,\n  deadline_epoch: Date.now() + SOFT_DEADLINE_MS,\n  tool_round: 0,\n  images_json: '[]',\n  warnings_json: bs.warnings_json,\n  agent_id: bs.agent_id,\n  model_id: bs.model_id,\n  impact: bs.impact,\n  clickup_task_id: bs.clickup_task_id,\n  caller_user_id: bs.caller_user_id,\n  process_type: bs.process_type,\n  triggered_by: bs.triggered_by,\n  invocation_type: bs.invocation_type, clickup_scope: bs.clickup_scope\n} }];"
+      }
+    },
+    {
+      "id": "mode-handoff-if",
+      "name": "Mode = handoff?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1880, 460],
+      "notes": "ADR-066 Block 5: async-handoff fork. mode='handoff' (set by the orchestrator only when config.session_waiter.enabled) -> TRUE -> Build Handoff Output: the front half (create session + send first message) already ran, so we STOP here and return carry-state for the orchestrator to POST to the session-waiter /handoff; no poll loop. Else (mode absent/'sync', and every recursive call) -> FALSE -> Merge State (input 0), today's synchronous poll loop. Pure IF: the carried state from Build Initial State passes through the FALSE edge untouched. Recursion never reaches here (Is Recursive? routes straight to Merge State).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-mode-handoff",
+              "leftValue": "={{ ($('When Called').first().json.mode || 'sync') }}",
+              "rightValue": "handoff",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "build-handoff-output",
+      "name": "Build Handoff Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2080, 560],
+      "notes": "ADR-066 Block 5: terminal for the async-handoff path. Returns the carry-state the orchestrator POSTs to session-waiter /handoff: session_id (Create Session) + agent/model + clickup_scope + file_map_json (resolved here, the orchestrator does not see them). The managed key is DELIBERATELY NOT returned (A6): the waiter re-derives it from public.get_anthropic_key() in Block 6, so it never spreads into the orchestrator's execution data. NO cost/doc enumeration here (Block 7's finish callback owns that on real delivery). Front-half warnings (e.g. clickup-scope-degraded) ride through Classify Alert for parity with the sync path. Feeds Merge Final (input 3) — the same single-leaf idiom as Build Create/Send Failed, so Final Return stays deterministic.",
+      "parameters": {
+        "jsCode": "const bs = $('Build Setup').first().json;\nconst sess = ($('Create Session').first() || {}).json || {};\nlet warnings = []; try { warnings = JSON.parse(bs.warnings_json || '[]'); } catch (e) {}\nreturn [{ json: {\n  outcome: 'handed_off',\n  status: 'handed_off',\n  delivered_via_tool: false,\n  session_id: sess.id || '',\n  agent_id: bs.agent_id || '',\n  model_id: bs.model_id || '',\n  clickup_scope: bs.clickup_scope || '',\n  file_map_json: bs.file_map_json || '[]',\n  impact: bs.impact || '',\n  clickup_task_id: bs.clickup_task_id || '',\n  caller_user_id: bs.caller_user_id || '',\n  process_type: bs.process_type || '',\n  triggered_by: bs.triggered_by || 'explicit_mention',\n  invocation_type: bs.invocation_type || 'explicit',\n  warnings: warnings,\n  failure_kind: ''\n} }];"
       }
     },
     {
@@ -735,9 +779,9 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
       "position": [2860, 440],
-      "notes": "Converge the normal terminal output (Build Final Output, 0), the create-failed output (1) and the send-failed output (2) into the ONE canonical output object. Final Return re-reads this node (research-the-web idiom) so the alert side-trip can't corrupt the return.",
+      "notes": "Converge the normal terminal output (Build Final Output, 0), the create-failed output (1), the send-failed output (2) and the async-handoff output (Build Handoff Output, 3) into the ONE canonical output object. The four inputs are mutually exclusive upstream, so .first() is deterministic. Final Return re-reads this node (research-the-web idiom) so the alert side-trip can't corrupt the return.",
       "parameters": {
-        "numberInputs": 3
+        "numberInputs": 4
       }
     },
     {
@@ -984,9 +1028,38 @@
       "main": [
         [
           {
+            "node": "Mode = handoff?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mode = handoff?": {
+      "main": [
+        [
+          {
+            "node": "Build Handoff Output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Merge State",
             "type": "main",
             "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Handoff Output": {
+      "main": [
+        [
+          {
+            "node": "Merge Final",
+            "type": "main",
+            "index": 3
           }
         ]
       ]

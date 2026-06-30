@@ -1,8 +1,11 @@
 ADR-066: Asynchronous managed-agent session via an external "session waiter" service
 
-Status: DRAFT (in progress — Blocks 4–8 of the adr-066-session-waiter master plan). Block 4 (this) ships
-the service skeleton + reliability seam + this draft; the orchestrator split (5), event loop (6),
-finish-callback half (7) and cutover (8) follow. Finalized at Block 8.
+Status: DRAFT (in progress — Blocks 4–8 of the adr-066-session-waiter master plan). Block 4 shipped the
+service skeleton + reliability seam + this draft; **Block 5 (orchestrator split) shipped + verified live
+2026-06-30** — the managed lane forks on `config.session_waiter.enabled` (seeded `false`): `mode='handoff'`
+runs the front half then `POST /handoff` and returns (no key in the body — the waiter re-derives it), while
+`mode='sync'` keeps today's poll loop. The event loop (6), finish-callback half (7) and cutover (8) follow.
+Finalized at Block 8.
 
 Context
 
@@ -47,10 +50,18 @@ Re-architect managed sessions from a **synchronous held-poll loop** (ADR-053/063
   when the agent delivers (or on terminal error / absolute-budget timeout). No node cap, no
   recursion-depth limit, arbitrarily long runs; it also relieves the ADR-056 ~15-min spine ceiling for
   managed tasks.
-- **Orchestrator split (Block 5).** `agent-orchestrator.json` keeps the front half of today's
-  `Execute Agent Session` (create the session + send the first message), then POSTs carry-state to the
-  waiter's `/handoff` and **returns** — no long hold. `Set Status W trakcie` stays. Behind the flag:
-  `enabled=false` → today's synchronous path is unchanged.
+- **Orchestrator split (Block 5).** The front half (resolve agent/key → create session → send first
+  message) stays in `execute-agent-session.json` as ONE copy — it is not duplicated into the orchestrator,
+  because the managed key + agent/model + clickup_scope are resolved there and never surface to the
+  orchestrator. A `mode` input forks the tail: `mode='handoff'` runs the front half then a new
+  `Mode = handoff?` IF → `Build Handoff Output` returns `outcome='handed_off'` + carry-state (reusing the
+  existing "alternative terminal via Merge Final" idiom, so the single-leaf return stays deterministic);
+  `mode='sync'` keeps the synchronous poll loop. `agent-orchestrator.json` reads
+  `config.session_waiter.enabled` (`Read Waiter Flag`), passes `mode` accordingly, and on a `handed_off`
+  return routes (`Handoff?` IF) to `Post Handoff to Waiter` (`POST /handoff`) and **returns** — no long
+  hold, no comment. `Set Status W trakcie` stays. The managed key is **not** sent in the handoff body (the
+  waiter re-derives it via `get_anthropic_key()`, A6-minimal). Behind the flag: `enabled=false` →
+  `mode='sync'`, today's synchronous path unchanged.
 - **Finish-callback half in n8n (Block 7).** A new HTTP-triggered sub-workflow receives
   `{session_id, outcome, delivered_via_tool, output_blocks, final_message_text, +carry-state}`, re-fetches
   usage/duration, runs the doc-files enumeration + cost computation now in `Build Final Output`, then

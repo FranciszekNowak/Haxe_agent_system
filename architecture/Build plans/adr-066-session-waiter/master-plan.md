@@ -62,7 +62,7 @@ to run because the session was abandoned mid-task.
 | 2 | Doc-link serialization fix (Detect Mention + Assemble Task Context) | ✅ DONE — verified live on task 869dxn3d8 2026-06-30 |
 | 3 | Enable image embedding (image MCP handler signed URL + persona contract) — ADR-067 | ✅ DONE — verified E2E 2026-06-30 (.pptx embeds the generated PNG) |
 | 4 | Waiter service skeleton: deploy, health, env, dead-man's-switch — ADR-066 draft | ✅ DONE — deployed + verified live 2026-06-30 |
-| 5 | Orchestrator split — async handoff (create session → hand to waiter → return) | ☐ TODO |
+| 5 | Orchestrator split — async handoff (create session → hand to waiter → return) | ✅ DONE — verified live 2026-06-30 (both paths) |
 | 6 | Waiter event loop: SSE/long-poll, client-tool servicing (delegate to n8n), deliver_output capture | ☐ TODO |
 | 7 | Finish-callback half in n8n: doc enumeration + cost + render + post (+ Block 1 guard) | ☐ TODO |
 | 8 | Reliability + cutover behind `config.session_waiter.enabled`; reconciliation cron; finalize ADR-066 | ☐ TODO |
@@ -304,6 +304,56 @@ first message (front half of today's `Execute Agent Session`), then POST carry-s
 `agent_id`, `clickup_scope`, `input_image_refs_json`, `file_map`, managed key, `finish_callback_url`,
 absolute budget) and **return** — no long hold. Keep `Set Status W trakcie`. Behind the flag: `enabled=false`
 → today's synchronous path unchanged.
+
+### Block 5 — execution notes (2026-06-30, DONE)
+
+- **Design: data-driven fork, ONE front half (no duplication).** The "front half of Execute Agent Session"
+  is NOT copied into the orchestrator (the managed key + agent/model + clickup_scope are resolved *inside*
+  `execute-agent-session`, not visible to the orchestrator). Instead `execute-agent-session.json` gained a
+  `mode` input (absent → `sync`): a new IF **`Mode = handoff?`** after `Build Initial State` routes TRUE →
+  new **`Build Handoff Output`** (Code) → **`Merge Final` (input 3)**, reusing the workflow's existing
+  "alternative terminal via Merge Final" idiom (same as the create/send-failed branches), so `Final Return`
+  (`$('Merge Final').first()`) stays deterministic — the four Merge Final inputs are mutually exclusive
+  upstream. FALSE → `Merge State` (today's poll loop, unchanged). Recursion never reaches the IF
+  (`Is Recursive?` routes straight to Merge State). This avoids the sub-workflow-return-determinism trap.
+- **Orchestrator (`agent-orchestrator.json`).** New `Read Waiter Flag` (Postgres; reads
+  `session_waiter.enabled` + `absolute_budget_ms` in one row; `onError=continueRegularOutput`+`alwaysOutputData`
+  so a config-read failure degrades SAFELY to sync). `Call Execute Agent Session` gained
+  `mode = {{ flag==='true' ? 'handoff':'sync' }}`. New `Handoff?` IF on the returned `outcome==='handed_off'`:
+  TRUE → new `Post Handoff to Waiter` (POST `http://session-waiter:8080/handoff`) ; FALSE → `Session OK?`
+  (today's gate, untouched). POST failure → new `Alert Handoff Failed` (CRITICAL `session-waiter/handoff-post`).
+  The managed-lane head was rewired `Upsert File Map (Managed)`/`Alert File Map Failed` → `Read Waiter Flag`
+  → `Call Execute Agent Session`.
+- **Deliberate deviation from the plan's carry-state: the managed key is NOT sent to the waiter.** Passing it
+  would only spread the credential into the orchestrator's execution data (it is resolved inside the
+  sub-workflow and the orchestrator never sees it today). The waiter re-derives it from
+  `public.get_anthropic_key()` in Block 6 (exactly what `app.mjs` already documents), so the handoff body
+  omits it (A6-minimal). Verified end-to-end: the persisted `carry_state` had neither `anthropic_key` nor
+  `managed_key`. `input_image_refs_json` is likewise not sent separately — `file_map_json` carries the
+  resolved input-image file map.
+- **`finish_callback_url`** is set now to `http://n8n-main:5678/webhook/session-waiter-finish` — a forward
+  contract for the Block-7 webhook (which doesn't exist yet; harmless since the handoff path is gated off in
+  prod until Block 8). `absolute_budget_ms` (config, 2.7 M ms) flowed through to the row's `deadline_at`
+  (handoff + 45 min).
+- **DoD verified live (both paths), drift-clean 47/47.** (A) Driving `execute-agent-session` directly with
+  `mode=handoff` returned `outcome='handed_off'` + a real `session_id` in **2 s** with **Poll Round never
+  running** (`Mode = handoff?` TRUE, `Build Handoff Output → Merge Final → Final Return`), no `anthropic_key`
+  in the output. (B) With `session_waiter.enabled=true`, driving the **orchestrator** `When Called` on a
+  disposable task (`869dxzfjr`, "Lista testy AI") → `Read Waiter Flag` true → `mode=handoff` →
+  `Call Execute Agent Session` (`handed_off`) → `Handoff?` TRUE → `Post Handoff to Waiter` got the waiter's
+  **202** and persisted a `waiter_sessions` row (`status=handed_off`, `surface=task`, `deadline_at`=+45 min,
+  `finish_callback_url` set, **`carry_has_key=false`**), orchestrator returned in **6 s** with **no comment
+  and no `Session OK?`**, **0 CRITICAL** (only the benign `context-health` WARN: test reviewer has no
+  person-rules). (C) Flag flipped back to **false** → the same orchestrator run took the **sync** path:
+  full poll loop (`outcome=delivered`), `Handoff?` **FALSE** → `Session OK?` TRUE → Render → `Post Reply
+  (Managed)` posted the answer, `cost_pln=0.030`, 0 CRITICAL — confirming the live prod path is intact (the
+  flag is false in prod, so sync is what actually runs). Test row/task/`agent_runs` cleaned up; the two
+  orphan Anthropic sessions idle harmlessly (no waiter drives them; Block 6).
+- **Carry-forward to Block 6/7.** (1) Front-half warnings (e.g. `clickup-scope-degraded`) ride through
+  `Classify Alert` on the handoff path for parity — Block 7's finish callback must **not** re-fire the same
+  front-half warning sources (double-alert). (2) Nothing drives a handed-off session yet (Block 6); a real
+  cutover stays blocked on `enabled=false`. (3) `/handoff` has no auth (internal-only on `n8n-internal`) —
+  acceptable for now; note as a possible hardening item.
 
 **Block 6 — waiter event loop.** Open SSE (A1) / long-poll; truth = `GET /events` dedup by id; reconnect +
 reconcile on stream close. Terminal detection ports `Poll Round` (`deliver_output` → capture blocks, stop;
