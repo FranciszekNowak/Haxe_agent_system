@@ -94,6 +94,49 @@ Output`'s existing WARNs.
 comment, no narration; CRITICAL `non-delivery` in `alerts-since.mjs`; a normal `done`+free-text run still
 degrades to text. Re-export the two workflows; `check-workflow-drift.mjs` clean; delete test rows/tasks.
 
+### Block 1 — ready-to-execute implementation spec (live graph confirmed == repo, 2026-06-30)
+
+Workflow: **Agent Orchestrator (v1)** `a8XKaijkMFNBpRBa`. Confirmed topology:
+`Call Execute Agent Session → Session OK? [TRUE→Call Render Agent Output] [FALSE→Alert Session Empty]`.
+The FALSE branch today posts **no** comment and never flips status off "W trakcie".
+
+1. **`Session OK?`** (id `327820e7-8af5-4246-8fce-c76c3e8c8666`) — replace the `sok1` condition with the
+   publishable-answer test (note: it must be FALSE for a non-delivery outcome even when `output_message`
+   carries narration):
+   ```
+   ={{ ($json.delivered_via_tool === true && Array.isArray($json.output_blocks) && $json.output_blocks.length > 0)
+       || ($json.outcome === 'done' && ($json.output_message || '').toString().trim() !== '') }}
+   ```
+   (`outcome` values from `Build Final Output`: delivered | done | deadline | terminated | max_rounds |
+   poll_error | send_failed | create_failed. Only `delivered` and `done` are publishable.)
+2. **New node `Call Post Reply (Incomplete)`** — `executeWorkflow` → Post Reply (v1) `t17moGs7Vxo5ZcFv`.
+   Mirror `Call Post Reply (Managed)`'s input mapping for `reviewer_user_id`/`triggering_comment_id`/
+   `model`/`cost_pln`/`clickup_task_id`/`session_id` (read from `Call Execute Agent Session` + `When Called`),
+   set `image_manifest`/`image_models`/`doc_attachments` to `[]`, `total_image_cost_pln` 0, `web_sources` '',
+   `completion` '', and a canned single-op `rendered_delta`:
+   ```
+   ={{ [ { text: 'Nie udało się dokończyć zadania w wyznaczonym czasie — agent nie dostarczył wyniku ('
+        + ($('Call Execute Agent Session').first().json.outcome || 'brak')
+        + '). Spróbuj podzielić zadanie na mniejsze kroki albo ponów zlecenie.' } ] }}
+   ```
+   (Verify Post Reply (v1) tolerates empty `completion` + a minimal `rendered_delta`; it flips status to
+   Zakończono via `Set Status Zakonczono`, which also clears "W trakcie".)
+3. **Rewire** `Session OK?` `main#1` (FALSE): `[ Call Post Reply (Incomplete), Alert Non-Delivery ]`.
+4. **Repurpose `Alert Session Empty`** (id `694fcc5a-670b-41a1-96b3-81f4b84e7f83`) → rename `Alert Non-Delivery`:
+   `severity: CRITICAL`, `source: managed-agents/non-delivery`,
+   `message: "Sesja Managed Agents nie dostarczyła wyniku (timeout/błąd) — opublikowano komunikat o niepowodzeniu."`,
+   `details: task={{…clickup_task_id}}; outcome={{…outcome}}; status={{…status}}; duration={{…duration_seconds}}s`.
+5. **Mutation method:** prefer the n8n UI; if via MCP, `n8n_update_partial_workflow` then **re-export the whole
+   workflow** (`export-workflows.mjs`) — partial updates re-sanitize ALL IF/Switch options, so re-export is
+   the way to keep repo == live (see memory `n8n-partial-update-sanitization-drift`). Then `check-workflow-drift.mjs`.
+6. **DoD test (integration):** temporarily set `execute-agent-session.json → Build Initial State`
+   `SOFT_DEADLINE_MS` to ~20000, deploy, drive the orchestrator's `When Called` via `test-subworkflow.mjs`
+   with the producer's real inputs on a **disposable** task whose prompt runs >20 s → confirm the orchestrator
+   posts the incomplete comment (NOT narration), flips status, fires CRITICAL `non-delivery`; **restore
+   840000** and redeploy. Also confirm a normal short task still posts its answer. Verify with
+   `inspect-execution.mjs` + `alerts-since.mjs`; delete test rows/tasks. (Cheaper pre-check: drive Post Reply
+   (v1) directly with the canned `rendered_delta` to prove the comment+status path before the full run.)
+
 ## Block 2 — Doc-link serialization fix
 
 Make `doc_mention`/`bookmark`/`link` ops survive serialization. **Sites:** `cu-webhook-producer.json →
