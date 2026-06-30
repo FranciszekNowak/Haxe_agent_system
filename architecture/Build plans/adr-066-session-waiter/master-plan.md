@@ -59,7 +59,7 @@ to run because the session was abandoned mid-task.
 |-------|-------|--------|
 | 0 | Verify assumptions (A1–A6) | ✅ DONE — GO (see block-0-findings.md) |
 | 1 | Fail-loud guard: non-delivery never posts narration (+ CRITICAL alert) | ✅ DONE — verified live 2026-06-30 (commit pending) |
-| 2 | Doc-link serialization fix (Detect Mention + Assemble Task Context) | ☐ TODO |
+| 2 | Doc-link serialization fix (Detect Mention + Assemble Task Context) | ✅ DONE — verified live on task 869dxn3d8 2026-06-30 |
 | 3 | Enable image embedding (image MCP handler signed URL + persona contract) — ADR-067 | ☐ TODO |
 | 4 | Waiter service skeleton: deploy, health, env, dead-man's-switch — ADR-066 draft | ☐ TODO |
 | 5 | Orchestrator split — async handoff (create session → hand to waiter → return) | ☐ TODO |
@@ -171,6 +171,37 @@ Keep the 600-char truncation unless it would cut a link.
 **DoD:** mention the agent on a disposable task whose comment embeds a doc link → assembled prompt /
 `get_task_comments` contains the reference; no `clickup_search` fallback. Verify via `inspect-execution.mjs`.
 Re-export; drift clean.
+
+### Block 2 — execution notes (2026-06-30, DONE)
+
+- **Root cause refined by the real op shape.** Fetched the original failing comment (task `869dxn3d8`): the
+  `doc_mention` op is `{type:'doc_mention', doc_mention:{teamId,viewId,pageId,pageTitle}, text:'<pageId>'}`.
+  The bug is the **`comment_text`/`text_content`-first preference**, not the op join: ClickUp's flat text omits
+  the doc-mention line entirely, and being truthy it short-circuits the `|| ops.map(.text)` fallback. (Even
+  reaching the fallback, `op.text` is only the bare `pageId` — no doc/team/URL.) There is **no `docId` field**;
+  the **`viewId` is the doc id** (`clickup_get_document_pages` wants `document_id`=viewId, `page_ids`=[pageId],
+  both parseable from the canonical URL `app.clickup.com/{teamId}/docs/{viewId}/{pageId}`).
+- **Three sites confirmed, no others.** `Detect Mention` (producer, → `triggering_comment_text`, the always-present
+  "Wiadomość wywołująca" prompt floor) + `Assemble Task Context`'s `Build Output` (top comments) and `Collect
+  Replies` (replies). The managed `get_task_comments` tail tool routes through `Triggering Task Tail Handler →
+  Call Assemble Task Context`; its `Build Comments Result` just passes through the already-serialized `.text`, so
+  fixing `Build Output` covers both lanes. `get_task_details` serializes task *description*, not comment ops — not a site.
+- **Reuse decision (documented exception).** One canonical `serializeCommentOps(ops, flat)` inlined at all three
+  sites (+ `truncateKeepingLinks(text,600)` at the two truncating sites), each carrying a "KEEP IDENTICAL" provenance
+  header. A shared `executeWorkflow` serializer was rejected: n8n Code nodes share no module, and a sub-workflow on
+  the producer's webhook hot path would add an exec row per comment (Insights-flood risk) + a synchronous failure
+  surface to mention-detection — worse fragility than 3 copies of a pure string transform. See `current.md` §15.5.
+- **Mutation + verification.** Applied via `n8n_update_partial_workflow` `patchNodeField` (surgical; unchanged code
+  untouched), re-exported both files, **drift-clean 42/42**, git diff = exactly the 3 jsCode lines (no IF/Switch
+  sanitization noise). Serializer unit-tested on the real op (doc_mention → URL; plain → flat; link/bookmark) and
+  then **live-tested** by driving `Assemble Task Context` (`test-subworkflow.mjs`) against `869dxn3d8`: `task_comments[0].text`
+  now contains `[dokument ClickUp: https://app.clickup.com/761759/docs/q7wz-16892/q7wz-44692 (doc …, strona …)]`,
+  the threaded reply (no rich op) fell through to plain text. Read-only (no ClickUp writes); harness auto-torn-down.
+- **Not autonomously runnable: the literal UI @-mention E2E.** A `doc_mention` op is created only by the ClickUp UI
+  (the `create_comment` API takes plain markdown and won't synthesize one), and a real @-mention spins a full agent
+  session (delivery still broken until Blocks 4–7). The live `Build Output` test exercises the **identical** serializer
+  on real `doc_mention` data in the n8n runtime; the `Detect Mention` copy is the same function (unit-tested on the
+  same op, deployed, drift-clean). Operator may do a UI @-mention as optional belt-and-suspenders.
 
 ## Block 3 — Enable image embedding (ADR-067)
 

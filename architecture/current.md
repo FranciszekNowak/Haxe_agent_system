@@ -1778,6 +1778,19 @@ ADR-043; the pipeline is PD-blind.)
   `additional_context` **always `''`**, `sources_used: []`, `sources_filtered_out: 0`. `Build Prompt`
   injects `task_comments` before the task context; with `additional_context` empty it simply omits the
   "Dodatkowy kontekst (wyszukiwanie semantyczne)" section.
+  > **Doc-link serialization + the inline-serializer reuse exception (ADR-066 Block 2, 2026-06-30).** `Build
+  > Output` (top comments) and `Collect Replies` (threaded replies) now serialize each comment's ops via the
+  > canonical `serializeCommentOps(ops, flat)` helper, with a link-safe `truncateKeepingLinks(text, 600)` — the
+  > 600-char cap is kept but never severs a `[dokument ClickUp: …]`/`[link: …]` marker. This is the managed
+  > `get_task_comments` tail-tool path (via `Triggering Task Tail Handler → Call Assemble Task Context`) **and**
+  > the bare-lane inline comments, so a `doc_mention` now reaches the agent as a fetchable URL instead of a blank
+  > gap. Verified live against the original failing task `869dxn3d8` (real `doc_mention` op → URL in `task_comments`).
+  > **Reuse decision:** the identical helper is inlined at **three** sites (here ×2 + the producer's `Detect
+  > Mention`, §15.7). Extracting one shared `executeWorkflow` serializer was rejected: n8n Code nodes share no
+  > module, and a sub-workflow on the producer's webhook hot path would add an execution row **per comment**
+  > (Insights-flood risk) plus a synchronous failure surface to mention-detection — worse long-run fragility than
+  > three copies of a pure, stable string transform. The copies are pinned by an identical provenance header
+  > ("KEEP serializeCommentOps IDENTICAL across 3 sites"); this is the unification rule's documented exception.
   > **Retired in Block 3b (ADR-054 R3):** the former open-ended **search-as-bot** path — the Haiku
   > query-extraction sub-call (`triggered_by=search_step`), the ClickUp task/doc search, the
   > `Check Space Member` / `Layer B Filter` post-hoc membership gate, the up-to-5 artifact read-back,
@@ -1915,6 +1928,15 @@ loop-breaker → **`Read Queue Flag` → `Queue Enabled?`**: if true → `Fetch 
   ClickUp API calls** (~12 ms; no `Get Comments`). It also extracts `triggering_comment_id` +
   `triggering_comment_text`, passed through to the spine and into `Build Prompt`. Caller/reviewer
   = the **mentioner**.
+  > **Doc-link serialization (ADR-066 Block 2, 2026-06-30).** `triggering_comment_text` is now built by a
+  > canonical `serializeCommentOps(ops, flat)` helper, not the old `text_content || ops.map(.text).join`. ClickUp's
+  > flat `comment_text`/`text_content` silently **drops** rich-entity ops (`doc_mention`/`bookmark`/`link`), whose
+  > `.text` is empty or a bare id — so a doc reference embedded in the triggering comment vanished and the agent
+  > fell back to `clickup_search` (the 2026-06-30 pptx run). The helper rebuilds from ops when any rich op is
+  > present, emitting for a `doc_mention` the canonical URL `app.clickup.com/{teamId}/docs/{viewId}/{pageId}` (the
+  > agent parses `document_id`/`page_id` from it for `clickup_get_document_pages`); ordinary comments are byte-for-byte
+  > unchanged (flat text still wins). The **same** helper is inlined in `Assemble Task Context`'s `Build Output` +
+  > `Collect Replies` (§15.5) — see the reuse-exception note there.
 - **Thread-root reply target (ADR-040).** `Detect Mention` also computes **`reply_to_comment_id`**
   — the comment the spine should reply *into*. ClickUp threads are **single-level**, so replying to a
   comment that is itself a reply returns `Unsupported Entity` and `Post Reply` would fall back to a
