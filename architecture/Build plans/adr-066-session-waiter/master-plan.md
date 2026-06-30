@@ -58,7 +58,7 @@ to run because the session was abandoned mid-task.
 | Block | Scope | Status |
 |-------|-------|--------|
 | 0 | Verify assumptions (A1–A6) | ✅ DONE — GO (see block-0-findings.md) |
-| 1 | Fail-loud guard: non-delivery never posts narration (+ CRITICAL alert) | ☐ TODO |
+| 1 | Fail-loud guard: non-delivery never posts narration (+ CRITICAL alert) | ✅ DONE — verified live 2026-06-30 (commit pending) |
 | 2 | Doc-link serialization fix (Detect Mention + Assemble Task Context) | ☐ TODO |
 | 3 | Enable image embedding (image MCP handler signed URL + persona contract) — ADR-067 | ☐ TODO |
 | 4 | Waiter service skeleton: deploy, health, env, dead-man's-switch — ADR-066 draft | ☐ TODO |
@@ -136,6 +136,27 @@ The FALSE branch today posts **no** comment and never flips status off "W trakci
    840000** and redeploy. Also confirm a normal short task still posts its answer. Verify with
    `inspect-execution.mjs` + `alerts-since.mjs`; delete test rows/tasks. (Cheaper pre-check: drive Post Reply
    (v1) directly with the canned `rendered_delta` to prove the comment+status path before the full run.)
+
+### Block 1 — execution notes (2026-06-30)
+
+- **Pre-block drift write-back (separate commit).** Starting Block 1 surfaced live-ahead-of-repo drift: an
+  entire **ClickUp Chat surface** feature (`Surface = chat?` router, `Call Assemble Chat Context`, a
+  `Call Assemble Context` Merge, `Skip Cost If Chat?`, and a chat reply path in Post Reply) was live in
+  `agent-orchestrator`/`post-reply`/`spine-http-ingress` with **no repo artifact and no ADR**, and its node
+  notes claimed **"ADR-066"** — colliding with this plan. Operator decision: renumber it to **ADR-068**,
+  write the drift back first as its own commit, then do Block 1 on the clean base. Done: live notes + repo
+  JSON renumbered, 3 workflows re-exported (drift-clean), `architecture/decisions/068-chat-surface-convergence.md`
+  added. The spec's "live == repo" claim held only for the `Session OK?` sub-topology, not the whole graph.
+- **Surface-aware extension to the spec.** Because a chat-surface request can reach the managed `Session OK?`
+  gate, `Call Post Reply (Incomplete)` passes `surface`/`surface_ref` and carries the failure text in **both**
+  `rendered_delta` (task path → Pass Delta) **and** `completion` (chat path → Build Chat Markdown, which ignores
+  `rendered_delta`). Otherwise as specced.
+- **DoD verified live** (temporary 20 s `SOFT_DEADLINE_MS`, restored to 840000): a `deadline` run (opus,
+  output_message empty) and a `delivered`-with-empty-blocks run (sonnet) each → `Session OK?` FALSE → canned
+  Polish incomplete notice (outcome interpolated, **no narration**), status flipped to Zakończono, **CRITICAL
+  `managed-agents/non-delivery`** alert. A normal `done`+free-text run (`"To jest 4."`) → `Session OK?` TRUE →
+  published via Render → Post Reply (Managed), with only the known `no-deliver-output` text-fallback WARN.
+  Drift-clean 42/42; test rows + disposable task deleted.
 
 ## Block 2 — Doc-link serialization fix
 

@@ -519,20 +519,20 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [1472, 224],
-      "notes": "Gates whether the session produced anything to publish. ADR-063 fix (2026-06-27): under deliver_output the agent's answer lives in output_blocks and final_message_text/output_message is EMPTY when it delivers cleanly via the tool (no chatter). The old check (output_message notEmpty) dropped those valid tool-delivered answers -> WARN agent-orchestrator/managed-session + no Post Reply. Now TRUE when output_message is non-empty OR (delivered_via_tool AND output_blocks non-empty). FALSE (genuinely empty: no text AND no blocks) still -> Alert Session Empty.",
+      "notes": "ADR-068/ADR-066 Block 1 fail-loud guard (2026-06-30): gates on the PUBLISHABLE-ANSWER test, not text presence. TRUE = (delivered_via_tool AND output_blocks non-empty) OR (outcome==='done' AND output_message non-empty) — only the 'delivered' and 'done' session outcomes are publishable. A non-delivery outcome (deadline/terminated/max_rounds/poll_error/send_failed/create_failed) is FALSE even when output_message carries mid-work narration, so narration is NEVER posted as the answer (the 2026-06-30 pptx-run failure mode). FALSE -> Call Post Reply (Incomplete) (Polish failure notice; flips status off 'W trakcie') + Alert Non-Delivery (CRITICAL). Supersedes the ADR-063 output_message-OR-blocks check.",
       "parameters": {
         "conditions": {
           "options": {
-            "caseSensitive": true,
+            "version": 2,
             "leftValue": "",
-            "typeValidation": "loose",
-            "version": 2
+            "caseSensitive": true,
+            "typeValidation": "loose"
           },
           "combinator": "and",
           "conditions": [
             {
               "id": "sok1",
-              "leftValue": "={{ (($json.output_message || '').toString().trim() !== '') || ($json.delivered_via_tool === true && Array.isArray($json.output_blocks) && $json.output_blocks.length > 0) }}",
+              "leftValue": "={{ ($json.delivered_via_tool === true && Array.isArray($json.output_blocks) && $json.output_blocks.length > 0) || ($json.outcome === 'done' && ($json.output_message || '').toString().trim() !== '') }}",
               "rightValue": "",
               "operator": {
                 "type": "boolean",
@@ -614,10 +614,11 @@
     },
     {
       "id": "694fcc5a-670b-41a1-96b3-81f4b84e7f83",
-      "name": "Alert Session Empty",
+      "name": "Alert Non-Delivery",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [1760, 352],
+      "notes": "ADR-066 Block 1 (2026-06-30): repurposed from 'Alert Session Empty'. CRITICAL when the managed session returned a NON-publishable outcome (deadline/terminated/max_rounds/poll_error/send_failed/create_failed). The orchestrator posts a Polish incomplete-status notice via Call Post Reply (Incomplete); this alert tells the operator (task, outcome, status, duration). onError=continueRegularOutput so the alert can't break the run.",
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -627,10 +628,10 @@
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
-            "severity": "WARN",
-            "source": "agent-orchestrator/managed-session",
-            "message": "Sesja Managed Agents nie zwróciła treści do opublikowania — nie opublikowano odpowiedzi.",
-            "details": "=task={{ $('Call Execute Agent Session').first().json.clickup_task_id }}; status={{ $('Call Execute Agent Session').first().json.status }}; outcome={{ $('Call Execute Agent Session').first().json.outcome }}; szczegóły w alertach managed-agents"
+            "severity": "CRITICAL",
+            "source": "managed-agents/non-delivery",
+            "message": "Sesja Managed Agents nie dostarczyła wyniku (timeout/błąd) — opublikowano komunikat o niepowodzeniu.",
+            "details": "=task={{ $('Call Execute Agent Session').first().json.clickup_task_id }}; outcome={{ $('Call Execute Agent Session').first().json.outcome }}; status={{ $('Call Execute Agent Session').first().json.status }}; duration={{ $('Call Execute Agent Session').first().json.duration_seconds }}s"
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,
@@ -1212,6 +1213,46 @@
         },
         "options": {}
       }
+    },
+    {
+      "id": "orch-call-post-reply-incomplete",
+      "name": "Call Post Reply (Incomplete)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [1760, 496],
+      "notes": "ADR-066 Block 1 (2026-06-30): on a non-delivery outcome, post a Polish incomplete-status notice via Post Reply (v1) and flip status off 'W trakcie' (Set Status Zakonczono). The failure text is set in BOTH rendered_delta (task surface -> Pass Delta) and completion (chat surface -> Build Chat Markdown, which ignores rendered_delta), and surface/surface_ref are passed, so a chat non-delivery is delivered to chat. NEVER renders output_message (the abandoned-session narration). image/doc fields empty; cost footer reflects the wasted spend.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "t17moGs7Vxo5ZcFv",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "completion": "={{ 'Nie udało się dokończyć zadania w wyznaczonym czasie — agent nie dostarczył wyniku (' + ($('Call Execute Agent Session').first().json.outcome || 'brak') + '). Spróbuj podzielić zadanie na mniejsze kroki albo ponów zlecenie.' }}",
+            "model": "={{ $('Call Execute Agent Session').first().json.model_used }}",
+            "cost_pln": "={{ $('Call Execute Agent Session').first().json.cost_pln }}",
+            "clickup_task_id": "={{ $('Call Assemble Context').first().json.clickup_task_id }}",
+            "reviewer_user_id": "={{ $('Call Assemble Context').first().json.reviewer_user_id }}",
+            "triggering_comment_id": "={{ $('Call Assemble Context').first().json.triggering_comment_id }}",
+            "web_sources": "={{ '[]' }}",
+            "image_manifest": "={{ [] }}",
+            "rendered_delta": "={{ [ { text: 'Nie udało się dokończyć zadania w wyznaczonym czasie — agent nie dostarczył wyniku (' + ($('Call Execute Agent Session').first().json.outcome || 'brak') + '). Spróbuj podzielić zadanie na mniejsze kroki albo ponów zlecenie.' } ] }}",
+            "image_models": "={{ [] }}",
+            "total_image_cost_pln": "={{ 0 }}",
+            "doc_attachments": "={{ [] }}",
+            "session_id": "={{ $('Call Execute Agent Session').first().json.session_id }}",
+            "surface": "={{ $('Call Assemble Context').first().json.surface || 'task' }}",
+            "surface_ref": "={{ $('Call Assemble Context').first().json.surface_ref || '' }}",
+            "output_blocks_json": "={{ '[]' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
     }
   ],
   "connections": {
@@ -1352,7 +1393,12 @@
         ],
         [
           {
-            "node": "Alert Session Empty",
+            "node": "Alert Non-Delivery",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Call Post Reply (Incomplete)",
             "type": "main",
             "index": 0
           }

@@ -272,10 +272,21 @@ documents this as deferred). **Amendment 2 (2026-06-27):** a second silent drop 
 `Session OK?` gate, which tested only `output_message` (the agent's free-text trailing message). Under
 `deliver_output` that field is empty whenever the agent delivers cleanly via the tool with no chatter (the
 normal path) — so a valid answer sitting in `output_blocks` was discarded with a `agent-orchestrator/managed-session`
-"no content to publish" WARN and **no reply posted** (real task `869dwjc4a`, session exec 4730). The gate now passes
-when `output_message` is non-empty **OR** (`delivered_via_tool` AND `output_blocks` non-empty); a truly empty
-session still routes to `Alert Session Empty`. Verified end-to-end (orchestrator exec 4763): empty `output_message`,
-TRUE branch taken, comment posted, zero alerts. File: `agent-orchestrator.json` (`Session OK?` only).
+"no content to publish" WARN and **no reply posted** (real task `869dwjc4a`, session exec 4730). **Amendment 3 —
+ADR-066 Block 1 fail-loud guard (2026-06-30):** the `Session OK?` gate was re-cut to discriminate on `outcome`, not
+text presence. It now passes **only** for a publishable answer: (`delivered_via_tool` AND `output_blocks` non-empty)
+**OR** (`outcome === 'done'` AND `output_message` non-empty). A non-delivery outcome (`deadline` / `terminated` /
+`max_rounds` / `poll_error` / `send_failed` / `create_failed`, or a `delivered` with an empty block array) is FALSE
+**even when `output_message` carries the agent's mid-work narration** — closing the 2026-06-30 pptx-run failure where
+a deadline's narration was published as the answer. The FALSE branch now posts a Polish incomplete-status notice via
+the new **`Call Post Reply (Incomplete)`** (flips status off "W trakcie" to Zakończono; surface-aware — passes
+`surface`/`surface_ref` and carries the message in both `rendered_delta` and `completion` so a chat non-delivery is
+delivered to chat) and fires a **CRITICAL `managed-agents/non-delivery`** alert (the repurposed former `Alert Session
+Empty` → `Alert Non-Delivery`). `output_message` is **never** rendered as the deliverable on this path. The legit
+degrade-to-text path (`outcome === 'done'` + free text → existing `output-adapter/no-deliver-output` WARN) is kept.
+Verified end-to-end (2026-06-30, temporary 20 s deadline): a `deadline` run and a `delivered`-empty run each posted
+the canned notice (no narration), flipped status, fired CRITICAL; a normal `done`+free-text run still published.
+File: `agent-orchestrator.json` (`Session OK?`, `Alert Non-Delivery`, `Call Post Reply (Incomplete)`).
 
 **Reliability:** an auth dead-man's-switch (`Managed Agents Auth Monitor (v1)`), the CU-rules sync +
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the
@@ -1376,8 +1387,10 @@ footer shows the **per-execution** cost — the session's text cost plus the win
 from `Sum Execution Image Cost` (ADR-060), while `Call Write Cost Field` still writes the cumulative CU cost
 field (ADR-057 closed the gap where the managed footer + cost field were never written); **false**
 → the bare `Call Execute LLM`. An unreadable/invalid
-flag fails safe to bare + `Alert Lane Unreadable` (WARN); an empty managed session → `Alert Session Empty`
-(WARN, no empty post); adapter degradation → `Alert Render Warnings` (WARN) — all via `Post Alert (v1)`. It sets status **W trakcie** on a **parallel fire-and-forget side-branch off
+flag fails safe to bare + `Alert Lane Unreadable` (WARN); a managed session that returns a **non-publishable
+outcome** (deadline/terminated/max_rounds/poll_error/empty `delivered`) → `Call Post Reply (Incomplete)`
+(Polish incomplete notice, status → Zakończono) + **CRITICAL** `Alert Non-Delivery` (ADR-066 Block 1, never
+posts the agent's narration); adapter degradation → `Alert Render Warnings` (WARN) — all via `Post Alert (v1)`. It sets status **W trakcie** on a **parallel fire-and-forget side-branch off
 the trigger itself** — so the requester sees "W trakcie" within ~1 s of webhook receipt, not after the
 ~30 s context build (repositioned 2026-06-11; a status-write failure routes to `Alert Status Failed`
 and never blocks the run). In parallel it calls three stage subworkflows in sequence — each a
