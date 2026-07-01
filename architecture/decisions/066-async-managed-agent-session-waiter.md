@@ -1,6 +1,8 @@
 ADR-066: Asynchronous managed-agent session via an external "session waiter" service
 
-Status: DRAFT (in progress — Blocks 4–8 of the adr-066-session-waiter master plan). Block 4 shipped the
+Status: ACCEPTED (Blocks 4–8 shipped + verified live; **cutover done 2026-07-01** —
+`config.session_waiter.enabled=true` is the standing production default, the synchronous poll loop is the
+documented rollback). Block 4 shipped the
 service skeleton + reliability seam + this draft; **Block 5 (orchestrator split) shipped + verified live
 2026-06-30** — the managed lane forks on `config.session_waiter.enabled` (seeded `false`): `mode='handoff'`
 runs the front half then `POST /handoff` and returns (no key in the body — the waiter re-derives it), while
@@ -21,7 +23,15 @@ master plan): SSE delivers full stable-id events + stays open across idle, the o
 through a new HTTP-triggered `Session Waiter Finish (v1)` webhook that calls the **shared
 `Publish Managed Result (v1)`** sub-workflow, which is *also* what the synchronous orchestrator now calls
 (one publish path, decision B — see below); the waiter (`app.mjs` v1.3.0-block7) sends the finish callback
-header-authed (`X-Watchdog-Key`). Only cutover (8) follows. Finalized at Block 8.
+header-authed (`X-Watchdog-Key`). **Block 8 (cutover + reliability) shipped 2026-07-01** — the reliability
+seam was drilled live (freshness monitor CRITICAL on a staged stuck row; a waiter restart mid-run re-adopted
+a real long in-flight session and delivered), the whole-plan E2E delivered a real 8-slide `.pptx` with 4
+byte-verified embedded images fully async (cost written, status Zakończono, 0 alerts), the finish half was
+hardened with an actionable publish-fail CRITICAL (`session-waiter/finish-publish`), and the flag was flipped
+to `true`. A live re-run of the original incident task surfaced a pre-existing, orthogonal issue — a
+**transient** ClickUp-MCP connection failure makes the caller's `clickup_*` MCP tools fall back to
+client-side calls n8n can't service, degrading doc-reading — which was diagnosed (a follow-up probe proved
+the ClickUp MCP is healthy and reads docs in-harness) and accepted as graceful degradation (see Consequences).
 
 Context
 
@@ -138,13 +148,24 @@ Consequences
 - **Drift discipline.** The tail/extract handlers remain the single source of truth for client-tool
   servicing; the waiter only calls them, so a future handler change does not have to be mirrored.
 - **Reversible cutover.** `config.session_waiter.enabled=false` restores the synchronous poll loop
-  verbatim; the flag is the documented rollback.
+  verbatim; the flag is the documented rollback. Cut over to `true` on 2026-07-01 after the whole-plan E2E.
+- **Doc-reading depends on the external ClickUp MCP; a transient MCP failure degrades gracefully (accepted).**
+  The caller's `clickup_*` discovery/doc tools (incl. `clickup_get_document_pages`) resolve server-side via
+  the caller-scoped ClickUp MCP (`mcp.clickup.com`, ADR-054). When that MCP connection *transiently* fails
+  for a session (proven possible in the Block-8 live re-run of the original task; a follow-up probe confirmed
+  the MCP is otherwise healthy and reads docs in-harness), Anthropic surfaces those allowlisted tools as
+  client-side `custom_tool_use` — which n8n does **not** service (they were never client-side tools), so the
+  agent gets "unavailable", degrades, and emits fail-soft `managed-agents/tail-unknown-tool` WARNs. This is a
+  rented-commodity dependency, not a code path we own; we **accept the graceful degradation** (WARN + re-run
+  when healthy) rather than duplicate the MCP with an n8n REST fallback. If the failure rate proves
+  material, the hardening (a caller-scoped REST fallback for the doc/search tools when they fall through) is
+  a documented future ADR-054 block, deliberately scoped OUT of ADR-066.
 
-Supersedes (at Block 8): the synchronous held-poll loop of ADR-053 / ADR-063 (`Poll Round`). ADR-063's
+Supersedes (cutover 2026-07-01): the synchronous held-poll loop of ADR-053 / ADR-063 (`Poll Round`). ADR-063's
 structured `deliver_output` tool is retained and is *not* the bug — it never got to run because the
 session was abandoned mid-task. Pairs with ADR-067 (downloadable generated-image bytes), which fixes the
 in-document image-embedding half of the same incident.
 
 Date
 
-2026-06-30 (draft; Block 4 of 8)
+2026-06-30 (draft; Block 4 of 8) — 2026-07-01 (ACCEPTED; Blocks 5–8 shipped + cutover live)

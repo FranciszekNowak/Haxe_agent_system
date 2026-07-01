@@ -229,6 +229,58 @@
           "convertFieldsToString": true
         },
         "options": {}
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "swf-alert-publish-failed",
+      "name": "Alert Publish Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1540,
+        460
+      ],
+      "notes": "ADR-066 Block 8 (decision #1): the finish half claims the row 'finished' BEFORE publishing to guarantee at-most-once (no duplicate user-facing comment on a retried callback). The trade-off is that if Publish hard-throws, the row is 'finished' but nothing posted. We do NOT auto-retry (that would risk a double-post); instead this fires a targeted, ACTIONABLE CRITICAL so the operator can manually repost. onError=continueRegularOutput so the alert can't itself break the response.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "session-waiter/finish-publish",
+            "message": "Wynik agenta jest gotowy, ale publikacja do ClickUp nie powiodła się — wymagany RĘCZNY repost (wiersz oznaczony jako finished, nie zostanie ponowiony automatycznie).",
+            "details": "=task={{ $('Finish Webhook').first().json.body.clickup_task_id }}; session={{ $('Finish Webhook').first().json.body.session_id }}; outcome={{ $('Finish Webhook').first().json.body.outcome }}; err={{ ($json.error && ($json.error.message || $json.error)) || 'publish sub-workflow error' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "swf-respond-pubfail",
+      "name": "Respond Publish Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        460
+      ],
+      "notes": "Ack the waiter after a publish failure (200, NOT 500) so it does NOT retry — the row is claimed finished and a retry would not re-attempt anyway; the operator was paged by Alert Publish Failed.",
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, published: false, publish_failed: true, session_id: $('Finish Webhook').first().json.body.session_id } }}",
+        "options": {
+          "responseCode": 200
+        }
       }
     },
     {
@@ -402,6 +454,24 @@
         [
           {
             "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Publish Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Publish Failed": {
+      "main": [
+        [
+          {
+            "node": "Respond Publish Failed",
             "type": "main",
             "index": 0
           }

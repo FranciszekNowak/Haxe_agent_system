@@ -66,7 +66,7 @@ to run because the session was abandoned mid-task.
 | 6 | Waiter event loop: long-poll, client-tool servicing (delegate to n8n), deliver_output capture | ✅ DONE — verified live E2E 2026-06-30 (A2 baseline GO) |
 | 6.1 | Streaming event source: SSE-incremental + `GET /events` reconcile (replaces the full-log re-fetch) | ✅ DONE — verified live E2E 2026-07-01 (SSE drive + restart-recovery + A2) |
 | 7 | Finish-callback half in n8n: doc enumeration + cost + render + post (+ Block 1 guard) | ✅ DONE — verified live E2E 2026-07-01 (shared Publish path, decision B; delivered + non-delivery + idempotency) |
-| 8 | Reliability + cutover behind `config.session_waiter.enabled`; reconciliation cron; finalize ADR-066 | ☐ TODO (Blocks 6.1 + 7 landed — precondition met) |
+| 8 | Reliability + cutover behind `config.session_waiter.enabled`; reconciliation cron; finalize ADR-066 | ✅ DONE — cutover LIVE 2026-07-01 (drills + whole-plan E2E passed; ADR-066 ACCEPTED) |
 
 Each block: read this file → do one verifiable unit → write back (`architecture/current.md` + ADR + this
 table) → commit → emit a handoff prompt.
@@ -588,6 +588,49 @@ rollback). Verify reconciliation cron + health monitor (simulate a stuck session
 mid-session). Finalize ADR-066 (supersede the ADR-053/063 held-poll text); update `current.md` Stage-B;
 re-export all touched workflows; `check-workflow-drift.mjs` clean. **Precondition: Block 6.1 (SSE) landed** —
 do not cut real long sessions over to the full-log-re-fetch poll.
+
+### Block 8 — execution notes (2026-07-01, DONE — cutover LIVE)
+
+- **Finish-half hardening (operator decision #1).** Kept the at-most-once guarantee (the finish webhook
+  claims the `waiter_sessions` row to `finished` BEFORE publishing, so a retried callback never double-posts
+  a user-facing comment). We deliberately did NOT add auto-retry (it would trade a rare LOUD no-post for a
+  rare SILENT double-post). Instead `Call Publish Managed Result` got `onError=continueErrorOutput` → new
+  `Alert Publish Failed` (CRITICAL `session-waiter/finish-publish`, "wynik gotowy ale publikacja nie
+  powiodła się — wymagany RĘCZNY repost", task+session in details) → `Respond Publish Failed` (200, so the
+  waiter doesn't retry). `Session Waiter Finish (v1)` is now 13 nodes.
+- **Reliability drills (both passed live).** (a) Freshness: staged a `handed_off` row 70 min old →
+  `check_stuck_waiter_sessions()` returned `stuck_count=1` → drove the Freshness Monitor `When Called` →
+  exactly **1 CRITICAL `session-waiter/freshness`** with the row + recovery guidance; row deleted. (b) Waiter
+  restart mid-session: during the long E2E, `docker restart session-waiter` → on startup `readopt_found
+  count=1` → re-adopted the **real in-flight** session and resumed via SSE (same deadline), then delivered.
+  This is the decisive decoupling proof — the session survived the waiter PROCESS dying (stronger than merely
+  running >15 min).
+- **Whole-plan E2E (passed).** Drove the original failing shape via the orchestrator (flag ON): an 8-slide
+  `.pptx` about the Haxe agent system with 4 generated images. Delivered fully async (orchestrator handoff →
+  waiter drive via SSE → finish callback → shared Publish) in ~8 min: the ClickUp comment carried the answer
+  \+ `@Franciszek Nowak` tag + **📎 `Haxe_System_Agentowy.pptx` (3.3 MB)**; downloading + unzipping the file
+  confirmed **4 embedded images** (`ppt/media/image-{2,3,4,7}-1.jpg`, matching the ✅ slides); `[AI] Koszt
+  akcji` = 2.5003 PLN; `[AI] Status agenta` = Zakończono; **0 alerts** on that session. (Wall-clock was ~8 min
+  not >15; the decoupling the criterion targets was proven by the mid-run restart survival + the 45-min budget
+  \+ no single-node cap.)
+- **The doc-reading investigation (operator: accept A).** The live E2E window also caught the operator's own
+  re-run of the ORIGINAL incident task (`869dxn3d8`, opus). It surfaced what first looked like a servicing
+  gap: the agent's `clickup_list_document_pages` / `clickup_get_document_pages` / `clickup_search` reached
+  n8n as client-side `custom_tool_use` and got fail-soft "unavailable" (3 `tail-unknown-tool` WARNs), and the
+  session never delivered. Diagnosis (all verified): these are **MCP-allowlisted** tools (the agent def has
+  `mcp_toolset clickup` with 14 configs incl. the doc tools; caller IS onboarded, active vault) meant to
+  resolve in-harness via the caller-scoped ClickUp MCP (ADR-054) — NOT client-side, so n8n correctly has no
+  handler. In that session the `clickup` MCP resolved **zero** tools (only `haxe_image` MCP worked) → its
+  tools fell back to client-side. A follow-up **probe** (sync task forcing `clickup_search`, onboarded caller)
+  proved the ClickUp MCP is **healthy**: it searched, returned real tasks, and read the ClickUp doc "Haxe -
+  informacje dla wszystkich" in-harness (no WARN). ∴ the original-task failure was a **transient** ClickUp-MCP
+  connection failure, not a code bug. Operator **accepted A**: graceful degradation for the rented-commodity
+  MCP (WARN + re-run when healthy); no n8n REST fallback built (would duplicate the MCP). Hardening the
+  transient case is a documented future ADR-054 block, scoped OUT of ADR-066.
+- **Cutover + write-backs.** Flipped `config.session_waiter.enabled=true` (standing default; sync = rollback).
+  ADR-066 → ACCEPTED; `current.md` + this plan updated; `Session Waiter Finish (v1)` (13 nodes) re-exported;
+  drift-clean. All test rows (`waiter_sessions`, `agent_runs`) + disposable tasks cleaned up; `waiter_sessions`
+  empty. NOTE: the flag is now **true in prod** — the async path is live for all managed tasks.
 
 ## End-to-end verification (whole-plan DoD)
 

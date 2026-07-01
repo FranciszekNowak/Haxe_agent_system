@@ -898,7 +898,7 @@ Target: 7–9 weeks to v1.
   - `zip-extractor` (Node, `services/zip-extractor/`) — internal helper service (ADR-058); see that ADR for detail.
   - `session-waiter` (Node 20, `services/session-waiter/`, v1.3.0-block7) — **ADR-066, deployed (Block 4
     skeleton; Block 5 orchestrator handoff; Block 6 event loop; Block 6.1 SSE-incremental; Block 7 finish
-    callback LIVE; only Block 8 cutover remains)**. External async
+    callback; Block 8 CUTOVER LIVE 2026-07-01 — ADR-066 ACCEPTED)**. External async
     waiter for the **managed-agent** lane: decouples a long Anthropic Managed-Agents session from any single n8n
     execution (the 840 s / single-Code-node ceiling that abandoned the 2026-06-30 `.pptx` run). `/health` (the
     dead-man's-switch target) + `/handoff` (persist a `waiter_sessions` row, return 202, then **drive the session
@@ -920,16 +920,18 @@ Target: 7–9 weeks to v1.
     `get_anthropic_key()`). Reliability seam: `Session Waiter Health Monitor (v1)` (pings `/health` every
     10 min → CRITICAL if down) + `Session Waiter Freshness Monitor (v1)` (`check_stuck_waiter_sessions()`
     every 15 min → CRITICAL for a handed-off-but-not-finished session).
-    - **Orchestrator split (Block 5).** The managed lane forks on `config.session_waiter.enabled` (seeded
-      `false` → prod runs the synchronous poll loop unchanged): `agent-orchestrator.json` reads the flag
+    - **Orchestrator split (Block 5).** The managed lane forks on `config.session_waiter.enabled` (**now
+      `true` in prod — cutover 2026-07-01; `false` is the documented rollback to the synchronous poll loop**):
+      `agent-orchestrator.json` reads the flag
       (`Read Waiter Flag`) and passes `mode` to `Execute Agent Session (v1)`. `mode='handoff'` runs only the
       **front half** (resolve agent/key → create session → send first message) via a new `Mode = handoff?` IF
       → `Build Handoff Output` (returns `outcome='handed_off'` + carry-state, **no** managed key), then the
       orchestrator's `Handoff?` IF routes to `Post Handoff to Waiter` (`POST /handoff`) and returns with **no
       synchronous hold and no comment** (status stays "W trakcie"; the Block-7 finish callback posts the real
-      answer later; POST failure → CRITICAL `session-waiter/handoff-post`). `mode='sync'` (the prod default)
+      answer later; POST failure → CRITICAL `session-waiter/handoff-post`). `mode='sync'` (the rollback path)
       → `Handoff?` FALSE → the `Call Publish Managed Result` step (see Block 7). Both paths verified live
-      2026-06-30 (handoff persists a keyless row + returns fast; sync still delivers via Post Reply).
+      (handoff persists a keyless row + returns fast; sync still delivers via Post Reply). With the flag now
+      `true`, the handoff path is the live default.
     - **Finish callback + shared publish path (Block 7, LIVE 2026-07-01).** `Session Waiter Finish (v1)`
       (`m0z2CAgXkUMfJudw`) — a webhook (`/session-waiter-finish`, **headerAuth** `X-Watchdog-Key`) that
       receives the waiter's terminal payload → **atomic idempotency claim** on `waiter_sessions` (flip to
@@ -944,9 +946,20 @@ Target: 7–9 weeks to v1.
       also fires ONE consolidated `session-waiter/finish` WARN/CRITICAL for session-level degradations
       (does NOT re-fire the non-delivery CRITICAL — Publish's `Alert Non-Delivery` owns that). Verified live
       E2E: delivered (answer posted with @-mention + cost), idempotent replay (no double-post), non-delivery
-      (incomplete notice, not narration, + CRITICAL). Known edge: the claim marks `finished` at entry, so a
-      failed publish leaves a `finished` row with nothing posted — loud (reactive CRITICAL), not silent;
-      Block 8 may tighten it.
+      (incomplete notice, not narration, + CRITICAL). Known edge (accepted, Block 8): the claim marks
+      `finished` at entry, so a failed publish leaves a `finished` row with nothing posted — this is made
+      **actionable** by `Call Publish Managed Result` `onError` → `Alert Publish Failed` (CRITICAL
+      `session-waiter/finish-publish`, "wymagany ręczny repost"); at-most-once is preserved (no auto-retry,
+      which would risk a double-post).
+    - **Cutover (Block 8, LIVE 2026-07-01).** Reliability drilled live (freshness CRITICAL on a staged stuck
+      row; a waiter restart mid-run re-adopted a real long in-flight session and delivered); whole-plan E2E
+      delivered a real 8-slide `.pptx` with 4 byte-verified embedded images fully async. Flag → `true`
+      (standing default). **Accepted degradation (ADR-054 territory, not ADR-066):** doc-reading uses the
+      caller-scoped ClickUp MCP (`mcp.clickup.com`); a *transient* MCP connection failure makes its `clickup_*`
+      tools fall back to client-side calls n8n can't service → the agent degrades + emits fail-soft
+      `managed-agents/tail-unknown-tool` WARNs. A Block-8 probe confirmed the MCP is otherwise healthy (reads
+      docs in-harness); we accept graceful degradation (re-run when healthy) rather than build an n8n REST
+      fallback that would duplicate the MCP.
 - **Public endpoint**: `https://agents.haxe.ai` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing, 90-day). HTTP → HTTPS redirect active. See ADR-012.
 - **Build control plane**: Claude Code drives infrastructure via two MCP servers in `.mcp.json`:
   - **`n8n-mcp`** (`n8n-mcp@2.56.0`) — n8n REST API (`https://agents.haxe.ai/api/v1`); key from `N8N_API_KEY` (setx; expiry 2026-08-31). See ADR-017/018.
