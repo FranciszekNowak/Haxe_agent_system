@@ -896,18 +896,22 @@ Target: 7–9 weeks to v1.
     (no ClickUp creds). BullMQ keys are prefixed `haxeq:*` so they never collide with n8n queue mode's `bull:*`
     on the shared `n8n-redis`.
   - `zip-extractor` (Node, `services/zip-extractor/`) — internal helper service (ADR-058); see that ADR for detail.
-  - `session-waiter` (Node 20, `services/session-waiter/`, v1.1.0-block6) — **ADR-066, deployed (Block 4
-    skeleton; Block 5 orchestrator handoff; Block 6 event loop LIVE)**. External async waiter for the
-    **managed-agent** lane: decouples a long Anthropic Managed-Agents session from any single n8n execution (the
-    840 s / single-Code-node ceiling that abandoned the 2026-06-30 `.pptx` run). `/health` (the dead-man's-switch
-    target) + `/handoff` (persist a `waiter_sessions` row, return 202, then **drive the session in the
-    background**). The driver re-derives the managed key via `get_anthropic_key()` RPC (A6), **long-polls**
-    `GET /events` (truth) + session status — porting `Poll Round`'s `analyze()` — services pending client tools
-    by POSTing the `Session Waiter Tool Bridge (v1)` (which delegates to the SSOT tail/extract handlers), captures
-    `deliver_output` blocks, and POSTs the finish callback (Block 7) on terminal. Crash recovery: re-adopts any
-    `handed_off`/`running` row on startup. (Long-poll is the robust first cut; each poll re-fetches the full
-    `GET /events` log, so **SSE-incremental + reconcile is Block 6.1, landing before the Block 8 cutover** to
-    avoid re-downloading a long session's growing transcript every 3 s.) `expose:8080` internal only;
+  - `session-waiter` (Node 20, `services/session-waiter/`, v1.2.0-block6.1) — **ADR-066, deployed (Block 4
+    skeleton; Block 5 orchestrator handoff; Block 6 event loop; Block 6.1 SSE-incremental LIVE)**. External async
+    waiter for the **managed-agent** lane: decouples a long Anthropic Managed-Agents session from any single n8n
+    execution (the 840 s / single-Code-node ceiling that abandoned the 2026-06-30 `.pptx` run). `/health` (the
+    dead-man's-switch target) + `/handoff` (persist a `waiter_sessions` row, return 202, then **drive the session
+    in the background**). The driver re-derives the managed key via `get_anthropic_key()` RPC (A6), then drives the
+    session via **SSE-incremental** (Block 6.1, primary): it seeds once with a full `GET /events`, then accumulates
+    events from the SSE stream `GET /events/stream` (full event objects w/ stable `sevt_` ids — probe 6.1.0), so
+    **steady state does NO full-log re-fetch**; a `GET /events` **delta** (`created_at[gte]=<cursor>` — the only
+    event cursor the API supports; it rejects `?after=`) runs only on (re)connect reconcile + a slow safety tick.
+    Terminal/pending/idle detection ports `Poll Round`'s `analyze()` (over the accumulated events; status from the
+    `session.status_*` events). It services pending client tools by POSTing the `Session Waiter Tool Bridge (v1)`
+    (SSOT tail/extract handlers), captures `deliver_output` blocks, and POSTs the finish callback (Block 7) on
+    terminal — **always resolving a pending tool** (deadlock avoidance). On repeated SSE failure it **degrades to
+    the Block-6 long-poll loop** (kept as the SSE-independent fallback; `SSE_ENABLED=false` forces it). Crash
+    recovery: re-adopts any `handed_off`/`running` row on startup and re-drives via SSE. `expose:8080` internal only;
     `mem_limit: 256m`; reuses `SUPABASE_*` +
     `ALERT_INTAKE_KEY` (no new secrets; the managed key is handed at handoff per A6, never in env/.env/DB —
     in fact Block 5's handoff does **not** send the key at all; the waiter re-derives it from

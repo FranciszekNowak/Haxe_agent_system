@@ -8,11 +8,16 @@ runs the front half then `POST /handoff` and returns (no key in the body — the
 — the waiter (`app.mjs` v1.1.0-block6) re-derives the key via `get_anthropic_key()`, long-polls `GET /events`
 (porting `Poll Round`'s analysis), services client tools through the new `Session Waiter Tool Bridge (v1)`
 (delegating to the SSOT tail/extract handlers), captures `deliver_output`, and POSTs the finish callback;
-crash-recovery re-adopts in-flight rows on startup. A2 ≥30-min survival is baseline-GO (non-blocking). The
-shipped loop long-polls; because each poll re-fetches the full `GET /events` log, **the SSE-incremental event
-source the Decision below describes is Block 6.1** (consume the stream incrementally, keep `GET /events` only
-for reconnect/reconcile + deadlock safety) and must land before the Block 8 cutover. The finish-callback half
-(7) and cutover (8) follow. Finalized at Block 8.
+crash-recovery re-adopts in-flight rows on startup. A2 ≥30-min survival is baseline-GO (non-blocking).
+**Block 6.1 (SSE-incremental event source) shipped + verified live E2E 2026-07-01** — the waiter (`app.mjs`
+v1.2.0-block6.1) now drives via SSE as the design intended: it seeds once with `GET /events`, then
+accumulates events from `GET /events/stream` (full event objects with stable `sevt_` ids), so **steady state
+does no full-log re-fetch**; a `GET /events` **delta** (`created_at[gte]=<cursor>`) runs only on (re)connect
+reconcile + a slow safety tick. The Block-6 long-poll loop is kept as the SSE-independent fallback
+(`SSE_ENABLED=false` forces it). Block 6.1.0 live-probed the assumptions (see the block-6.1.0 findings in the
+master plan): SSE delivers full stable-id events + stays open across idle, the only event cursor is
+`created_at[gte]` (`?after=` 400s), and a pending tool resolves across a forced mid-stream drop. The
+finish-callback half (7) and cutover (8) follow. Finalized at Block 8.
 
 Context
 

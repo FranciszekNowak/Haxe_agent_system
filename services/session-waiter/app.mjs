@@ -13,10 +13,16 @@
 // the session in the background:
 //   * re-derives the managed Anthropic key from public.get_anthropic_key() (A6 — the key is NOT in the
 //     handoff body; Block 5 deliberately omits it so it never spreads into the orchestrator's logs).
-//   * LONG-POLLS GET /v1/sessions/{id}/events (the source of truth, dedup-by-id implicit since the API
-//     returns the full ordered log) + GET /v1/sessions/{id} (status). This ports Poll Round verbatim; SSE
-//     is left as a future latency optimization (A1 says long-poll is the proven, n8n-independent fallback
-//     and is far simpler than SSE reconnect/reconcile — the right call for a background batch agent).
+//   * BLOCK 6.1 — SSE-INCREMENTAL (primary): seeds once with GET /v1/sessions/{id}/events, then
+//     accumulates from the SSE stream GET /v1/sessions/{id}/events/stream (full event objects with stable
+//     `sevt_` ids — probe 6.1.0). Terminal/pending/idle are derived from the accumulated events
+//     (session.status_* + deliver_output / client-tool detection, ported from Poll Round). Steady state
+//     does NO full-log re-fetch; a GET /events DELTA (created_at[gte]=<cursor>, probe-verified) runs only
+//     on (re)connect reconcile + a slow safety tick. On repeated SSE failure it DEGRADES to the long-poll
+//     loop below (still correct), never hangs.
+//   * LONG-POLL (fallback): re-fetches the FULL GET /v1/sessions/{id}/events each tick + GET
+//     /v1/sessions/{id} (status). This is the Block 6 loop (ports Poll Round verbatim) — kept as the
+//     proven, SSE-independent path (A1). Toggle with SSE_ENABLED=false to force it.
 //   * terminal detection (ports Poll Round): deliver_output pending -> capture blocks, stop (delivered);
 //     session error / status terminated -> terminated; agent replied after the last user turn with no
 //     pending tool -> done; absolute-budget (deadline_at) exceeded -> deadline (non-delivery).
@@ -50,7 +56,7 @@
 
 import express from 'express';
 
-const VERSION = '1.1.0-block6';
+const VERSION = '1.2.0-block6.1';
 const STARTED_AT = Date.now();
 
 const {
@@ -79,6 +85,12 @@ const MAX_CONSEC_ERRORS = 5;
 const DEFAULT_BUDGET_MS = 2_700_000; // 45 min — only used if a handoff carries no deadline/budget.
 const FINISH_MAX_TRIES = 4;
 const FINISH_RETRY_MS = 4000;
+// Block 6.1 SSE tuning. SSE is primary; on repeated stream failure the driver degrades to the long-poll
+// loop above. SSE_ENABLED=false forces the poll loop (operational rollback without a redeploy).
+const SSE_ENABLED = (process.env.SSE_ENABLED || 'true').toLowerCase() !== 'false';
+const SSE_SAFETY_MS = 45000;          // slow safety tick: a delta pull (NOT a full re-fetch) to backstop a missed wakeup
+const SSE_RECONNECT_BASE_MS = 1000;   // exponential backoff base for stream reconnect
+const MAX_SSE_RECONNECTS = 4;         // consecutive stream failures before falling back to the poll loop
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('FATAL: SUPABASE_URL and SUPABASE_SERVICE_KEY are required');
@@ -257,6 +269,87 @@ async function serviceClientTool(handoff, pending) {
 const inFlight = new Set();
 let activeSessions = 0;
 
+// ---- event-map helpers (Block 6.1: accumulate from SSE, reconcile with a GET /events delta) ----------
+// The DELTA fetch uses created_at[gte]=<cursor> (probe 6.1.0: the only event-cursor the API supports; it
+// rejects ?after=). gte + dedup-by-id guarantees no misses at the timestamp boundary (the boundary event
+// is re-fetched and dropped as already-seen). This is what avoids re-downloading the whole growing log.
+async function fetchEventsSince(key, sessionId, cursor) {
+  let url = `${ANTHROPIC_API_BASE}/v1/sessions/${sessionId}/events?limit=1000&order=asc`;
+  if (cursor) url += `&created_at%5Bgte%5D=${encodeURIComponent(cursor)}`;
+  const r = await fetch(url, { headers: anthropicHeaders(key) });
+  if (!r.ok) throw new Error(`anthropic GET events delta ${r.status}`);
+  const b = await r.json();
+  return Array.isArray(b.data) ? b.data : [];
+}
+function mergeEvents(state, incoming, mode) {
+  let added = 0;
+  for (const e of incoming) {
+    if (!e || !e.id || state.seen.has(e.id)) continue;
+    state.seen.add(e.id);
+    state.events.push(e);
+    added += 1;
+    if (e.processed_at && (!state.cursor || e.processed_at > state.cursor)) state.cursor = e.processed_at;
+  }
+  if (added && mode !== 'sse') log('info', 'events_fetch', { session_id: state.sessionId, mode, added, total: state.events.length });
+  return added;
+}
+async function pullDelta(key, state, mode) {
+  return mergeEvents(state, await fetchEventsSince(key, state.sessionId, state.cursor), mode);
+}
+// Chronological order for analyze()/status derivation. SSE + delta append mostly-ordered; sort defensively
+// (stable; our just-posted user events have null processed_at and sort last, which is correct — latest action).
+function orderedEvents(state) {
+  return [...state.events].sort((a, b) => {
+    const ka = a.processed_at || '￿', kb = b.processed_at || '￿';
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+}
+// Session status from the last top-level session.status_* event (SSE carries these explicitly, so we don't
+// need GET /v1/sessions per tick — only once at terminal, for final usage/duration). thread-status ignored.
+function deriveStatus(events) {
+  let s = 'running';
+  for (const e of events) {
+    if (e.type === 'session.status_idle') s = 'idle';
+    else if (e.type === 'session.status_running' || e.type === 'session.status_rescheduling') s = 'running';
+    else if (e.type === 'session.status_terminated') s = 'terminated';
+  }
+  return s;
+}
+// Open the SSE stream; call onEvent(parsedEvent) per event frame. Resolves when the server closes the
+// stream; rejects on network error / abort. Heartbeat/comment frames (": ...") are ignored (probe 6.1.0
+// saw ": connected" at open; the stream stays open across idle with no periodic close).
+async function consumeSse(key, sessionId, signal, onEvent) {
+  const r = await fetch(`${ANTHROPIC_API_BASE}/v1/sessions/${sessionId}/events/stream`, { headers: anthropicHeaders(key), signal });
+  if (!r.ok) throw new Error(`anthropic SSE ${r.status}`);
+  const dec = new TextDecoder();
+  let buf = '';
+  for await (const chunk of r.body) {
+    buf += dec.decode(chunk, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+      if (!frame.trim() || frame.startsWith(':')) continue;
+      const data = frame.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('');
+      if (!data) continue;
+      let o; try { o = JSON.parse(data); } catch { continue; }
+      if (o && o.id) onEvent(o);
+    }
+  }
+}
+// Service a pending client tool via the n8n bridge, always returning a {content, warnings} shape — a bridge
+// failure yields a fail-soft text result (so the caller ALWAYS resolves the tool; no session deadlock).
+async function serviceToolSafe(key, handoff, tool) {
+  try {
+    return await serviceClientTool(handoff, tool);
+  } catch (e) {
+    log('warn', 'tool_bridge_failed', { session_id: handoff.session_id, tool: tool.name, err: e.message });
+    return {
+      content: [{ type: 'text', text: `Tool "${tool.name}" failed (${String(e.message).slice(0, 150)}). Proceed without it and inform the user if relevant.` }],
+      warnings: [{ source: 'session-waiter/tool-bridge-failed', err: String(e.message).slice(0, 300), severity: 'WARN' }],
+    };
+  }
+}
+
 async function driveSession(handoff) {
   const sessionId = handoff.session_id;
   if (inFlight.has(sessionId)) { log('warn', 'already_driving', { session_id: sessionId }); return; }
@@ -265,62 +358,21 @@ async function driveSession(handoff) {
 
   const deadlineAt = handoff.deadline_at ? Date.parse(handoff.deadline_at) : (Date.now() + DEFAULT_BUDGET_MS);
   const finishUrl = handoff.finish_callback_url || '';
-  let warnings = [];
-  let toolRound = 0;
-  let outcome = null, picked = null, analysis = null, statusObj = {};
 
   try {
     const key = await getAnthropicKey();
     await patchWaiterSession(sessionId, { status: 'running', last_event_at: new Date().toISOString() });
-    log('info', 'drive_start', { session_id: sessionId, clickup_task_id: handoff.clickup_task_id, deadline_at: new Date(deadlineAt).toISOString() });
+    log('info', 'drive_start', { session_id: sessionId, clickup_task_id: handoff.clickup_task_id, deadline_at: new Date(deadlineAt).toISOString(), source: SSE_ENABLED ? 'sse' : 'poll' });
 
-    let consecErr = 0;
-    await sleep(1500);
-    while (true) {
-      if (Date.now() >= deadlineAt) { outcome = 'deadline'; break; }
-      try {
-        const events = await getEvents(key, sessionId);
-        statusObj = await getSession(key, sessionId);
-        consecErr = 0;
-        analysis = analyze(events);
-        await patchWaiterSession(sessionId, { last_event_at: new Date().toISOString() });
-        const status = statusObj.status;
-        if (analysis.sessionError) { outcome = 'terminated'; break; }
-        if (status === 'terminated') { outcome = 'terminated'; break; }
-        if (status === 'idle') {
-          if (analysis.pending.length > 0) {
-            const delivered = analysis.pending.find((e) => e.name === 'deliver_output');
-            if (delivered) { outcome = 'delivered'; picked = delivered; break; }
-            if (toolRound >= MAX_TOOL_ROUNDS) { outcome = 'max_rounds'; break; }
-            const tool = analysis.pending[0];
-            let svc;
-            try {
-              svc = await serviceClientTool(handoff, tool);
-            } catch (e) {
-              log('warn', 'tool_bridge_failed', { session_id: sessionId, tool: tool.name, err: e.message });
-              svc = {
-                content: [{ type: 'text', text: `Tool "${tool.name}" failed (${String(e.message).slice(0, 150)}). Proceed without it and inform the user if relevant.` }],
-                warnings: [{ source: 'session-waiter/tool-bridge-failed', err: String(e.message).slice(0, 300), severity: 'WARN' }],
-              };
-            }
-            // ALWAYS resolve the pending tool (deadlock avoidance), even on bridge failure.
-            await postToolResult(key, sessionId, tool.id, svc.content);
-            warnings = warnings.concat(Array.isArray(svc.warnings) ? svc.warnings : []);
-            toolRound += 1;
-            log('info', 'tool_serviced', { session_id: sessionId, tool: tool.name, round: toolRound });
-            continue; // re-poll promptly
-          }
-          if (analysis.agentRepliedAfter) { outcome = 'done'; break; }
-        }
-      } catch (e) {
-        consecErr += 1;
-        log('warn', 'poll_error', { session_id: sessionId, consec: consecErr, err: e.message });
-        if (consecErr >= MAX_CONSEC_ERRORS) { outcome = 'poll_error'; break; }
-      }
-      if (Date.now() >= deadlineAt) { outcome = 'deadline'; break; }
-      await sleep(POLL_INTERVAL_MS);
+    // Primary = SSE-incremental; on repeated SSE failure it rejects and we fall back to the poll loop.
+    let result = null;
+    if (SSE_ENABLED) {
+      result = await runSseLoop(key, handoff, deadlineAt).catch((e) => { log('warn', 'sse_loop_failed', { session_id: sessionId, err: e.message }); return null; });
+      if (!result) log('warn', 'sse_fallback_to_poll', { session_id: sessionId });
     }
+    if (!result) result = await runPollLoop(key, handoff, deadlineAt);
 
+    const { outcome, picked, analysis, statusObj, warnings, toolRound } = result;
     const finalText = extractText(analysis ? analysis.lastAgentMsg : null);
     const output_blocks = (outcome === 'delivered') ? extractDeliverBlocks(picked) : [];
     const delivered_via_tool = (outcome === 'delivered');
@@ -367,6 +419,163 @@ async function driveSession(handoff) {
     inFlight.delete(sessionId);
     activeSessions = inFlight.size;
   }
+}
+
+// FALLBACK (Block 6): the long-poll loop. Re-fetches the FULL GET /events each tick + GET /sessions
+// (status). Proven and SSE-independent (A1). Returns the terminal result object for driveSession to finish.
+async function runPollLoop(key, handoff, deadlineAt) {
+  const sessionId = handoff.session_id;
+  let warnings = [], toolRound = 0, consecErr = 0;
+  let outcome = null, picked = null, analysis = null, statusObj = {};
+  await sleep(1500);
+  while (true) {
+    if (Date.now() >= deadlineAt) { outcome = 'deadline'; break; }
+    try {
+      const events = await getEvents(key, sessionId);
+      statusObj = await getSession(key, sessionId);
+      consecErr = 0;
+      analysis = analyze(events);
+      await patchWaiterSession(sessionId, { last_event_at: new Date().toISOString() });
+      const status = statusObj.status;
+      if (analysis.sessionError) { outcome = 'terminated'; break; }
+      if (status === 'terminated') { outcome = 'terminated'; break; }
+      if (status === 'idle') {
+        if (analysis.pending.length > 0) {
+          const delivered = analysis.pending.find((e) => e.name === 'deliver_output');
+          if (delivered) { outcome = 'delivered'; picked = delivered; break; }
+          if (toolRound >= MAX_TOOL_ROUNDS) { outcome = 'max_rounds'; break; }
+          const tool = analysis.pending[0];
+          const svc = await serviceToolSafe(key, handoff, tool);
+          await postToolResult(key, sessionId, tool.id, svc.content); // ALWAYS resolve (deadlock avoidance)
+          warnings = warnings.concat(Array.isArray(svc.warnings) ? svc.warnings : []);
+          toolRound += 1;
+          log('info', 'tool_serviced', { session_id: sessionId, tool: tool.name, round: toolRound, via: 'poll' });
+          continue; // re-poll promptly
+        }
+        if (analysis.agentRepliedAfter) { outcome = 'done'; break; }
+      }
+    } catch (e) {
+      consecErr += 1;
+      log('warn', 'poll_error', { session_id: sessionId, consec: consecErr, err: e.message });
+      if (consecErr >= MAX_CONSEC_ERRORS) { outcome = 'poll_error'; break; }
+    }
+    if (Date.now() >= deadlineAt) { outcome = 'deadline'; break; }
+    await sleep(POLL_INTERVAL_MS);
+  }
+  return { outcome, picked, analysis, statusObj, warnings, toolRound };
+}
+
+// PRIMARY (Block 6.1): SSE-incremental. Seed once with a full GET /events, then accumulate from the SSE
+// stream (full event objects w/ stable ids). Terminal/pending/idle derived from the accumulated events
+// (ports Poll Round's analyze() + idle gate). Steady state does NO full-log re-fetch; a GET /events delta
+// runs only on (re)connect reconcile + a slow safety tick. Always resolves a pending tool. Resolves the
+// terminal result; REJECTS to trigger the poll-loop fallback (seed failure, or MAX_SSE_RECONNECTS hit).
+function runSseLoop(key, handoff, deadlineAt) {
+  const sessionId = handoff.session_id;
+  return new Promise((resolve, reject) => {
+    const state = { sessionId, events: [], seen: new Set(), cursor: null };
+    const servicedIds = new Set(); // tool ids already answered (immediate re-eval can race the result's propagation)
+    let outcome = null, picked = null, analysis = null, statusObj = {}, warnings = [], toolRound = 0;
+    let done = false, settled = false, evaluating = false, reEval = false, sseFailures = 0;
+    let streamCtrl = null, safetyTimer = null, deadlineTimer = null;
+
+    const settle = (fn) => {
+      if (settled) return;
+      settled = true;
+      if (safetyTimer) clearInterval(safetyTimer);
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      try { if (streamCtrl) streamCtrl.abort(); } catch {}
+      fn();
+    };
+    async function onTerminal() {
+      try { statusObj = await getSession(key, sessionId); } catch (e) { log('warn', 'sse_final_status_err', { session_id: sessionId, err: e.message }); }
+      settle(() => resolve({ outcome, picked, analysis, statusObj, warnings, toolRound }));
+    }
+    const fallback = (why) => settle(() => reject(new Error(why)));
+
+    async function evaluateOnce() {
+      if (done || settled) return;
+      if (Date.now() >= deadlineAt) { outcome = 'deadline'; done = true; return; }
+      const ordered = orderedEvents(state);
+      analysis = analyze(ordered);
+      const status = deriveStatus(ordered);
+      if (analysis.sessionError) { outcome = 'terminated'; done = true; return; }
+      if (status === 'terminated') { outcome = 'terminated'; done = true; return; }
+      if (status === 'idle') {
+        if (analysis.pending.length > 0) {
+          const delivered = analysis.pending.find((e) => e.name === 'deliver_output');
+          if (delivered) { outcome = 'delivered'; picked = delivered; done = true; return; }
+          if (toolRound >= MAX_TOOL_ROUNDS) { outcome = 'max_rounds'; done = true; return; }
+          const tool = analysis.pending[0];
+          if (servicedIds.has(tool.id)) return; // already answered; wait for the result to propagate (next SSE wakeup)
+          const svc = await serviceToolSafe(key, handoff, tool);
+          await postToolResult(key, sessionId, tool.id, svc.content); // ALWAYS resolve (deadlock avoidance)
+          servicedIds.add(tool.id);
+          warnings = warnings.concat(Array.isArray(svc.warnings) ? svc.warnings : []);
+          toolRound += 1;
+          log('info', 'tool_serviced', { session_id: sessionId, tool: tool.name, round: toolRound, via: 'sse' });
+          await pullDelta(key, state, 'post-tool').catch(() => {}); // reflect our own tool_result promptly
+          reEval = true;
+          return;
+        }
+        if (analysis.agentRepliedAfter) { outcome = 'done'; done = true; return; }
+      }
+    }
+    // Serialized evaluate: coalesces concurrent SSE wakeups (mutex + re-run flag) so a tool is serviced once.
+    async function evaluate() {
+      if (settled) return;
+      if (evaluating) { reEval = true; return; }
+      evaluating = true;
+      try { do { reEval = false; await evaluateOnce(); } while (reEval && !done && !settled); }
+      catch (e) { log('warn', 'sse_evaluate_err', { session_id: sessionId, err: e.message }); }
+      finally { evaluating = false; }
+      if (done && !settled) await onTerminal();
+      else if (!settled) patchWaiterSession(sessionId, { last_event_at: new Date().toISOString() }).catch(() => {});
+    }
+
+    function startStream() {
+      const ctrl = new AbortController();
+      streamCtrl = ctrl;
+      consumeSse(key, sessionId, ctrl.signal, (o) => { mergeEvents(state, [o], 'sse'); evaluate(); })
+        .then(() => { if (!settled && !done) { log('info', 'sse_closed_by_server', { session_id: sessionId }); scheduleReconnect(); } })
+        .catch((e) => {
+          if (settled || done || e.name === 'AbortError') return;
+          sseFailures += 1;
+          log('warn', 'sse_stream_error', { session_id: sessionId, consec: sseFailures, err: e.message });
+          scheduleReconnect();
+        });
+    }
+    function scheduleReconnect() {
+      if (settled || done) return;
+      if (sseFailures >= MAX_SSE_RECONNECTS) { fallback(`sse unavailable after ${sseFailures} reconnects`); return; }
+      const backoff = Math.min(SSE_RECONNECT_BASE_MS * (2 ** sseFailures), 8000);
+      setTimeout(async () => {
+        if (settled || done) return;
+        try { await pullDelta(key, state, 'reconcile'); await evaluate(); } // reconcile catches anything missed while disconnected
+        catch (e) { log('warn', 'sse_reconcile_err', { session_id: sessionId, err: e.message }); }
+        if (!settled && !done) startStream();
+      }, backoff);
+    }
+
+    // Deadline hard stop (fires even if the stream is silent).
+    deadlineTimer = setTimeout(async () => { if (!settled && !done) { outcome = 'deadline'; done = true; await onTerminal(); } }, Math.max(0, deadlineAt - Date.now()));
+    // Slow safety tick: a DELTA pull (not a full re-fetch) to backstop a missed SSE wakeup / heartbeat gap.
+    safetyTimer = setInterval(async () => {
+      if (settled || done) return;
+      try { await pullDelta(key, state, 'safety'); await evaluate(); }
+      catch (e) { log('warn', 'sse_safety_err', { session_id: sessionId, err: e.message }); }
+    }, SSE_SAFETY_MS);
+
+    // Seed (one full GET /events — SSE has no replay), evaluate (maybe already terminal), then open SSE.
+    (async () => {
+      try {
+        await sleep(1200);
+        await pullDelta(key, state, 'seed');
+        await evaluate();
+        if (!settled && !done) startStream();
+      } catch (e) { fallback(`sse seed failed: ${e.message}`); }
+    })();
+  });
 }
 
 async function postFinishCallback(url, payload) {

@@ -64,9 +64,9 @@ to run because the session was abandoned mid-task.
 | 4 | Waiter service skeleton: deploy, health, env, dead-man's-switch — ADR-066 draft | ✅ DONE — deployed + verified live 2026-06-30 |
 | 5 | Orchestrator split — async handoff (create session → hand to waiter → return) | ✅ DONE — verified live 2026-06-30 (both paths) |
 | 6 | Waiter event loop: long-poll, client-tool servicing (delegate to n8n), deliver_output capture | ✅ DONE — verified live E2E 2026-06-30 (A2 baseline GO) |
-| 6.1 | Streaming event source: SSE-incremental + `GET /events` reconcile (replaces the full-log re-fetch) | ☐ TODO — must land before Block 8 cutover |
+| 6.1 | Streaming event source: SSE-incremental + `GET /events` reconcile (replaces the full-log re-fetch) | ✅ DONE — verified live E2E 2026-07-01 (SSE drive + restart-recovery + A2) |
 | 7 | Finish-callback half in n8n: doc enumeration + cost + render + post (+ Block 1 guard) | ☐ TODO |
-| 8 | Reliability + cutover behind `config.session_waiter.enabled`; reconciliation cron; finalize ADR-066 | ☐ TODO (depends on 6.1) |
+| 8 | Reliability + cutover behind `config.session_waiter.enabled`; reconciliation cron; finalize ADR-066 | ☐ TODO (Block 6.1 landed — precondition met) |
 
 Each block: read this file → do one verifiable unit → write back (`architecture/current.md` + ADR + this
 table) → commit → emit a handoff prompt.
@@ -459,6 +459,65 @@ cutover**, since cutover is when real 20-min+ sessions first run through the wai
   that steady state does **no** full-log re-fetch (only on reconnect/reconcile). Force a mid-tool stream drop →
   confirm reconnect + the pending tool still resolves (no deadlock). Re-run the A2 long-session shape. Bump the
   waiter version; redeploy; update `current.md` + ADR-066; commit.
+
+### Block 6.1.0 — assumption probe (DONE, 2026-07-01)
+
+Live SSE-mechanics probe against a throwaway managed session (self-contained Node script run in a `node:20`
+container on `haxe-agents_n8n-internal`; created its own env+agent+session with one custom tool, then cleaned
+up; the managed key was fetched via `get_anthropic_key()` and never printed). Verdict: **GO on all three.**
+- **(a) `GET /events` cursor.** No `?after=`/`?starting_after=` — both return **400 Unknown query parameter**.
+  The API's own error lists the valid params: `created_at[gt|gte|lt|lte]`, `limit`, `order`, `page`, `types[]`.
+  So the cheap delta is **`created_at[gte]=<processed_at>`** (every event carries a `processed_at` timestamp —
+  better than an id cursor for our purpose). Default envelope is `{data:[...]}`; a `?limit` truncation adds an
+  opaque `next_page`. This resolves the plan's open question (a) favourably.
+- **(b) SSE shape + cadence.** `GET /events/stream` opens with a `: connected` comment, then delivers **full
+  event objects with stable `sevt_` ids** + `processed_at` (same shape as the list endpoint) — a clean dedup
+  key. Held **20 s idle → the server did NOT close the stream** (refutes block-0's pessimistic "closes between
+  turns"; the stream is long-lived). **No replay:** a stream reopened after a drop delivered only post-open
+  events (so `GET /events` is the backlog truth, SSE is the incremental source).
+- **(c) Pending tool across a drop.** Dropped the stream with an `agent.custom_tool_use` unanswered →
+  `GET /events` showed it unanswered → reopened the stream → `POST user.custom_tool_result` → the session
+  resumed and delivered the follow-up over the reopened stream. Decisive: a pending tool resolves across a
+  reconnect (the invariant `scheduleReconnect` implements).
+
+### Block 6.1 — execution notes (2026-07-01, DONE)
+
+- **Design (data-driven, one finish path).** `driveSession` is now an orchestrator: it fetches the key, then
+  runs `runSseLoop` (primary); on repeated SSE failure `runSseLoop` **rejects** and it falls back to
+  `runPollLoop` (the Block-6 long-poll loop, refactored to *return* the terminal result instead of finishing
+  inline). Both loops return `{outcome, picked, analysis, statusObj, warnings, toolRound}`; `driveSession`
+  builds the finish payload + posts the callback ONCE (no duplicated finish code). Tool servicing is shared
+  (`serviceToolSafe` — always returns `{content,warnings}` so the caller ALWAYS resolves the tool, no
+  deadlock). `SSE_ENABLED=false` forces the poll loop without a redeploy (operational rollback).
+- **SSE loop.** Seed once with a full `GET /events` (SSE has no replay), then accumulate from the stream into an
+  in-memory event map (`seen` Set + ordered `events` + `cursor`). `analyze()` (ported from Poll Round) runs over
+  the accumulated events; **status is derived from the `session.status_*` events** (so no `GET /sessions` per
+  tick — only ONE `getSession` at terminal, for final usage/duration). Serialized `evaluate()` (mutex + re-run
+  flag) coalesces concurrent SSE wakeups so a tool is serviced once; a `servicedIds` guard blocks a double-POST
+  if a post-tool delta momentarily lags. Reconnect = backoff + a `created_at[gte]` **delta** reconcile + reopen;
+  a `deadlineTimer` is the hard absolute-budget stop; a slow safety tick (45 s) is a delta pull, not a full
+  re-fetch. Startup re-adoption re-drives via SSE.
+- **DoD verified live E2E (flag ON, disposable task `869dyajhe`, then reverted false).** (1) **Parity:**
+  orchestrator handoff → waiter logs `drive_start source=sse → events_fetch mode=seed → tool_serviced
+  (get_task_details) via=sse → drive_terminal delivered blocks=1 → finish_posted attempt=1`. The finish payload
+  (caught by a TEMP sink at `session-waiter-finish`, since deleted) carried the full 24-field contract with a
+  real `get_task_details` result block, `delivered_via_tool=true`, `warnings=[]`. Row `delivered`,
+  `carry_has_key=false`. **(2) No full-log re-fetch:** the ONLY `events_fetch` logged was `mode=seed`; the
+  session completed via SSE merges (which are logged only in aggregate) — steady state re-fetched nothing.
+  **(3) Mid-session drop / reconnect:** a two-tool session was killed mid-drive with `docker restart`
+  (`shutdown SIGTERM in_flight:1`); on restart `readopt_found count=1` re-adopted the row, re-seeded via
+  `GET /events`, serviced **both** pending client tools over SSE (`get_task_details`, `get_task_comments`), and
+  **delivered — no deadlock** (a full-process-loss superset of a single stream reconnect; the single-stream case
+  is proven by probe 6.1.0). **(4) A2 shape:** `Session Events Probe (v1)` on the recovered session →
+  `events_retrievable=true`, `event_count=21`, `has_deliver_output=true`, `status=idle`. **0 CRITICAL / 0 WARN**
+  across the whole window. No n8n workflow JSON changed (the TEMP sink was a throwaway live-only workflow), so
+  there is no repo↔live drift to reconcile.
+- **Carry-forward to Block 7/8.** (1) The `blocks:0` seen on the restart-run delivery is the pre-existing Sonnet
+  `deliver-output-empty` flake (Block 3 carry-forward), NOT an SSE regression — Block 7's guard turns an empty
+  `output_blocks` into the Block-1 incomplete notice. (2) The harness produced a **duplicate handoff** per drive
+  (two sessions for one `test-subworkflow` POST); both delivered cleanly. Block 7's finish half must be
+  idempotent on `session_id` regardless — but the duplicate-handoff shape is worth noting for Block 8 (a single
+  producer trigger can yield >1 handoff under the test harness). (3) Block 8's precondition (SSE landed) is met.
 
 **Block 8 — cutover + reliability.** Flip `config.session_waiter.enabled=true` (poll loop = documented
 rollback). Verify reconciliation cron + health monitor (simulate a stuck session + a waiter restart
