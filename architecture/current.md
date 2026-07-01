@@ -896,8 +896,9 @@ Target: 7–9 weeks to v1.
     (no ClickUp creds). BullMQ keys are prefixed `haxeq:*` so they never collide with n8n queue mode's `bull:*`
     on the shared `n8n-redis`.
   - `zip-extractor` (Node, `services/zip-extractor/`) — internal helper service (ADR-058); see that ADR for detail.
-  - `session-waiter` (Node 20, `services/session-waiter/`, v1.2.0-block6.1) — **ADR-066, deployed (Block 4
-    skeleton; Block 5 orchestrator handoff; Block 6 event loop; Block 6.1 SSE-incremental LIVE)**. External async
+  - `session-waiter` (Node 20, `services/session-waiter/`, v1.3.0-block7) — **ADR-066, deployed (Block 4
+    skeleton; Block 5 orchestrator handoff; Block 6 event loop; Block 6.1 SSE-incremental; Block 7 finish
+    callback LIVE; only Block 8 cutover remains)**. External async
     waiter for the **managed-agent** lane: decouples a long Anthropic Managed-Agents session from any single n8n
     execution (the 840 s / single-Code-node ceiling that abandoned the 2026-06-30 `.pptx` run). `/health` (the
     dead-man's-switch target) + `/handoff` (persist a `waiter_sessions` row, return 202, then **drive the session
@@ -908,7 +909,8 @@ Target: 7–9 weeks to v1.
     event cursor the API supports; it rejects `?after=`) runs only on (re)connect reconcile + a slow safety tick.
     Terminal/pending/idle detection ports `Poll Round`'s `analyze()` (over the accumulated events; status from the
     `session.status_*` events). It services pending client tools by POSTing the `Session Waiter Tool Bridge (v1)`
-    (SSOT tail/extract handlers), captures `deliver_output` blocks, and POSTs the finish callback (Block 7) on
+    (SSOT tail/extract handlers), captures `deliver_output` blocks, and POSTs the **header-authed**
+    (`X-Watchdog-Key`) finish callback — consumed by `Session Waiter Finish (v1)` (Block 7) — on
     terminal — **always resolving a pending tool** (deadlock avoidance). On repeated SSE failure it **degrades to
     the Block-6 long-poll loop** (kept as the SSE-independent fallback; `SSE_ENABLED=false` forces it). Crash
     recovery: re-adopts any `handed_off`/`running` row on startup and re-drives via SSE. `expose:8080` internal only;
@@ -926,8 +928,25 @@ Target: 7–9 weeks to v1.
       orchestrator's `Handoff?` IF routes to `Post Handoff to Waiter` (`POST /handoff`) and returns with **no
       synchronous hold and no comment** (status stays "W trakcie"; the Block-7 finish callback posts the real
       answer later; POST failure → CRITICAL `session-waiter/handoff-post`). `mode='sync'` (the prod default)
-      → `Handoff?` FALSE → the unchanged `Session OK?` publish/incomplete gate. Both paths verified live
+      → `Handoff?` FALSE → the `Call Publish Managed Result` step (see Block 7). Both paths verified live
       2026-06-30 (handoff persists a keyless row + returns fast; sync still delivers via Post Reply).
+    - **Finish callback + shared publish path (Block 7, LIVE 2026-07-01).** `Session Waiter Finish (v1)`
+      (`m0z2CAgXkUMfJudw`) — a webhook (`/session-waiter-finish`, **headerAuth** `X-Watchdog-Key`) that
+      receives the waiter's terminal payload → **atomic idempotency claim** on `waiter_sessions` (flip to
+      `finished` only from a not-yet-finished status; a duplicate/retry callback → 200 `idempotent_skip`,
+      no double-post) → `Build Result` (Files-API doc enumeration + session USD cost, **ported from
+      `Build Final Output`**; usage/duration ride in the payload) → `Log Model Run` (priced row) →
+      `Call Publish Managed Result`. The publishable-answer gate + render + cost-field + Post Reply +
+      non-delivery branch were extracted from the orchestrator into ONE shared **`Publish Managed Result
+      (v1)`** (`5T8WKueobwZZQWgB`) that **both** the sync orchestrator (`Handoff?` FALSE) and the async
+      finish webhook call over a normalized contract (decision B — Block 8 makes async default + keeps sync
+      as rollback, so both must stay identical; a shared path is the only no-drift way). The finish webhook
+      also fires ONE consolidated `session-waiter/finish` WARN/CRITICAL for session-level degradations
+      (does NOT re-fire the non-delivery CRITICAL — Publish's `Alert Non-Delivery` owns that). Verified live
+      E2E: delivered (answer posted with @-mention + cost), idempotent replay (no double-post), non-delivery
+      (incomplete notice, not narration, + CRITICAL). Known edge: the claim marks `finished` at entry, so a
+      failed publish leaves a `finished` row with nothing posted — loud (reactive CRITICAL), not silent;
+      Block 8 may tighten it.
 - **Public endpoint**: `https://agents.haxe.ai` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing, 90-day). HTTP → HTTPS redirect active. See ADR-012.
 - **Build control plane**: Claude Code drives infrastructure via two MCP servers in `.mcp.json`:
   - **`n8n-mcp`** (`n8n-mcp@2.56.0`) — n8n REST API (`https://agents.haxe.ai/api/v1`); key from `N8N_API_KEY` (setx; expiry 2026-08-31). See ADR-017/018.

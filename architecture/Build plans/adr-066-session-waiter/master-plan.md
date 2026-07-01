@@ -65,8 +65,8 @@ to run because the session was abandoned mid-task.
 | 5 | Orchestrator split — async handoff (create session → hand to waiter → return) | ✅ DONE — verified live 2026-06-30 (both paths) |
 | 6 | Waiter event loop: long-poll, client-tool servicing (delegate to n8n), deliver_output capture | ✅ DONE — verified live E2E 2026-06-30 (A2 baseline GO) |
 | 6.1 | Streaming event source: SSE-incremental + `GET /events` reconcile (replaces the full-log re-fetch) | ✅ DONE — verified live E2E 2026-07-01 (SSE drive + restart-recovery + A2) |
-| 7 | Finish-callback half in n8n: doc enumeration + cost + render + post (+ Block 1 guard) | ☐ TODO |
-| 8 | Reliability + cutover behind `config.session_waiter.enabled`; reconciliation cron; finalize ADR-066 | ☐ TODO (Block 6.1 landed — precondition met) |
+| 7 | Finish-callback half in n8n: doc enumeration + cost + render + post (+ Block 1 guard) | ✅ DONE — verified live E2E 2026-07-01 (shared Publish path, decision B; delivered + non-delivery + idempotency) |
+| 8 | Reliability + cutover behind `config.session_waiter.enabled`; reconciliation cron; finalize ADR-066 | ☐ TODO (Blocks 6.1 + 7 landed — precondition met) |
 
 Each block: read this file → do one verifiable unit → write back (`architecture/current.md` + ADR + this
 table) → commit → emit a handoff prompt.
@@ -518,6 +518,70 @@ up; the managed key was fetched via `get_anthropic_key()` and never printed). Ve
   (two sessions for one `test-subworkflow` POST); both delivered cleanly. Block 7's finish half must be
   idempotent on `session_id` regardless — but the duplicate-handoff shape is worth noting for Block 8 (a single
   producer trigger can yield >1 handoff under the test harness). (3) Block 8's precondition (SSE landed) is met.
+
+### Block 7 — execution notes (2026-07-01, DONE)
+
+- **Reuse decision B (operator-chosen): ONE shared publish path.** Instead of duplicating the
+  orchestrator's post-publish wiring into the finish webhook, the whole tail — `Session OK?` (the Block 1
+  publishable-answer gate), `Call Render Agent Output`, `Render Has Warnings?`, `Skip Cost If Chat?`,
+  `Call Write Cost Field`, `Sum Execution Image Cost`, `Img Cost Missing?`, `Call Post Reply (Managed)`,
+  and the non-delivery branch (`Call Post Reply (Incomplete)` + `Alert Non-Delivery`) — was extracted into
+  a new standalone **`Publish Managed Result (v1)`** (`5T8WKueobwZZQWgB`, executeWorkflowTrigger). Both the
+  sync orchestrator and the async finish webhook call it over a normalized session-result contract; a
+  `Normalize Input` code node parses the flat contract into the exact field names the moved nodes used, so
+  the 12 copied nodes needed only their `$('Call Execute Agent Session'|'Call Assemble Context'|'Resolve
+  Lane')` refs repointed to `$('Normalize Input')` (done mechanically — verbatim node bodies, zero residual
+  caller refs). Rationale in ADR-066: Block 8 makes async the default and keeps sync as the rollback, so
+  both paths must stay behaviourally identical — a shared path is the only no-drift way. The extraction was
+  by script (copy + ref-rewrite) to avoid transcription errors in the large Render/Post-Reply mappings.
+- **Orchestrator repoint (sync path).** The 12 inline nodes were removed; `Handoff?` FALSE now feeds one
+  `Call Publish Managed Result` node that builds the contract from `Call Execute Agent Session` (outcome/
+  blocks/cost/docs/usage/status) + `Call Assemble Context` (task/comment/reviewer/surface/image refs) +
+  `Resolve Lane` (`since_ts` for the per-execution image-cost window). Cost was already logged inside
+  Execute Agent Session (`Log Session Cost`) BEFORE this, so Publish's `Write Cost Field` task-sum includes
+  it. `input_image_refs_json` = the assembled `image_blocks_json`. **Behaviour-preserving:** re-verified
+  the sync path live (flag off) — a real session delivered → routed through the shared Publish → posted
+  with the reviewer @-mention + cost footer, zero alerts.
+- **`Session Waiter Finish (v1)`** (`m0z2CAgXkUMfJudw`, ACTIVE webhook). `Finish Webhook` (POST
+  `/session-waiter-finish`, **headerAuth** `X-Watchdog-Key` — the shared Storage Watchdog cred; n8n
+  `/webhook/*` is public via nginx and this posts comments + flips status with the bot token) → **`Claim
+  Finish`** (atomic idempotency: `update waiter_sessions set status='finished', finished_at=now() where
+  session_id=$1 and status <> 'finished' returning …`) → `Claimed?` (0 rows → `Respond Skip`
+  `{idempotent_skip:true}`) → `Get Anthropic Key` (Vault getter, for the Files API) → **`Build Result`**
+  (ports doc-enumeration + usd_cost + cost_impact + consolidated-warning classification from
+  `Build Final Output` — usage/duration ride in the payload, no re-fetch) → `Log Session Cost`
+  (`Log Model Run`, logs the priced row + returns `cost_pln_total`) → **`Call Publish Managed Result`**
+  (same shared workflow; `since_ts` = the row's `handed_off_at`, `input_image_refs_json='[]'`) →
+  `Respond OK`. A side branch (`Should Alert?` → `Post Alert`) fires ONE consolidated `session-waiter/finish`
+  WARN/CRITICAL for the session-level degradations (doc-list-failed / cost-* / deliver-output-empty /
+  tool-bridge / clickup-scope) — the async analog of `Classify Alert`; it does NOT re-fire the non-delivery
+  CRITICAL (Publish's `Alert Non-Delivery` owns that) nor front-half warnings (not in the payload — Block 5
+  carry-forward). The waiter (`app.mjs` **v1.3.0-block7**) now sends `X-Watchdog-Key` on the finish POST.
+- **DoD verified live E2E (flag ON, disposable task, reverted false after).** (1) **Delivered:** orchestrator
+  handoff → waiter `drive_start(sse) → drive_terminal(delivered,1 block) → finish_posted attempt=1` →
+  `Session Waiter Finish` claimed the row, built the result, logged cost, called Publish → the answer
+  ("Warszawa.") posted with the `@Franciszek Nowak` tag + cost footer (0.0313 PLN); row `finished`/
+  `delivered`, `carry_has_key=false`, **0 unexpected alerts**. (2) **Idempotency:** replaying the same
+  finish callback (real authed path, from inside the waiter container) → `200 {idempotent_skip:true}`, **no
+  second comment** (claim matched 0 rows). (3) **Non-delivery:** replaying a `deadline` payload (staged row,
+  empty blocks) → the **incomplete notice** posted (NOT the `final_message_text` narration) + CRITICAL
+  `managed-agents/non-delivery` + a consolidated `session-waiter/finish` WARN (doc-list-failed +
+  cost-usage-missing — synthetic-payload artifacts). Both Publish branches were also proven in isolation
+  first. Drift-clean 51/51; all test rows (`waiter_sessions` + `agent_runs`) and disposable tasks deleted;
+  flag restored to `false`.
+- **Bug caught + fixed during the E2E:** the first `Build Result` referenced `$('Webhook')` but the node is
+  named `Finish Webhook` → the node threw "Referenced node doesn't exist", Publish never ran, no comment
+  posted. This surfaced the **claimed-then-failed** edge (the atomic claim marks `finished` at entry, so a
+  failed publish leaves a `finished` row with nothing posted) — but it was **loud, not silent**: the
+  reactive `Error Handler` fired a CRITICAL. Fixed the node name, redeployed, re-ran clean. Carry-forward to
+  Block 8: consider marking `finished` only after Publish returns (or a post-publish confirmation) to close
+  that edge; today it relies on the reactive CRITICAL.
+- **Carry-forward to Block 8.** (1) Precondition met (finish half live + verified). (2) The cutover just
+  flips `session_waiter.enabled=true`; the sync path (shared Publish) is proven, so rollback is identical
+  behaviour. (3) The test harness can emit a **duplicate handoff** per drive (Block 6.1 carry-forward) — the
+  `session_id` claim makes that safe (second callback → idempotent_skip). (4) Re-fetch of usage/duration is
+  NOT needed (the payload carries them); the plan's "re-fetch usage/duration" wording was superseded by the
+  waiter already reporting `session_usage`/`duration_seconds`.
 
 **Block 8 — cutover + reliability.** Flip `config.session_waiter.enabled=true` (poll loop = documented
 rollback). Verify reconciliation cron + health monitor (simulate a stuck session + a waiter restart

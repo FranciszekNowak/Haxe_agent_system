@@ -1,0 +1,431 @@
+{
+  "name": "Session Waiter Finish (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "swf-webhook",
+      "name": "Finish Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        400
+      ],
+      "webhookId": "a1c7e5d2-0b7f-4e33-9a2f-sessfinish01",
+      "notes": "ADR-066 Block 7: the session-waiter's finish callback entry. The external waiter POSTs the terminal session result here (outcome, output_blocks, usage, carry-state). headerAuth (X-Watchdog-Key, shared waiter<->n8n key) — n8n /webhook/* is public via nginx, and this posts ClickUp comments + flips status with the bot token, so it MUST be authed. Idempotent on session_id (Claim Finish). Path: session-waiter-finish (matches Post Handoff to Waiter's finish_callback_url).",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "session-waiter-finish",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "3ydBksESwiUW2rFV",
+          "name": "Storage Watchdog Header Auth"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "swf-claim",
+      "name": "Claim Finish",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        400
+      ],
+      "notes": "ADR-066 Block 7 idempotency key. Atomic claim: flip the row to 'finished' ONLY from a not-yet-finished status, RETURNING the row. Exactly one callback wins the claim (returns a row -> publish); a duplicate/retry callback matches 0 rows -> Respond idempotent skip (no double-post). The waiter sets status='delivered'/'failed' before POSTing, so this transitions delivered/failed/handed_off/running -> finished. handed_off_at is returned as the per-execution image-cost window (since_ts). alwaysOutputData so a 0-row claim still yields an item for the IF.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update waiter_sessions\nset status = 'finished', finished_at = now()\nwhere session_id = $1 and status <> 'finished'\nreturning session_id, clickup_task_id, handed_off_at, surface;",
+        "options": {
+          "queryReplacement": "={{ [ $json.body.session_id ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "swf-claimed",
+      "name": "Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        440,
+        400
+      ],
+      "notes": "TRUE = we won the claim (row returned) -> publish. FALSE = 0 rows (already finished / duplicate callback) -> Respond idempotent skip.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cl1",
+              "leftValue": "={{ $json.session_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "swf-respond-skip",
+      "name": "Respond Skip",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        560
+      ],
+      "notes": "Idempotent no-op: the session was already finished (duplicate/retried callback). 200 so the waiter stops retrying.",
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, idempotent_skip: true, session_id: $('Finish Webhook').first().json.body.session_id } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "swf-getkey",
+      "name": "Get Anthropic Key",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        660,
+        300
+      ],
+      "notes": "ADR-066 A6: the managed key for the Files API doc listing (SECURITY DEFINER Vault getter, migration 034). Never stored on the row; fetched fresh here. Same source as Post Reply (v1) Get Doc Key.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_anthropic_key() as key;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "swf-build",
+      "name": "Build Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ],
+      "notes": "ADR-066 Block 7: compute doc_files (Files API) + usd_cost + cost_impact + consolidated warnings from the waiter callback. Ports the cost math + doc-MIME map from execute-agent-session 'Build Final Output' (KEEP IN SYNC). Emits do_alert/_sev/_msg/_details for the consolidated degradation alert (NOT the non-delivery CRITICAL — Publish fires that).",
+      "parameters": {
+        "jsCode": "// ADR-066 Block 7: compute the finish-side session result from the waiter callback payload.\n// Ports the doc-enumeration (Files API) + usd_cost (token tiers + runtime + web-search) + cost_impact\n// + consolidated-warning classification from execute-agent-session 'Build Final Output' (the SYNC path\n// computes these inside the sub-workflow; the async path returned at handoff, so we compute them here).\n// KEEP THE COST MATH / DOC-MIME MAP IN SYNC WITH execute-agent-session 'Build Final Output'.\nconst body = $('Finish Webhook').first().json.body || {};\nlet key = '';\ntry { const k = $('Get Anthropic Key').first().json || {}; key = (k.key || k.get_anthropic_key || '').toString(); } catch (e) {}\nlet warnings = Array.isArray(body.warnings) ? body.warnings.slice() : [];\nconst usage = (body.session_usage && typeof body.session_usage === 'object') ? body.session_usage : {};\nlet output_blocks = Array.isArray(body.output_blocks) ? body.output_blocks : [];\nconst outcome = body.outcome;\nlet status = 'completed';\nif (outcome === 'deadline') status = 'partial';\nelse if (outcome === 'terminated' || outcome === 'drive_error') status = 'failed';\nelse if (outcome === 'max_rounds') status = 'partial';\nelse if (outcome === 'poll_error') status = 'partial';\n// clickup MCP auth failure is non-fatal; WARN only when the user IS onboarded (scope==='scoped').\nif (body.clickup_auth_error_json && body.clickup_scope === 'scoped') { warnings.push({ source: 'managed-agents/clickup-scope-failed', err: 'Zakresowany dostep ClickUp (discovery) zawiodl mimo aktywnego poswiadczenia uzytkownika ' + (body.caller_user_id || '?') + ' - sprawdz token/MCP (mcp.clickup.com); szczegoly: ' + String(body.clickup_auth_error_json).slice(0,200), severity: 'WARN' }); }\nif (outcome === 'delivered' && output_blocks.length === 0) { warnings.push({ source: 'output-adapter/deliver-output-empty', err: 'Agent wywolal deliver_output, ale tablica blokow byla pusta lub w nieobslugiwanym formacie (np. blocks jako string) - odpowiedz moglaby trafic jako pusty komentarz', severity: 'WARN' }); }\n\n// --- enumerate session OUTPUT office-docs (xlsx/docx/pptx/pdf). Downloadable from the Files API\n// (Block 0). Authoritative, agent-independent source of produced doc file_ids. Fail-soft: listing\n// failure -> WARN + empty doc_files. ~2.5s settle for the post-idle index lag.\nlet doc_files = [];\nconst DOC_MIMES = {\n  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',\n  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',\n  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',\n  'application/pdf': 'pdf'\n};\nif ((status === 'completed' || status === 'partial') && body.session_id && key) {\n  try {\n    await new Promise(function(r){ setTimeout(r, 2500); });\n    const dres = await this.helpers.httpRequest({ method: 'GET', url: 'https://api.anthropic.com/v1/files?scope_id=' + encodeURIComponent(body.session_id), headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'managed-agents-2026-04-01,files-api-2025-04-14' }, json: true, returnFullResponse: true, timeout: 30000 });\n    const ddata = (dres.body && Array.isArray(dres.body.data)) ? dres.body.data : [];\n    for (const f of ddata) {\n      const mime = f.mime_type || '';\n      const ext = DOC_MIMES[mime];\n      if (f.downloadable === true && ext) doc_files.push({ file_id: f.id, filename: f.filename || (String(f.id) + '.' + ext), mime: mime, size_bytes: f.size_bytes || 0 });\n    }\n  } catch (e) {\n    warnings.push({ source: 'managed-agents/doc-list-failed', err: 'Nie udalo sie wylistowac plikow wyjsciowych sesji (dokumenty moga nie zostac dostarczone): ' + String((e && e.message) || e).slice(0,200), severity: 'WARN' });\n  }\n}\n\n// --- session USD cost = token tiers + runtime + web search. (Image cost is logged per-image.)\nconst PRICES = {\n  'claude-haiku-4-5':  { in: 1.00,  out: 5.00 },\n  'claude-sonnet-4-6': { in: 3.00,  out: 15.00 },\n  'claude-opus-4-8':   { in: 5.00,  out: 25.00 },\n  'claude-fable-5':    { in: 10.00, out: 50.00 }\n};\nconst RUNTIME_USD_PER_HOUR = 0.08;\nconst WEB_SEARCH_USD_PER_CALL = 0.01;\nconst model = body.model_id || '';\nconst cc = usage.cache_creation || {};\nconst tIn = Number(usage.input_tokens || 0);\nconst tOut = Number(usage.output_tokens || 0);\nconst tWrite5m = Number(cc.ephemeral_5m_input_tokens || 0);\nconst tWrite1h = Number(cc.ephemeral_1h_input_tokens || 0);\nconst tRead = Number(usage.cache_read_input_tokens || 0);\nconst dur = Number(body.duration_seconds || 0);\nconst ws = Number(body.web_search_count || 0);\nconst p = PRICES[model];\nif (!p) warnings.push({ source: 'managed-agents/cost-model-unknown', err: 'Brak cennika dla modelu ' + (model || '?') + ' - koszt sesji oszacowano cennikiem Opus 4.8 (gorny prog)', severity: 'WARN' });\nconst pr = p || PRICES['claude-opus-4-8'];\nconst tokenCost = (tIn/1e6)*pr.in + (tOut/1e6)*pr.out + (tWrite5m/1e6)*pr.in*1.25 + (tWrite1h/1e6)*pr.in*2.0 + (tRead/1e6)*pr.in*0.1;\nconst runtimeCost = RUNTIME_USD_PER_HOUR * (dur/3600);\nconst webSearchCost = ws * WEB_SEARCH_USD_PER_CALL;\nconst usd_cost = Number((tokenCost + runtimeCost + webSearchCost).toFixed(6));\nif ((status === 'completed' || status === 'partial') && tIn === 0 && tOut === 0 && tRead === 0 && tWrite5m === 0 && tWrite1h === 0) warnings.push({ source: 'managed-agents/cost-usage-missing', err: 'Sesja bez danych uzycia tokenow - koszt sesji moze byc zanizony', severity: 'WARN' });\nconst ALLOWED = ['Niski','Średni','Wysoki','Krytycznie ważne','n/d - zadanie nie jest dla AI'];\nconst cost_impact = (ALLOWED.indexOf(body.impact) >= 0) ? body.impact : null;\n\n// consolidated alert (async analog of Classify Alert). NOTE: does NOT fire the non-delivery CRITICAL\n// (Publish Managed Result's Alert Non-Delivery does that) nor front-half warnings (not in body.warnings\n// - Block 5 carry-forward). Only the session-level DEGRADATION warnings computed here + tool-bridge.\nlet do_alert = false, _sev = 'WARN', _msg = '', _details = '';\nif (warnings.length > 0) { do_alert = true; const hasCrit = warnings.some(function(w){ return w.severity === 'CRITICAL'; }); _sev = hasCrit ? 'CRITICAL' : 'WARN'; _msg = 'Sesja Managed Agents (async waiter) zakonczona z ostrzezeniami (' + warnings.length + ') [status: ' + status + '] dla zadania ' + (body.clickup_task_id || '?'); _details = warnings.map(function(w){ return (w.source || '') + ': ' + (w.err || ''); }).join(' | ').slice(0,1500); }\n\nreturn [{ json: {\n  status: status,\n  doc_files_json: JSON.stringify(doc_files),\n  usd_cost: usd_cost,\n  cost_impact: cost_impact,\n  input_tokens: tIn,\n  output_tokens: tOut,\n  model_used: model,\n  warnings: warnings,\n  do_alert: do_alert,\n  _sev: _sev,\n  _msg: _msg,\n  _details: _details\n} }];"
+      }
+    },
+    {
+      "id": "swf-logcost",
+      "name": "Log Session Cost",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1100,
+        300
+      ],
+      "notes": "ADR-066 Block 7: log ONE priced agent_runs row via Log Model Run (v1) (sole FX/PLN owner) BEFORE Publish, so Publish's Write Cost Field task SUM includes this session. Passes the pre-computed usd_cost so Log Model Run uses it verbatim. Returns cost_pln_total -> Publish's comment footer (per-execution cost). onError=continueRegularOutput + alwaysOutputData so a cost-log hiccup never blocks publishing.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "ztSIUkp9ytbG1xpE",
+          "mode": "list",
+          "cachedResultName": "Log Model Run (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ $('Finish Webhook').first().json.body.clickup_task_id }}",
+            "caller_user_id": "={{ $('Finish Webhook').first().json.body.caller_user_id }}",
+            "process_type": "={{ $('Finish Webhook').first().json.body.process_type }}",
+            "triggered_by": "={{ $('Finish Webhook').first().json.body.triggered_by }}",
+            "invocation_type": "={{ $('Finish Webhook').first().json.body.invocation_type }}",
+            "model_used": "={{ $json.model_used }}",
+            "impact": "={{ $json.cost_impact }}",
+            "input_tokens": "={{ $json.input_tokens }}",
+            "output_tokens": "={{ $json.output_tokens }}",
+            "usd_cost": "={{ $json.usd_cost }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "swf-call-publish",
+      "name": "Call Publish Managed Result",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1320,
+        300
+      ],
+      "notes": "ADR-066 Block 7: the SAME shared Publish Managed Result (v1) the sync orchestrator calls — gate (Session OK?) -> render -> cost-field -> Post Reply Managed / Incomplete + Alert Non-Delivery. Builds the normalized contract from the waiter payload + Build Result (doc_files/usd status) + Log Session Cost (cost_pln) + Claim Finish (handed_off_at = image-cost window). input_image_refs_json='[]' (no re-assembled context; only re-embedded existing task attachments would degrade, with a WARN).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "5T8WKueobwZZQWgB",
+          "mode": "list",
+          "cachedResultName": "Publish Managed Result (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "outcome": "={{ $('Finish Webhook').first().json.body.outcome }}",
+            "delivered_via_tool": "={{ $('Finish Webhook').first().json.body.delivered_via_tool }}",
+            "output_message": "={{ $('Finish Webhook').first().json.body.final_message_text }}",
+            "output_blocks_json": "={{ JSON.stringify($('Finish Webhook').first().json.body.output_blocks || []) }}",
+            "input_image_refs_json": "={{ '[]' }}",
+            "model_used": "={{ $('Finish Webhook').first().json.body.model_id }}",
+            "cost_pln": "={{ $('Log Session Cost').first().json.cost_pln_total }}",
+            "doc_files_json": "={{ $('Build Result').first().json.doc_files_json }}",
+            "session_id": "={{ $('Finish Webhook').first().json.body.session_id }}",
+            "status": "={{ $('Build Result').first().json.status }}",
+            "duration_seconds": "={{ $('Finish Webhook').first().json.body.duration_seconds }}",
+            "clickup_task_id": "={{ $('Finish Webhook').first().json.body.clickup_task_id }}",
+            "reviewer_user_id": "={{ $('Finish Webhook').first().json.body.reviewer_user_id }}",
+            "triggering_comment_id": "={{ $('Finish Webhook').first().json.body.triggering_comment_id }}",
+            "surface": "={{ $('Finish Webhook').first().json.body.surface || 'task' }}",
+            "surface_ref": "={{ $('Finish Webhook').first().json.body.surface_ref || '' }}",
+            "since_ts": "={{ $('Claim Finish').first().json.handed_off_at }}",
+            "web_sources": "={{ '[]' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "swf-respond-ok",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1540,
+        300
+      ],
+      "notes": "Ack the waiter after publishing. 200.",
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: true, published: true, session_id: $('Finish Webhook').first().json.body.session_id, status: $('Build Result').first().json.status } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "swf-should-alert",
+      "name": "Should Alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1100,
+        500
+      ],
+      "notes": "Consolidated degradation alert (side branch off Build Result, never blocks Respond). TRUE when Build Result flagged do_alert (session-level warnings: doc-list-failed / cost-* / deliver-output-empty / tool-bridge / clickup-scope).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "sa1",
+              "leftValue": "={{ $json.do_alert }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "swf-post-alert",
+      "name": "Post Alert",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1320,
+        500
+      ],
+      "notes": "Centralized Post Alert (v1) seam (ADR-025). One consolidated WARN/CRITICAL for the session-level degradations. onError=continueRegularOutput so an alert hiccup never breaks the finish run.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "={{ $json._sev }}",
+            "source": "session-waiter/finish",
+            "message": "={{ $json._msg }}",
+            "details": "={{ $json._details }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Finish Webhook": {
+      "main": [
+        [
+          {
+            "node": "Claim Finish",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Finish": {
+      "main": [
+        [
+          {
+            "node": "Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Get Anthropic Key",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Skip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Anthropic Key": {
+      "main": [
+        [
+          {
+            "node": "Build Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Result": {
+      "main": [
+        [
+          {
+            "node": "Log Session Cost",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Should Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Session Cost": {
+      "main": [
+        [
+          {
+            "node": "Call Publish Managed Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Publish Managed Result": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Alert?": {
+      "main": [
+        [
+          {
+            "node": "Post Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}

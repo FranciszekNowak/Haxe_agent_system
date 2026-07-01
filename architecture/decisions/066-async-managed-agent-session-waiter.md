@@ -16,8 +16,12 @@ does no full-log re-fetch**; a `GET /events` **delta** (`created_at[gte]=<cursor
 reconcile + a slow safety tick. The Block-6 long-poll loop is kept as the SSE-independent fallback
 (`SSE_ENABLED=false` forces it). Block 6.1.0 live-probed the assumptions (see the block-6.1.0 findings in the
 master plan): SSE delivers full stable-id events + stays open across idle, the only event cursor is
-`created_at[gte]` (`?after=` 400s), and a pending tool resolves across a forced mid-stream drop. The
-finish-callback half (7) and cutover (8) follow. Finalized at Block 8.
+`created_at[gte]` (`?after=` 400s), and a pending tool resolves across a forced mid-stream drop.
+**Block 7 (finish-callback half) shipped + verified live E2E 2026-07-01** — the async terminal now posts
+through a new HTTP-triggered `Session Waiter Finish (v1)` webhook that calls the **shared
+`Publish Managed Result (v1)`** sub-workflow, which is *also* what the synchronous orchestrator now calls
+(one publish path, decision B — see below); the waiter (`app.mjs` v1.3.0-block7) sends the finish callback
+header-authed (`X-Watchdog-Key`). Only cutover (8) follows. Finalized at Block 8.
 
 Context
 
@@ -74,12 +78,31 @@ Re-architect managed sessions from a **synchronous held-poll loop** (ADR-053/063
   hold, no comment. `Set Status W trakcie` stays. The managed key is **not** sent in the handoff body (the
   waiter re-derives it via `get_anthropic_key()`, A6-minimal). Behind the flag: `enabled=false` →
   `mode='sync'`, today's synchronous path unchanged.
-- **Finish-callback half in n8n (Block 7).** A new HTTP-triggered sub-workflow receives
-  `{session_id, outcome, delivered_via_tool, output_blocks, final_message_text, +carry-state}`, re-fetches
-  usage/duration, runs the doc-files enumeration + cost computation now in `Build Final Output`, then
-  `Render Agent Output → Post Reply (Managed) → Write Cost Field → flip status`. It integrates the
-  **Block 1 fail-loud guard** (a non-delivery outcome posts an incomplete-status comment + CRITICAL,
-  never narration) and is **idempotent on `session_id`** (no double-post on a duplicate callback).
+- **Finish-callback half in n8n (Block 7).** `Session Waiter Finish (v1)` — an HTTP-triggered webhook
+  (`/session-waiter-finish`, **header-authed** with the shared `X-Watchdog-Key`, since it posts ClickUp
+  comments + flips status with the bot token; the waiter sends the header from v1.3.0). It receives the
+  waiter's finish payload `{session_id, outcome, delivered_via_tool, output_blocks, final_message_text,
+  session_usage, duration_seconds, +carry-state}` (usage/duration ride in the payload — no re-fetch),
+  enumerates the produced office-docs via the Files API and computes the session USD cost in a `Build
+  Result` node (**ported from `Build Final Output`** — keep the cost math / doc-MIME map in sync), logs the
+  priced `agent_runs` row via `Log Model Run`, then calls the shared `Publish Managed Result (v1)`. It is
+  **idempotent on `session_id`** via an atomic claim on `waiter_sessions` (flip `status` to `finished` only
+  from a not-yet-finished state, `RETURNING` the row — one callback wins, a duplicate/retry matches 0 rows
+  → 200 `idempotent_skip`, no double-post).
+- **Shared publish path (Block 7, decision B — the "ages well" choice).** Rather than duplicate the
+  orchestrator's post-publish wiring into the finish webhook, that wiring — the publishable-answer gate
+  (`Session OK?`, the Block 1 guard), `Render Agent Output`, `Skip Cost If Chat?`, `Write Cost Field`,
+  `Sum Execution Image Cost`, `Post Reply (Managed)`, and the non-delivery branch (`Post Reply (Incomplete)`
+  \+ CRITICAL `managed-agents/non-delivery`) — is extracted into **one** `Publish Managed Result (v1)`
+  sub-workflow that **both** the synchronous orchestrator and the async finish webhook call, over a
+  normalized session-result contract (a `Normalize Input` node parses it so the moved nodes needed only
+  their caller refs repointed). Since Block 8 makes async the default and keeps sync as the rollback, both
+  paths MUST stay behaviourally identical — a single shared path is the only way that holds without drift.
+  Cost logging (`Log Model Run`) stays in each caller *before* the call, so Publish's `Write Cost Field`
+  task-sum includes the session row. The alternative (mirror the topology in the finish webhook) was
+  rejected: it would duplicate the gate + guard + cost/render/post wiring and drift the instant either
+  side changed. A future consolidation could go further (a single publish super-workflow owning cost
+  logging too); deferred as unnecessary now.
 - **`waiter_sessions` table + `session_waiter.*` config** (migration 049). The table is the durable
   record of every handoff and the store the reliability seam watches; the config knobs are the cutover
   flag (`enabled`, seeded false), the freshness threshold (`stuck_after_minutes`, 50), and the waiter's

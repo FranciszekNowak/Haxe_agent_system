@@ -31,9 +31,11 @@
 //     extract_clickup_task -> POST the bridge -> POST user.custom_tool_result -> resume. generate_image
 //     and clickup_* are in-harness MCP (ADR-055/054) and never reach the waiter. ANY pending tool is
 //     always resolved (deadlock avoidance) — a bridge failure posts a fail-soft result, never hangs.
-//   * on terminal, POSTs the finish callback (Block 7 consumes it: cost + doc enumeration + render + post,
-//     idempotent on session_id). The waiter only reports outcome + blocks + carry-state; it does NOT post
-//     to ClickUp. Block 7's finish half must NOT re-fire front-half warning sources (Block 5 carry-forward).
+//   * on terminal, POSTs the finish callback (Block 7's Session Waiter Finish v1 consumes it: cost + doc
+//     enumeration + render + post via the shared Publish Managed Result v1, idempotent on session_id). The
+//     callback is header-authed (X-Watchdog-Key, shared key) — the finish webhook posts ClickUp comments +
+//     flips status. The waiter only reports outcome + blocks + carry-state; it does NOT post to ClickUp.
+//     Block 7's finish half must NOT re-fire front-half warning sources (Block 5 carry-forward).
 //   * crash resilience: on startup, re-adopts any handed_off/running row (resumes driving it) so a waiter
 //     restart mid-session recovers; a row past its deadline finishes immediately as non-delivery.
 //
@@ -56,7 +58,7 @@
 
 import express from 'express';
 
-const VERSION = '1.2.0-block6.1';
+const VERSION = '1.3.0-block7';
 const STARTED_AT = Date.now();
 
 const {
@@ -588,7 +590,11 @@ async function postFinishCallback(url, payload) {
   }
   for (let attempt = 1; attempt <= FINISH_MAX_TRIES; attempt++) {
     try {
-      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      // Block 7: the finish webhook (Session Waiter Finish v1) is header-authed (n8n /webhook/* is public
+      // via nginx and this posts ClickUp comments + flips status). Send the shared waiter<->n8n key, same
+      // as the tool bridge. The finish half is idempotent on session_id, so a retry after a lost response
+      // is a safe no-op (it returns 200 idempotent_skip).
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Watchdog-Key': ALERT_INTAKE_KEY || '' }, body: JSON.stringify(payload) });
       if (r.ok) { log('info', 'finish_posted', { session_id: sessionId, outcome: payload.outcome, attempt }); return; }
       log('warn', 'finish_non2xx', { session_id: sessionId, http: r.status, attempt });
     } catch (e) {
