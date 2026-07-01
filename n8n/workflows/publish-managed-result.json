@@ -1,0 +1,653 @@
+{
+  "name": "Publish Managed Result (v1)",
+  "active": true,
+  "nodes": [
+    {
+      "id": "pmr-when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1200,
+        400
+      ],
+      "notes": "ADR-066 Block 7: shared publish path. Both callers build this normalized session-result contract: the SYNC orchestrator (from Call Execute Agent Session + Call Assemble Context + Resolve Lane) and the ASYNC Session Waiter Finish webhook (from the waiter finish payload + locally-computed doc_files/usd_cost). Cost logging (Log Model Run) happens in the CALLER before this, so Sum Execution Image Cost / Write Cost Field see the session cost row.",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "outcome"
+            },
+            {
+              "name": "delivered_via_tool"
+            },
+            {
+              "name": "output_message"
+            },
+            {
+              "name": "output_blocks_json"
+            },
+            {
+              "name": "input_image_refs_json"
+            },
+            {
+              "name": "model_used"
+            },
+            {
+              "name": "cost_pln"
+            },
+            {
+              "name": "doc_files_json"
+            },
+            {
+              "name": "session_id"
+            },
+            {
+              "name": "status"
+            },
+            {
+              "name": "duration_seconds"
+            },
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "reviewer_user_id"
+            },
+            {
+              "name": "triggering_comment_id"
+            },
+            {
+              "name": "surface"
+            },
+            {
+              "name": "surface_ref"
+            },
+            {
+              "name": "since_ts"
+            },
+            {
+              "name": "web_sources"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "pmr-normalize-input",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1000,
+        400
+      ],
+      "notes": "ADR-066 Block 7: parse the flat contract into the shape the moved post-path nodes expect. Field names are IDENTICAL to the orchestrator refs they replaced (output_blocks/doc_files arrays, image_blocks_json, since_ts, etc.) so the copied nodes needed only their $(caller-node) refs repointed here. output_blocks/doc_files are parsed from their _json strings; delivered_via_tool is coerced to a real boolean (the Session OK? gate does === true).",
+      "parameters": {
+        "jsCode": "const j = $input.first().json || {};\nfunction arr(v){ if (Array.isArray(v)) return v; if (typeof v === \"string\"){ try { const p = JSON.parse(v||\"[]\"); return Array.isArray(p)?p:[]; } catch(e){ return []; } } return []; }\nconst dvt = (j.delivered_via_tool === true || j.delivered_via_tool === \"true\" || j.delivered_via_tool === 1 || j.delivered_via_tool === \"1\");\nreturn [{ json: {\n  outcome: j.outcome || \"\",\n  delivered_via_tool: dvt,\n  output_message: j.output_message || \"\",\n  output_blocks: arr(j.output_blocks_json),\n  doc_files: arr(j.doc_files_json),\n  model_used: j.model_used || \"\",\n  cost_pln: (j.cost_pln === \"\" || j.cost_pln == null) ? null : Number(j.cost_pln),\n  session_id: j.session_id || \"\",\n  status: j.status || \"\",\n  duration_seconds: (j.duration_seconds === \"\" || j.duration_seconds == null) ? null : Number(j.duration_seconds),\n  clickup_task_id: j.clickup_task_id || \"\",\n  reviewer_user_id: j.reviewer_user_id || \"\",\n  triggering_comment_id: j.triggering_comment_id || \"\",\n  surface: j.surface || \"task\",\n  surface_ref: j.surface_ref || \"\",\n  image_blocks_json: j.input_image_refs_json || \"[]\",\n  since_ts: j.since_ts || \"\",\n  web_sources: j.web_sources || \"[]\"\n} }];"
+      }
+    },
+    {
+      "id": "327820e7-8af5-4246-8fce-c76c3e8c8666",
+      "name": "Session OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        472,
+        424
+      ],
+      "notes": "ADR-068/ADR-066 Block 1 fail-loud guard (2026-06-30): gates on the PUBLISHABLE-ANSWER test, not text presence. TRUE = (delivered_via_tool AND output_blocks non-empty) OR (outcome==='done' AND output_message non-empty) — only the 'delivered' and 'done' session outcomes are publishable. A non-delivery outcome (deadline/terminated/max_rounds/poll_error/send_failed/create_failed) is FALSE even when output_message carries mid-work narration, so narration is NEVER posted as the answer (the 2026-06-30 pptx-run failure mode). FALSE -> Call Post Reply (Incomplete) (Polish failure notice; flips status off 'W trakcie') + Alert Non-Delivery (CRITICAL). Supersedes the ADR-063 output_message-OR-blocks check.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "sok1",
+              "leftValue": "={{ ($json.delivered_via_tool === true && Array.isArray($json.output_blocks) && $json.output_blocks.length > 0) || ($json.outcome === 'done' && ($json.output_message || '').toString().trim() !== '') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "9e38c8fb-5612-4aa2-9b56-0724af408afa",
+      "name": "Call Render Agent Output",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        760,
+        408
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "vPbbN4UQj0LAAtiV",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "output_message": "={{ $('Normalize Input').first().json.output_message }}",
+            "clickup_task_id": "={{ $('Normalize Input').first().json.clickup_task_id }}",
+            "input_image_refs_json": "={{ $('Normalize Input').first().json.image_blocks_json || '[]' }}",
+            "output_blocks_json": "={{ JSON.stringify($('Normalize Input').first().json.output_blocks || []) }}",
+            "delivered_via_tool": "={{ $('Normalize Input').first().json.delivered_via_tool || false }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "cee8ba23-9594-455a-9ced-26f1df653a4e",
+      "name": "Render Has Warnings?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1032,
+        552
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "rw1",
+              "leftValue": "={{ Array.isArray($json.warnings) ? $json.warnings.length > 0 : false }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "rw2",
+              "leftValue": "={{ $('Normalize Input').first().json.surface }}",
+              "rightValue": "chat",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "24c8b2ea-a8b8-46e8-83ed-f5cb02b84005",
+      "name": "Alert Render Warnings",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1368,
+        392
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-orchestrator/render",
+            "message": "Adapter wyjścia (Render Agent Output) zgłosił ostrzeżenia — możliwa degradacja dostarczenia obrazu/treści.",
+            "details": "=task={{ $('Normalize Input').first().json.clickup_task_id }}; warnings={{ JSON.stringify($json.warnings || []) }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "skip-cost-if-chat",
+      "name": "Skip Cost If Chat?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        760,
+        248
+      ],
+      "notes": "ADR-068: the cumulative CU '[AI] Koszt akcji' field write is task-bound. surface=='chat' (true) -> skip Call Write Cost Field, go straight to Sum Execution Image Cost; task (false) -> Call Write Cost Field (unchanged). Reads surface off the surface-agnostic Call Assemble Context (Merge).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "scc1",
+              "leftValue": "={{ $('Normalize Input').first().json.surface }}",
+              "rightValue": "chat",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "write-cost-field-managed",
+      "name": "Call Write Cost Field",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        936,
+        104
+      ],
+      "notes": "Managed lane cost write-back (parity with the bare lane's in-workflow field write). Sums agent_runs.cost_pln for the task and writes CU '[AI] Koszt akcji [PLN]'; returns {total} used for the comment footer. Runs AFTER the session logged its cost row so the SUM includes it. onError=continueRegularOutput + the sub-workflow is internally fail-soft, so a cost-sync hiccup never blocks Post Reply. NOTE: managed image-gen cost rows now carry the real clickup_task_id (agent-supplied tool arg, ADR-057 amendment) so they ARE included in this cumulative per-task SUM. The PER-EXECUTION image cost for the comment footer is computed separately by the downstream Sum Execution Image Cost node (windowed by since_ts, ADR-060) — this SUM stays the all-time task total for the CU field.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "GoFPwWsSQOHnrClH",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ $('Normalize Input').first().json.clickup_task_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "8e897586-8e79-4521-b06a-563289c3b0ee",
+      "name": "Sum Execution Image Cost",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        984,
+        344
+      ],
+      "notes": "ADR-060: per-execution image cost for the managed footer. SUMs agent_runs.cost_pln for THIS task over the managed image-gen rows (triggered_by='image_mcp', migration 036) created since Resolve Lane's since_ts (captured before the session ran), i.e. only THIS execution's images. Feeds Call Post Reply (Managed).total_image_cost_pln so the footer = session text cost + this run's images. Cumulative CU field (Write Cost Field, by task, all-time) is unchanged. onError=continueRegularOutput + alwaysOutputData so a transient DB miss falls back to image_total 0 (Build/Post still run). Known limit: two concurrent runs on the SAME task overlap windows and can cross-count (rare; ADR-060).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select coalesce(sum(cost_pln), 0) as image_total, count(*) as image_count\nfrom agent_runs\nwhere clickup_task_id = $1\n  and triggered_by = 'image_mcp'\n  and created_at >= coalesce(nullif($2, '')::timestamptz, now());",
+        "options": {
+          "queryReplacement": "={{ [ $('Normalize Input').first().json.clickup_task_id, $('Normalize Input').first().json.since_ts ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "411de750-a64c-4b3e-aa86-c8f943332748",
+      "name": "Img Cost Missing?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1192,
+        456
+      ],
+      "notes": "ADR-060 reliability guard: TRUE when images WERE delivered this execution (render image_manifest non-empty) but the windowed image cost summed to 0 -> the per-execution image cost (footer + this-run attribution) is understated. Causes not already caught by the generation-time image-mcp/missing-task-id WARN: clock skew on since_ts, a triggered_by/filter mismatch, or all image rows landing null-task. Side branch -> Alert Image Cost Missing (WARN), never blocks Post Reply.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "imgc1",
+              "leftValue": "={{ (function(){ const m = $('Call Render Agent Output').first().json.image_manifest; const a = Array.isArray(m) ? m : (function(){ try { return JSON.parse(m || '[]'); } catch(e){ return []; } })(); return a.length; })() }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            },
+            {
+              "id": "imgc2",
+              "leftValue": "={{ Number($('Sum Execution Image Cost').first().json.image_total || 0) }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "fe0867b9-fb40-4c26-b2d4-ad9e847d6ef3",
+      "name": "Alert Image Cost Missing",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1432,
+        520
+      ],
+      "notes": "ADR-060 WARN via Post Alert (v1): images were delivered in the comment but no per-execution image cost was attributed (footer/this-run cost understated). Complements the generation-time image-mcp/missing-task-id WARN by catching the since_ts-window/skew/filter failure modes. onError=continueRegularOutput so the alert can't break the run.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-orchestrator/image-cost",
+            "message": "Obrazy dostarczono w komentarzu, ale nie przypisano kosztu obrazów do tego przebiegu — stopka/koszt przebiegu może być zaniżony.",
+            "details": "=task={{ $('Normalize Input').first().json.clickup_task_id }}; since_ts={{ $('Normalize Input').first().json.since_ts }}; image_rows={{ $('Sum Execution Image Cost').first().json.image_count }}; sprawdź czy wiersze agent_runs (triggered_by=image_mcp) mają poprawny clickup_task_id i created_at w oknie."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "f7dda3fa-bf8c-4c73-8a81-3f6ed261e120",
+      "name": "Call Post Reply (Managed)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1096,
+        152
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "t17moGs7Vxo5ZcFv",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "completion": "={{ $('Normalize Input').first().json.output_message }}",
+            "model": "={{ $('Normalize Input').first().json.model_used }}",
+            "cost_pln": "={{ $('Normalize Input').first().json.cost_pln }}",
+            "clickup_task_id": "={{ $('Normalize Input').first().json.clickup_task_id }}",
+            "reviewer_user_id": "={{ $('Normalize Input').first().json.reviewer_user_id }}",
+            "triggering_comment_id": "={{ $('Normalize Input').first().json.triggering_comment_id }}",
+            "web_sources": "={{ '[]' }}",
+            "image_manifest": "={{ $('Call Render Agent Output').first().json.image_manifest }}",
+            "rendered_delta": "={{ $('Call Render Agent Output').first().json.rendered_delta }}",
+            "image_models": "={{ $('Call Render Agent Output').first().json.image_models }}",
+            "total_image_cost_pln": "={{ $('Sum Execution Image Cost').first().json.image_total }}",
+            "doc_attachments": "={{ $('Normalize Input').first().json.doc_files }}",
+            "session_id": "={{ $('Normalize Input').first().json.session_id }}",
+            "surface": "={{ $('Normalize Input').first().json.surface || 'task' }}",
+            "surface_ref": "={{ $('Normalize Input').first().json.surface_ref || '' }}",
+            "output_blocks_json": "={{ JSON.stringify($('Normalize Input').first().json.output_blocks || []) }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "orch-call-post-reply-incomplete",
+      "name": "Call Post Reply (Incomplete)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        760,
+        696
+      ],
+      "notes": "ADR-066 Block 1 (2026-06-30): on a non-delivery outcome, post a Polish incomplete-status notice via Post Reply (v1) and flip status off 'W trakcie' (Set Status Zakonczono). The failure text is set in BOTH rendered_delta (task surface -> Pass Delta) and completion (chat surface -> Build Chat Markdown, which ignores rendered_delta), and surface/surface_ref are passed, so a chat non-delivery is delivered to chat. NEVER renders output_message (the abandoned-session narration). image/doc fields empty; cost footer reflects the wasted spend.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "t17moGs7Vxo5ZcFv",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "completion": "={{ 'Nie udało się dokończyć zadania w wyznaczonym czasie — agent nie dostarczył wyniku (' + ($('Normalize Input').first().json.outcome || 'brak') + '). Spróbuj podzielić zadanie na mniejsze kroki albo ponów zlecenie.' }}",
+            "model": "={{ $('Normalize Input').first().json.model_used }}",
+            "cost_pln": "={{ $('Normalize Input').first().json.cost_pln }}",
+            "clickup_task_id": "={{ $('Normalize Input').first().json.clickup_task_id }}",
+            "reviewer_user_id": "={{ $('Normalize Input').first().json.reviewer_user_id }}",
+            "triggering_comment_id": "={{ $('Normalize Input').first().json.triggering_comment_id }}",
+            "web_sources": "={{ '[]' }}",
+            "image_manifest": "={{ [] }}",
+            "rendered_delta": "={{ [ { text: 'Nie udało się dokończyć zadania w wyznaczonym czasie — agent nie dostarczył wyniku (' + ($('Normalize Input').first().json.outcome || 'brak') + '). Spróbuj podzielić zadanie na mniejsze kroki albo ponów zlecenie.' } ] }}",
+            "image_models": "={{ [] }}",
+            "total_image_cost_pln": "={{ 0 }}",
+            "doc_attachments": "={{ [] }}",
+            "session_id": "={{ $('Normalize Input').first().json.session_id }}",
+            "surface": "={{ $('Normalize Input').first().json.surface || 'task' }}",
+            "surface_ref": "={{ $('Normalize Input').first().json.surface_ref || '' }}",
+            "output_blocks_json": "={{ '[]' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "694fcc5a-670b-41a1-96b3-81f4b84e7f83",
+      "name": "Alert Non-Delivery",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        760,
+        552
+      ],
+      "notes": "ADR-066 Block 1 (2026-06-30): repurposed from 'Alert Session Empty'. CRITICAL when the managed session returned a NON-publishable outcome (deadline/terminated/max_rounds/poll_error/send_failed/create_failed). The orchestrator posts a Polish incomplete-status notice via Call Post Reply (Incomplete); this alert tells the operator (task, outcome, status, duration). onError=continueRegularOutput so the alert can't break the run.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "managed-agents/non-delivery",
+            "message": "Sesja Managed Agents nie dostarczyła wyniku (timeout/błąd) — opublikowano komunikat o niepowodzeniu.",
+            "details": "=task={{ $('Normalize Input').first().json.clickup_task_id }}; outcome={{ $('Normalize Input').first().json.outcome }}; status={{ $('Normalize Input').first().json.status }}; duration={{ $('Normalize Input').first().json.duration_seconds }}s"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Session OK?": {
+      "main": [
+        [
+          {
+            "node": "Call Render Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Non-Delivery",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Call Post Reply (Incomplete)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Render Agent Output": {
+      "main": [
+        [
+          {
+            "node": "Render Has Warnings?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Skip Cost If Chat?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render Has Warnings?": {
+      "main": [
+        [
+          {
+            "node": "Alert Render Warnings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Cost If Chat?": {
+      "main": [
+        [
+          {
+            "node": "Sum Execution Image Cost",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Write Cost Field",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Write Cost Field": {
+      "main": [
+        [
+          {
+            "node": "Sum Execution Image Cost",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sum Execution Image Cost": {
+      "main": [
+        [
+          {
+            "node": "Call Post Reply (Managed)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Img Cost Missing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Img Cost Missing?": {
+      "main": [
+        [
+          {
+            "node": "Alert Image Cost Missing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Session OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  }
+}
