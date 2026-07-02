@@ -295,6 +295,23 @@ degrade-to-text path (`outcome === 'done'` + free text → existing `output-adap
 Verified end-to-end (2026-06-30, temporary 20 s deadline): a `deadline` run and a `delivered`-empty run each posted
 the canned notice (no narration), flipped status, fired CRITICAL; a normal `done`+free-text run still published.
 File: `agent-orchestrator.json` (`Session OK?`, `Alert Non-Delivery`, `Call Post Reply (Incomplete)`).
+**Amendment 4 — ADR-069 document-only delivery (2026-07-02):** Amendment 3's "empty `output_blocks` ⇒
+non-delivery" clause misfired on a real doc-only delivery — task `869dxn3d8` produced a 5.6 MB `.pptx`
+(`Podejscie-Haxe-do-AI.pptx`) delivered via `deliver_output` with an **empty** block array (artifact in
+`doc_files[]`, narration in `final_message_text`); `outcome=delivered, status=completed`. The gate ignored
+`doc_files`, fell to FALSE, posted a **false** "nie dostarczył wyniku (timeout)" notice + CRITICAL
+`managed-agents/non-delivery`, and — taking the failure branch — **never attached the deck**. Fix (spans the
+shared publish path + both lanes): (1) `Session OK?` now passes for `delivered_via_tool` AND (`output_blocks`
+non-empty **OR** `doc_files` non-empty) — non-delivery outcomes still FALSE (`delivered_via_tool` is false
+there), so narration is still never published; (2) `Render Agent Output → Parse Blocks` renders `output_message`
+as the body whenever the block array is empty (task-surface Post Reply reads only `rendered_delta`), so a
+doc-only comment is never blank — the `no-deliver-output` WARN still fires only for the true protocol violation
+(`delivered_via_tool` false); (3) the `output-adapter/deliver-output-empty` WARN in **both** `Session Waiter
+Finish → Build Result` and `Execute Agent Session → Build Final Output` fires only when `output_blocks` AND
+`doc_files` are both empty. Verified: Render sub-tests (doc-only → narration, 0 warnings; protocol-violation →
+narration + WARN); gate checked against the real payload; all 4 workflows validate, repo drift-clean. Files:
+`publish-managed-result.json`, `render-agent-output.json`, `session-waiter-finish.json`,
+`execute-agent-session.json`.
 
 **Reliability:** an auth dead-man's-switch (`Managed Agents Auth Monitor (v1)`), the CU-rules sync +
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the

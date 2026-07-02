@@ -7,10 +7,7 @@
       "name": "When Called",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
-      "position": [
-        -1200,
-        400
-      ],
+      "position": [-1200, 400],
       "notes": "ADR-066 Block 7: shared publish path. Both callers build this normalized session-result contract: the SYNC orchestrator (from Call Execute Agent Session + Call Assemble Context + Resolve Lane) and the ASYNC Session Waiter Finish webhook (from the waiter finish payload + locally-computed doc_files/usd_cost). Cost logging (Log Model Run) happens in the CALLER before this, so Sum Execution Image Cost / Write Cost Field see the session cost row.",
       "parameters": {
         "workflowInputs": {
@@ -78,10 +75,7 @@
       "name": "Normalize Input",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        -1000,
-        400
-      ],
+      "position": [-1000, 400],
       "notes": "ADR-066 Block 7: parse the flat contract into the shape the moved post-path nodes expect. Field names are IDENTICAL to the orchestrator refs they replaced (output_blocks/doc_files arrays, image_blocks_json, since_ts, etc.) so the copied nodes needed only their $(caller-node) refs repointed here. output_blocks/doc_files are parsed from their _json strings; delivered_via_tool is coerced to a real boolean (the Session OK? gate does === true).",
       "parameters": {
         "jsCode": "const j = $input.first().json || {};\nfunction arr(v){ if (Array.isArray(v)) return v; if (typeof v === \"string\"){ try { const p = JSON.parse(v||\"[]\"); return Array.isArray(p)?p:[]; } catch(e){ return []; } } return []; }\nconst dvt = (j.delivered_via_tool === true || j.delivered_via_tool === \"true\" || j.delivered_via_tool === 1 || j.delivered_via_tool === \"1\");\nreturn [{ json: {\n  outcome: j.outcome || \"\",\n  delivered_via_tool: dvt,\n  output_message: j.output_message || \"\",\n  output_blocks: arr(j.output_blocks_json),\n  doc_files: arr(j.doc_files_json),\n  model_used: j.model_used || \"\",\n  cost_pln: (j.cost_pln === \"\" || j.cost_pln == null) ? null : Number(j.cost_pln),\n  session_id: j.session_id || \"\",\n  status: j.status || \"\",\n  duration_seconds: (j.duration_seconds === \"\" || j.duration_seconds == null) ? null : Number(j.duration_seconds),\n  clickup_task_id: j.clickup_task_id || \"\",\n  reviewer_user_id: j.reviewer_user_id || \"\",\n  triggering_comment_id: j.triggering_comment_id || \"\",\n  surface: j.surface || \"task\",\n  surface_ref: j.surface_ref || \"\",\n  image_blocks_json: j.input_image_refs_json || \"[]\",\n  since_ts: j.since_ts || \"\",\n  web_sources: j.web_sources || \"[]\"\n} }];"
@@ -92,11 +86,8 @@
       "name": "Session OK?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [
-        472,
-        424
-      ],
-      "notes": "ADR-068/ADR-066 Block 1 fail-loud guard (2026-06-30): gates on the PUBLISHABLE-ANSWER test, not text presence. TRUE = (delivered_via_tool AND output_blocks non-empty) OR (outcome==='done' AND output_message non-empty) — only the 'delivered' and 'done' session outcomes are publishable. A non-delivery outcome (deadline/terminated/max_rounds/poll_error/send_failed/create_failed) is FALSE even when output_message carries mid-work narration, so narration is NEVER posted as the answer (the 2026-06-30 pptx-run failure mode). FALSE -> Call Post Reply (Incomplete) (Polish failure notice; flips status off 'W trakcie') + Alert Non-Delivery (CRITICAL). Supersedes the ADR-063 output_message-OR-blocks check.",
+      "position": [472, 424],
+      "notes": "ADR-069/ADR-068/ADR-066 Block 1 fail-loud guard: gates on the PUBLISHABLE-ANSWER test, not text presence. TRUE = (delivered_via_tool AND (output_blocks non-empty OR doc_files non-empty)) OR (outcome==='done' AND output_message non-empty). ADR-069 (2026-07-02): a DOCUMENT-ONLY delivery — delivered_via_tool with EMPTY text blocks but a produced office-doc in doc_files (e.g. a .pptx) — now counts as delivered; previously it fell to FALSE and posted a false 'nie dostarczyl wyniku (timeout)' notice + CRITICAL non-delivery alert and dropped the deck. Non-delivery outcomes (deadline/terminated/max_rounds/poll_error/send_failed/create_failed) stay FALSE (delivered_via_tool is false there), so mid-work narration is NEVER posted as the answer. FALSE -> Call Post Reply (Incomplete) (Polish failure notice; flips status off 'W trakcie') + Alert Non-Delivery (CRITICAL).",
       "parameters": {
         "conditions": {
           "options": {
@@ -109,7 +100,7 @@
           "conditions": [
             {
               "id": "sok1",
-              "leftValue": "={{ ($json.delivered_via_tool === true && Array.isArray($json.output_blocks) && $json.output_blocks.length > 0) || ($json.outcome === 'done' && ($json.output_message || '').toString().trim() !== '') }}",
+              "leftValue": "={{ ($json.delivered_via_tool === true && ((Array.isArray($json.output_blocks) && $json.output_blocks.length > 0) || (Array.isArray($json.doc_files) && $json.doc_files.length > 0))) || ($json.outcome === 'done' && ($json.output_message || '').toString().trim() !== '') }}",
               "rightValue": "",
               "operator": {
                 "type": "boolean",
@@ -127,10 +118,7 @@
       "name": "Call Render Agent Output",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [
-        760,
-        408
-      ],
+      "position": [760, 408],
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -158,10 +146,7 @@
       "name": "Render Has Warnings?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [
-        1032,
-        552
-      ],
+      "position": [1032, 552],
       "parameters": {
         "conditions": {
           "options": {
@@ -201,10 +186,7 @@
       "name": "Alert Render Warnings",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [
-        1368,
-        392
-      ],
+      "position": [1368, 392],
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -232,10 +214,7 @@
       "name": "Skip Cost If Chat?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [
-        760,
-        248
-      ],
+      "position": [760, 248],
       "notes": "ADR-068: the cumulative CU '[AI] Koszt akcji' field write is task-bound. surface=='chat' (true) -> skip Call Write Cost Field, go straight to Sum Execution Image Cost; task (false) -> Call Write Cost Field (unchanged). Reads surface off the surface-agnostic Call Assemble Context (Merge).",
       "parameters": {
         "conditions": {
@@ -266,10 +245,7 @@
       "name": "Call Write Cost Field",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [
-        936,
-        104
-      ],
+      "position": [936, 104],
       "notes": "Managed lane cost write-back (parity with the bare lane's in-workflow field write). Sums agent_runs.cost_pln for the task and writes CU '[AI] Koszt akcji [PLN]'; returns {total} used for the comment footer. Runs AFTER the session logged its cost row so the SUM includes it. onError=continueRegularOutput + the sub-workflow is internally fail-soft, so a cost-sync hiccup never blocks Post Reply. NOTE: managed image-gen cost rows now carry the real clickup_task_id (agent-supplied tool arg, ADR-057 amendment) so they ARE included in this cumulative per-task SUM. The PER-EXECUTION image cost for the comment footer is computed separately by the downstream Sum Execution Image Cost node (windowed by since_ts, ADR-060) — this SUM stays the all-time task total for the CU field.",
       "parameters": {
         "workflowId": {
@@ -295,10 +271,7 @@
       "name": "Sum Execution Image Cost",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
-      "position": [
-        984,
-        344
-      ],
+      "position": [984, 344],
       "notes": "ADR-060: per-execution image cost for the managed footer. SUMs agent_runs.cost_pln for THIS task over the managed image-gen rows (triggered_by='image_mcp', migration 036) created since Resolve Lane's since_ts (captured before the session ran), i.e. only THIS execution's images. Feeds Call Post Reply (Managed).total_image_cost_pln so the footer = session text cost + this run's images. Cumulative CU field (Write Cost Field, by task, all-time) is unchanged. onError=continueRegularOutput + alwaysOutputData so a transient DB miss falls back to image_total 0 (Build/Post still run). Known limit: two concurrent runs on the SAME task overlap windows and can cross-count (rare; ADR-060).",
       "parameters": {
         "operation": "executeQuery",
@@ -324,10 +297,7 @@
       "name": "Img Cost Missing?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
-      "position": [
-        1192,
-        456
-      ],
+      "position": [1192, 456],
       "notes": "ADR-060 reliability guard: TRUE when images WERE delivered this execution (render image_manifest non-empty) but the windowed image cost summed to 0 -> the per-execution image cost (footer + this-run attribution) is understated. Causes not already caught by the generation-time image-mcp/missing-task-id WARN: clock skew on since_ts, a triggered_by/filter mismatch, or all image rows landing null-task. Side branch -> Alert Image Cost Missing (WARN), never blocks Post Reply.",
       "parameters": {
         "conditions": {
@@ -367,10 +337,7 @@
       "name": "Alert Image Cost Missing",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [
-        1432,
-        520
-      ],
+      "position": [1432, 520],
       "notes": "ADR-060 WARN via Post Alert (v1): images were delivered in the comment but no per-execution image cost was attributed (footer/this-run cost understated). Complements the generation-time image-mcp/missing-task-id WARN by catching the since_ts-window/skew/filter failure modes. onError=continueRegularOutput so the alert can't break the run.",
       "parameters": {
         "workflowId": {
@@ -399,10 +366,7 @@
       "name": "Call Post Reply (Managed)",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [
-        1096,
-        152
-      ],
+      "position": [1096, 152],
       "parameters": {
         "workflowId": {
           "__rl": true,
@@ -441,10 +405,7 @@
       "name": "Call Post Reply (Incomplete)",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [
-        760,
-        696
-      ],
+      "position": [760, 696],
       "notes": "ADR-066 Block 1 (2026-06-30): on a non-delivery outcome, post a Polish incomplete-status notice via Post Reply (v1) and flip status off 'W trakcie' (Set Status Zakonczono). The failure text is set in BOTH rendered_delta (task surface -> Pass Delta) and completion (chat surface -> Build Chat Markdown, which ignores rendered_delta), and surface/surface_ref are passed, so a chat non-delivery is delivered to chat. NEVER renders output_message (the abandoned-session narration). image/doc fields empty; cost footer reflects the wasted spend.",
       "parameters": {
         "workflowId": {
@@ -484,10 +445,7 @@
       "name": "Alert Non-Delivery",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [
-        760,
-        552
-      ],
+      "position": [760, 552],
       "notes": "ADR-066 Block 1 (2026-06-30): repurposed from 'Alert Session Empty'. CRITICAL when the managed session returned a NON-publishable outcome (deadline/terminated/max_rounds/poll_error/send_failed/create_failed). The orchestrator posts a Polish incomplete-status notice via Call Post Reply (Incomplete); this alert tells the operator (task, outcome, status, duration). onError=continueRegularOutput so the alert can't break the run.",
       "parameters": {
         "workflowId": {
@@ -643,11 +601,11 @@
     }
   },
   "settings": {
-    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
     "saveDataErrorExecution": "all",
     "saveDataSuccessExecution": "all",
-    "saveManualExecutions": true,
-    "saveExecutionProgress": true,
-    "errorWorkflow": "81eplXMD1v5ONhzs"
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "executionOrder": "v1"
   }
 }
