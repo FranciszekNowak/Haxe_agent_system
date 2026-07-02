@@ -169,3 +169,22 @@ in-document image-embedding half of the same incident.
 Date
 
 2026-06-30 (draft; Block 4 of 8) — 2026-07-01 (ACCEPTED; Blocks 5–8 shipped + cutover live)
+
+## Amendment (2026-07-02) — remove the 840 s cap; waiter surfaces silent ClickUp denials
+
+**840 s was a synchronous-path artefact.** The `Poll Round` ran inside one n8n Code node that n8n's task runner
+kills at ~900 s, so 840 s kept it under the kill. The async waiter runs the loop in a standalone service with no
+such limit — its budget is `config.session_waiter.absolute_budget_ms` (migration 049 seeded 45 min). Per operator
+request the artificial cap is removed: **budget raised 45 → 90 min** (`5_400_000` ms). **Load-bearing coupling:**
+`session_waiter.stuck_after_minutes` (freshness dead-man's-switch) must exceed the longest legit run, so it was
+raised **50 → 100 min** in the same change (migration `050_session_waiter_budget_raise.sql`). The synchronous
+fallback's own 840 s deadline (`execute-agent-session` "Build Initial State") is LEFT as-is — that path *is*
+bounded by the n8n node kill, so its cap is correct. 90 min is a generous backstop, not truly unbounded, because
+the non-delivery detection and cost/runaway protection still need a ceiling.
+
+**Waiter now surfaces silent ClickUp-MCP denials.** `analyze()` additionally scans for
+`agent.tool_result` "Permission to use clickup_… has been denied" (the shape when the hosted ClickUp MCP fails to
+connect — see the ADR-054 2026-07-02 amendment for the incident), and `driveSession` raises one consolidated
+`managed-agents/clickup-tool-denied` WARN into the finish payload (side-channel; run still delivers). This closes
+the gap where the prior code only caught `mcp_authentication_failed_error`. Deployed to the live service
+(rebuild + recreate); startup healthy.

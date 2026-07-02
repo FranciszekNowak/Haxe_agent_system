@@ -172,3 +172,38 @@ What was kept (task-bound, U's own task — no leak): the `Fetch Task Comments` 
 - **Google explicitly deferred** to a follow-up ADR (Drive + Gmail per-user scoping out of scope; the retained client-side loop stays in place for that future tool).
 
 **Net consequence vs the original Decision.** The decision's ClickUp mechanism ("one per-user OAuth token in the Vault with auto-refresh, stock MCP scoped by it") became **two non-expiring tokens, two consents, two stores** (MCP-OAuth in the Anthropic Vault for discovery; classic REST in Supabase Vault for as-U extraction) — because the hosted MCP is its own OAuth server, its token is 401 on REST, and n8n cannot read a harness-injected bearer (Block-1 probes). The §3 enforcement point (n8n binds the session to U at creation; the agent never holds or selects identity) is realized exactly as written. The §6 acceptance gate passed. R1/R3/R5 are all closed for ClickUp: no single bot identity for discovery (R1), no post-hoc application-code filtering (R3 — the `Check Space Member` filter is retired), no agent-supplied identity (R5).
+
+## Amendment (2026-07-02) — silent ClickUp-MCP connection failure + detection hardening
+
+**Incident.** On 2026-07-01 a real task (session `sthr_01MobK7caazrGk7zpiKTeQSg`, Opus, caller Franciszek) needed
+to read a linked ClickUp Doc. Every `clickup_*` call was denied by the harness (`agent.tool_result`:
+"Permission to use clickup_… has been denied"); the agent lost all scoped discovery/doc reading, worked around
+it, and the run hit its deadline delivering nothing — twice (two retries in the same window).
+
+**Root cause (confirmed).** Not config and not the vault: the deployed agent's ClickUp `mcp_toolset` carries
+`always_allow` on all 14 read tools (verified against the live agent JSON), the session had both vaults attached
+(image + the caller's ClickUp vault), and the credential row was active. The `clickup` **MCP server simply failed
+to CONNECT in that session** (image MCP connected fine — 4 `mcp_tool_use`; ClickUp produced zero and its calls came
+through as `custom_tool_use` → harness denial). Two direct probe sessions and a full real async-pipeline run
+afterwards all connected ClickUp fine (17 Spaces returned), so the failure was **transient** (a ClickUp-MCP
+connection hiccup at that time), not a standing misconfiguration. The incident ran the *synchronous* path (no
+`waiter_sessions` row), which is why it deadlined at 840 s.
+
+**Why it was invisible (the real defect).** No alert fired. (1) The waiter only recognised
+`mcp_authentication_failed_error` for ClickUp; a silent no-connect emits no such event, so nothing WARNed.
+(2) The health monitor only GET-pinged the OAuth well-known URL, which returns 2xx even during this failure.
+
+**Fixes shipped.**
+- **Waiter denial WARN** (`services/session-waiter/app.mjs`, `analyze()` + `driveSession`): detects any
+  `agent.tool_result` "Permission to use clickup_… has been denied" and raises one consolidated
+  `managed-agents/clickup-tool-denied` **WARN** through the finish callback → `Post Alert (v1)` (side-channel; the
+  run still returns its degraded result). Verified: the detection matches all three incident-denied tools and
+  nothing on healthy output.
+- **Real health probe** (`ClickUp MCP Health Monitor (v1)`, `hrtNkFFL4iMVn9J9`): replaced the well-known ping with
+  a genuine probe session (cheap Haiku agent + Franciszek's ClickUp vault) that calls
+  `clickup_get_workspace_hierarchy` in-harness; CRITICAL on denial / client-tool routing / session error;
+  inconclusive (agent never attempted it) does **not** alarm. Verified live: `healthy:true` in 6 s, probe session
+  cleaned up.
+
+The caller-scoped REST fallback for doc/search tools (so a future MCP outage degrades to deterministic reads
+instead of nothing) remains the documented future block, still scoped OUT here.

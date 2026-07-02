@@ -349,8 +349,13 @@ is enforced in software) + Polish discovery steering on the **3 routed tier agen
 harmless.) The managed-lane Poll Round now treats a ClickUp MCP `mcp_authentication_failed_error` as
 **NON-fatal** — the run degrades and completes rather than `terminate`-ing; a mid-run WARN fires **only** for an
 onboarded user whose scope genuinely fails (`clickup_scope==='scoped'`), suppressed for un-onboarded (Block 2
-already WARNs). A `ClickUp MCP Health Monitor (v1)` (`hrtNkFFL4iMVn9J9`) dead-man's-switch probes the hosted
-endpoint every 6h (`/.well-known/oauth-authorization-server`; 2xx healthy, else CRITICAL). **Verified live:** an
+already WARNs). A `ClickUp MCP Health Monitor (v1)` (`hrtNkFFL4iMVn9J9`) dead-man's-switch runs every 6h. **Upgraded
+2026-07-02 to a REAL tool-connectivity probe:** it opens a minimal probe session (cheap Haiku agent +
+Franciszek's ClickUp vault) and calls `clickup_get_workspace_hierarchy` in-harness — CRITICAL if the tool
+is denied, routed as an unserviced client custom tool, or a session/auth error surfaces (the exact
+2026-07-01 silent-failure shape). The prior version only GET-pinged `/.well-known/oauth-authorization-server`,
+which returned 2xx even while the harness could not connect the MCP + inject the token, so it could not see
+that failure. **Verified live:** an
 onboarded run performed in-harness scoped discovery (the agent called `clickup_get_workspace_hierarchy` and
 returned the caller's real Spaces, `status:completed`, 0 warnings); an un-onboarded run completed cleanly
 (`outcome:done`, not terminated) with exactly one WARN; Alerts 0 CRITICAL / 1 expected WARN. **Built (Block 3b —

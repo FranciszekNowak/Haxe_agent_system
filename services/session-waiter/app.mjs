@@ -229,9 +229,23 @@ function analyze(events) {
       else sessionError = err;
     }
   }
+  // ADR-054/066 silent-degrade guard: when the ClickUp MCP fails to CONNECT (as opposed to a clean
+  // auth error, caught above), the harness does not surface an error event — it just DENIES each
+  // clickup_* call ("Permission to use clickup_X has been denied", is_error tool_result). Without this
+  // scan those denials are invisible: the agent loses all scoped ClickUp discovery/doc reading and the
+  // run silently degrades to a worse (or empty) deliverable with no operator signal. Collect the denied
+  // tool names so driveSession can raise ONE consolidated WARN (does not affect the main result path).
+  const clickupToolDenied = [];
+  for (const e of events) {
+    if (e.type !== 'agent.tool_result') continue;
+    const txt = Array.isArray(e.content) ? e.content.map((c) => (c && c.text) || '').join(' ') : '';
+    const m = txt.match(/Permission to use (clickup_[A-Za-z0-9_]+) has been denied/);
+    if (m) clickupToolDenied.push(m[1]);
+  }
+  const clickupToolDeniedUniq = [...new Set(clickupToolDenied)];
   let webSearchCount = 0;
   for (const e of events) { if (e.type === 'agent.tool_use' && e.name === 'web_search') webSearchCount++; }
-  return { pending, agentRepliedAfter, lastAgentMsg, sessionError, clickupAuthError, webSearchCount };
+  return { pending, agentRepliedAfter, lastAgentMsg, sessionError, clickupAuthError, clickupToolDenied: clickupToolDeniedUniq, webSearchCount };
 }
 function extractText(msg) {
   if (!msg) return '';
@@ -383,6 +397,18 @@ async function driveSession(handoff) {
     await patchWaiterSession(sessionId, { status: rowStatus, outcome, finished_at: new Date().toISOString() });
     log('info', 'drive_terminal', { session_id: sessionId, outcome, tool_rounds: toolRound, blocks: output_blocks.length });
 
+    // Silent-degrade guard (ADR-054/066): raise ONE consolidated WARN if the ClickUp MCP failed to
+    // connect and its tools were denied at runtime. Side-channel only — the run still returns its result.
+    const finalWarnings = Array.isArray(warnings) ? warnings.slice() : [];
+    if (analysis && Array.isArray(analysis.clickupToolDenied) && analysis.clickupToolDenied.length) {
+      finalWarnings.push({
+        source: 'managed-agents/clickup-tool-denied',
+        err: 'Narzedzia ClickUp odmowione w trakcie sesji (hostowany MCP nie polaczyl sie): ' + analysis.clickupToolDenied.join(', ') + '. Agent utracil zakresowane wyszukiwanie/odczyt ClickUp na tej sesji -> wynik moze byc gorszy lub niepelny. Prawdopodobny przejsciowy problem polaczenia z mcp.clickup.com albo token uzytkownika ' + (handoff.caller_user_id || '?') + '. Sprawdz ClickUp MCP Health Monitor; jesli powtarza sie u tego uzytkownika, przeloguj go (clickup-oauth-start).',
+        severity: 'WARN',
+      });
+      log('warn', 'clickup_tools_denied', { session_id: sessionId, tools: analysis.clickupToolDenied });
+    }
+
     const finishPayload = {
       session_id: sessionId,
       outcome,
@@ -394,7 +420,7 @@ async function driveSession(handoff) {
       session_usage: (statusObj && statusObj.usage) ? statusObj.usage : {},
       terminated_error_json: (analysis && analysis.sessionError) ? JSON.stringify(analysis.sessionError).slice(0, 500) : '',
       clickup_auth_error_json: (analysis && analysis.clickupAuthError) ? JSON.stringify(analysis.clickupAuthError).slice(0, 500) : '',
-      warnings,
+      warnings: finalWarnings,
       // carry-state for the finish callback (Block 7). Front-half warnings are already in `warnings`;
       // Block 7 must NOT re-fire front-half warning sources (Block 5 carry-forward).
       clickup_task_id: handoff.clickup_task_id || '',

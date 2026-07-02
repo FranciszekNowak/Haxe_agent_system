@@ -8,7 +8,7 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.3,
       "position": [0, 200],
-      "notes": "ADR-054 Block 3: health dead-man's-switch for the COMMODITY hosted ClickUp MCP (https://mcp.clickup.com/mcp) that all four tier agents use for caller-scoped discovery. ClickUp operates the endpoint (we cannot fix it), but if it is down EVERY scoped discovery silently degrades to no-discovery for every user — this surfaces that within ~6h instead of at the next real task. Mirrors Image MCP Health Monitor (v1).",
+      "notes": "ADR-054 Block 3 (upgraded 2026-07-02): REAL tool-connectivity dead-man's-switch for the hosted ClickUp MCP (mcp.clickup.com/mcp) that the tier agents use for caller-scoped discovery. Prior version only GET-pinged the PUBLIC OAuth well-known URL — which returns 2xx even when the harness cannot actually connect the MCP + inject a per-user token (exactly the 2026-07-01 silent failure: tools denied, well-known still 200). This now opens a real minimal probe session (cheap Haiku agent + Franciszek's ClickUp vault) and calls clickup_get_workspace_hierarchy in-harness — the same path a real task uses — so a genuine connection failure is caught within ~6h instead of at the next real task.",
       "parameters": {
         "rule": {
           "interval": [
@@ -32,36 +32,43 @@
       }
     },
     {
-      "id": "probe",
-      "name": "Probe ClickUp MCP",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "id": "fetch-inputs",
+      "name": "Fetch Probe Inputs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [240, 280],
-      "notes": "GET the ClickUp MCP's PUBLIC OAuth Authorization-Server metadata (https://mcp.clickup.com/.well-known/oauth-authorization-server). This endpoint needs NO token (n8n cannot read a per-user MCP-OAuth token out of the Anthropic Vault — by design), yet its reachability is a valid liveness signal for the same service that serves /mcp. 2xx -> healthy (service up); any non-2xx OR network/timeout routes to the error output (onError) -> CRITICAL. Per-user auth CORRECTNESS is NOT tested here — it is re-validated per session at run time (the agent surfaces a tool error) and by the Block-5 cross-department gate; this switch only catches a down/unreachable ClickUp MCP service.",
+      "notes": "One row of probe prerequisites: the managed Anthropic key (get_anthropic_key(), migration 034), the cheapest tier agent (Haiku — the clickup MCP is registered on every tier agent, so the model is irrelevant to connectivity but Haiku minimises probe cost), the persistent environment id (config.managed_agent_environment_id), and Franciszek's active per-user ClickUp Vault id (a stable, always-onboarded probe identity; user_data_and_config). A missing prerequisite -> Run ClickUp Probe throws -> CRITICAL (we cannot even probe). Read-only.",
       "parameters": {
-        "method": "GET",
-        "url": "https://mcp.clickup.com/.well-known/oauth-authorization-server",
-        "options": {
-          "timeout": 15000,
-          "response": {
-            "response": {
-              "responseFormat": "text"
-            }
-          }
-        }
+        "operation": "executeQuery",
+        "query": "select\n  public.get_anthropic_key() as anthropic_key,\n  (select agent_id from public.agent_routing where active = true and model_id = 'claude-haiku-4-5' limit 1) as agent_id,\n  (select value from public.config where key = 'managed_agent_environment_id') as environment_id,\n  (select vault_id from public.user_data_and_config where clickup_user_id = '2521617' and status = 'active' and vault_id is not null limit 1) as vault_id;",
+        "options": {}
       },
-      "onError": "continueErrorOutput",
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 3000
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      }
+    },
+    {
+      "id": "probe",
+      "name": "Run ClickUp Probe",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 280],
+      "notes": "Opens a REAL managed session (agent + environment + Franciszek's ClickUp vault) and asks the agent to call ONLY clickup_get_workspace_hierarchy, then polls the session events up to ~48s. HEALTHY = the call ran in-harness (agent.mcp_tool_use name clickup_*), i.e. the MCP connected + the vault token authed. FAILURE (throw -> CRITICAL via onError=continueErrorOutput) = the harness DENIED the call (agent.tool_result 'Permission to use clickup_* has been denied'), OR routed clickup_* as an unserviced client custom tool (agent.custom_tool_use — the exact 2026-07-01 shape when the MCP did not connect), OR a clickup mcp_authentication/ session error surfaced. INCONCLUSIVE (agent never attempted the tool within budget — a steering miss, not an outage) -> healthy path, no alarm, to avoid false CRITICALs. Best-effort DELETEs the probe session at the end. Uses this.helpers.httpRequest (allowed in Code nodes on this instance; crypto/$env are not, but none are needed here — the key arrives in item data).",
+      "parameters": {
+        "jsCode": "const inp = $input.first().json || {};\nconst key = (inp.anthropic_key || '').toString().trim();\nconst agent = (inp.agent_id || '').toString().trim();\nconst env = (inp.environment_id || '').toString().trim();\nconst vault = (inp.vault_id || '').toString().trim();\nif (!key || !agent || !env || !vault) {\n  throw new Error('Brak wymaganych danych sondy (nie mozna wykonac testu): ' + JSON.stringify({ hasKey: !!key, agent: agent || null, env: env || null, hasVault: !!vault }));\n}\nconst API = 'https://api.anthropic.com';\nconst H = { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'managed-agents-2026-04-01,files-api-2025-04-14', 'content-type': 'application/json' };\nconst t0 = Date.now();\n// 1) create the probe session with the ClickUp vault attached\nconst sess = await this.helpers.httpRequest({ method: 'POST', url: API + '/v1/sessions', headers: H, body: { agent: agent, environment_id: env, vault_ids: [vault] }, json: true, timeout: 30000 });\nconst sid = sess && sess.id;\nif (!sid) throw new Error('Sonda: brak session id z /v1/sessions: ' + JSON.stringify(sess).slice(0, 200));\n// 2) ask the agent to call ONLY the hierarchy tool\nawait this.helpers.httpRequest({ method: 'POST', url: API + '/v1/sessions/' + sid + '/events', headers: H, json: true, timeout: 30000, body: { events: [{ type: 'user.message', content: [{ type: 'text', text: 'Test zdrowotny polaczenia z ClickUp. Wywolaj TERAZ narzedzie clickup_get_workspace_hierarchy i nic wiecej. NIE wywoluj zadnych innych narzedzi (ani get_task_details, ani deliver_output). Po wywolaniu odpowiedz jednym zdaniem.' }] }] } });\n// 3) poll for a connectivity verdict\nlet connected = false; const denied = []; let clickupCustom = false; let sessErr = null;\nfor (let i = 0; i < 12; i++) {\n  await new Promise(function (r) { setTimeout(r, 4000); });\n  let ev;\n  try { ev = await this.helpers.httpRequest({ method: 'GET', url: API + '/v1/sessions/' + sid + '/events?limit=100', headers: H, json: true, timeout: 30000 }); } catch (e) { continue; }\n  const data = (ev && Array.isArray(ev.data)) ? ev.data : [];\n  for (const e of data) {\n    const nm = (e && typeof e.name === 'string') ? e.name : '';\n    if (e.type === 'agent.mcp_tool_use' && nm.indexOf('clickup_') === 0) connected = true;\n    if (e.type === 'agent.custom_tool_use' && nm.indexOf('clickup_') === 0) clickupCustom = true;\n    if (e.type === 'agent.tool_result') { const t = Array.isArray(e.content) ? e.content.map(function (c) { return (c && c.text) || ''; }).join(' ') : ''; const m = t.match(/Permission to use (clickup_[A-Za-z0-9_]+) has been denied/); if (m) denied.push(m[1]); }\n    if (e.type === 'session.error' || (typeof e.type === 'string' && e.type.indexOf('error') >= 0 && e.error)) sessErr = e.error || e;\n  }\n  if (connected || denied.length || clickupCustom || sessErr) break;\n}\nconst elapsed = Math.round((Date.now() - t0) / 1000);\n// best-effort cleanup (idle probe session otherwise lingers; harmless if DELETE is unsupported)\ntry { await this.helpers.httpRequest({ method: 'DELETE', url: API + '/v1/sessions/' + sid, headers: H, timeout: 15000 }); } catch (e) {}\nif (connected) { return [{ json: { healthy: true, session_id: sid, elapsed_s: elapsed } }]; }\nif (denied.length || clickupCustom || sessErr) {\n  throw new Error('Sonda ClickUp MCP: narzedzie NIE polaczylo sie (' + elapsed + 's). denied=' + JSON.stringify(denied) + ' routedAsCustom=' + clickupCustom + ' sessionError=' + (sessErr ? JSON.stringify(sessErr).slice(0, 200) : 'brak') + ' session=' + sid);\n}\n// inconclusive: the agent did not attempt the tool within budget (steering miss, not an outage) -> do not alarm\nreturn [{ json: { healthy: true, inconclusive: true, session_id: sid, elapsed_s: elapsed, note: 'Agent nie wywolal clickup_get_workspace_hierarchy w oknie sondy - wynik niejednoznaczny, brak alarmu.' } }];"
+      },
+      "onError": "continueErrorOutput"
     },
     {
       "id": "healthy",
       "name": "Healthy",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
-      "position": [480, 180],
-      "notes": "Terminal for the healthy path. Silent on purpose — a healthy probe must NOT post to the Alerts task every 6h.",
+      "position": [720, 180],
+      "notes": "Terminal for the healthy (or inconclusive-no-alarm) path. Silent on purpose — a healthy probe must NOT post to the Alerts task every 6h.",
       "parameters": {}
     },
     {
@@ -69,22 +76,23 @@
       "name": "Alert ClickUp MCP Down",
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
-      "position": [480, 380],
-      "notes": "CRITICAL via Post Alert (v1) seam (ADR-025) when the ClickUp MCP service is unreachable or returns non-2xx. While down, all four tier agents lose caller-scoped ClickUp discovery (they degrade to no-discovery, surfaced per run). Check status.clickup.com and that mcp.clickup.com resolves; this is a ClickUp-side outage we cannot fix, only route around (the lane still serves task-bound pre-gather).",
+      "position": [720, 380],
+      "notes": "CRITICAL via Post Alert (v1) seam (ADR-025) when the REAL probe could not connect the ClickUp MCP / inject the per-user token (tools denied, routed as client custom tool, or a session/auth error) OR a probe prerequisite was missing. While this fails, tier agents lose caller-scoped ClickUp discovery/doc reading -> deliverables silently degrade. Check status.clickup.com, that mcp.clickup.com resolves, and whether Franciszek's ClickUp token is still valid (re-run clickup-oauth-start if revoked). The 2026-07-01 incident was a transient connection failure of exactly this kind that the old well-known ping could not see.",
       "parameters": {
         "source": "database",
         "workflowId": {
           "__rl": true,
           "value": "YSCdHlmdf3p9XEUx",
-          "mode": "list"
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
         },
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
             "severity": "CRITICAL",
             "source": "clickup-mcp/health",
-            "message": "Sonda ClickUp MCP nie powiodla sie — hostowany serwer MCP (mcp.clickup.com) niedostepny lub zwrocil blad.",
-            "details": "=Blad: {{ (($json.error || {}).message) || $json.error || JSON.stringify($json).slice(0,300) }}. Endpoint: https://mcp.clickup.com/.well-known/oauth-authorization-server. Gdy ClickUp MCP jest niedostepny, wszystkie 4 agenty traca zakresowane wyszukiwanie kontekstu w ClickUp (degraduja do braku discovery, sygnalizowane per sesja). Sprawdz status.clickup.com oraz rozwiazywanie nazwy mcp.clickup.com. To awaria po stronie ClickUp — mozna ja tylko obejsc (lane nadal serwuje pre-gather zwiazany z zadaniem)."
+            "message": "Sonda ClickUp MCP nie powiodla sie — hostowany serwer MCP nie polaczyl sie w realnej sesji (narzedzia ClickUp niedostepne dla agentow).",
+            "details": "=Blad: {{ (($json.error || {}).message) || $json.error || JSON.stringify($json).slice(0,400) }}. Gdy ClickUp MCP nie laczy sie, wszystkie tiery traca zakresowane wyszukiwanie/odczyt ClickUp (discovery + dokumenty), a wynik cichego biegu jest gorszy lub pusty. Sprawdz status.clickup.com, rozwiazywanie mcp.clickup.com oraz waznosc tokenu ClickUp Franciszka (clickup-oauth-start jesli odwolany)."
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,
@@ -98,7 +106,7 @@
       "main": [
         [
           {
-            "node": "Probe ClickUp MCP",
+            "node": "Fetch Probe Inputs",
             "type": "main",
             "index": 0
           }
@@ -109,14 +117,25 @@
       "main": [
         [
           {
-            "node": "Probe ClickUp MCP",
+            "node": "Fetch Probe Inputs",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Probe ClickUp MCP": {
+    "Fetch Probe Inputs": {
+      "main": [
+        [
+          {
+            "node": "Run ClickUp Probe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run ClickUp Probe": {
       "main": [
         [
           {
