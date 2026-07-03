@@ -1,6 +1,6 @@
 # Master plan — hard cutover `agents.haxe.ai` → `agents.haxe.pl`
 
-Status: DRAFT (not started)
+Status: COMPLETE (2026-07-03) — `agents.skalus.com` is the sole endpoint; `agents.haxe.ai` fully retired (DNS removed, cert deleted, nginx blocks gone). Token rotation consciously DECLINED by operator (residual risk accepted — the agent's personal ClickUp token was exposed in the cutover session transcript; not rotated).
 Date opened: 2026-07-03
 Owner: Franciszek
 Supersedes on completion: ADR-012 (a new ADR is written in Block 5)
@@ -48,11 +48,11 @@ Everything else is repo work Claude can do.
 | 2 | TLS + nginx on VPS (dual-serve) | ✅ cert to 2026-10-01; both domains 200 |
 | 3 | n8n env: `WEBHOOK_URL` / `N8N_EDITOR_BASE_URL` → `.com` | ✅ verified in n8n-main printenv |
 | 4a | ClickUp webhook endpoint → `.com` | ✅ PUT done; ⏳ pending live @-mention verify |
-| 4b | ClickUp OAuth app redirect URI → `.com` | ☐ (operator, ClickUp UI) |
+| 4b | ClickUp OAuth app redirect URI → `.com` | ✅ operator confirmed |
 | 4c | n8n workflow strings (sync-defs, health-monitor, onboarding) + re-run sync | ✅ sync re-run verified (Anthropic stores `.com`); health verified; onboarding edited (verify on next real onboard) |
 | 4d | VPS `watchdog.env` URL → `.com` | ✅ |
-| 5 | Repo + tooling + local env + new ADR | 🔶 repo/docs/workflows/ADR done; local `setx` (operator) + commit pending |
-| 6 | Decommission `agents.haxe.ai` | 🔶 VPS done (nginx blocks removed, cert deleted); operator removes DNS record |
+| 5 | Repo + tooling + local env + new ADR | ✅ committed (20381d7); operator `setx` done both desktops |
+| 6 | Decommission `agents.haxe.ai` | ✅ VPS (nginx + cert) + DNS record removed; `agents.haxe.ai` no longer resolves |
 
 > Block 6 (2026-07-03): VPS side torn down — `.ai` nginx server blocks removed, config now
 > `skalus.com`-only, `certbot delete --cert-name agents.haxe.ai` done (renewal stopped), skalus
