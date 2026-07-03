@@ -20,7 +20,7 @@ of relying on memory. They **report** drift — they do not auto-fix, because dr
 ## n8n check (implemented)
 
 `node scripts/check-workflow-drift.mjs` (needs `N8N_API_KEY`; optional `N8N_API_URL`, default
-`https://agents.haxe.ai/api/v1`).
+`https://agents.skalus.com/api/v1`).
 
 - Matches each repo workflow to the live one **by `name`** (no hardcoded IDs).
 - Compares **behaviour only** — normalises away node `notes`, canvas `position`, UI

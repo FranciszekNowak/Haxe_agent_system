@@ -22,7 +22,7 @@ BASE = "https://api.anthropic.com"
 KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MA = "managed-agents-2026-04-01"
 ENV = "env_01T1PexJQheEUVnzVTKjyrz4"
-MCP_URL = "https://agents.haxe.ai/mcp/spike-bearer-054"
+MCP_URL = "https://agents.skalus.com/mcp/spike-bearer-054"
 SENTINEL = "SENTINEL-BEARER-CHECK-7Q2X9"
 created = {"agent": None, "session": None, "vault": None}
 

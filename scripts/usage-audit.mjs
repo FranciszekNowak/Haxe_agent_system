@@ -16,7 +16,7 @@
 //
 // Usage:
 //   node scripts/usage-audit.mjs [execScanLimit]      (default 80 executions scanned)
-//   env: N8N_API_KEY (required), N8N_API_URL (default https://agents.haxe.ai/api/v1)
+//   env: N8N_API_KEY (required), N8N_API_URL (default https://agents.skalus.com/api/v1)
 //
 // Output: per-session tool list + a global tool-use histogram + skill-event tally. A tool that
 // shows 0 uses across a representative window is a candidate for removal from the agent's
@@ -25,7 +25,7 @@
 
 const N8N = process.env.N8N_API_KEY;
 if (!N8N) { console.error('FATAL: N8N_API_KEY not set'); process.exit(2); }
-const N8N_BASE = process.env.N8N_API_URL || 'https://agents.haxe.ai/api/v1';
+const N8N_BASE = process.env.N8N_API_URL || 'https://agents.skalus.com/api/v1';
 const SESSION_WF = 'Rtb1cZbmUqmfGD98'; // Execute Agent Session (v1) — holds session_id + the key per run
 const SCAN = Number(process.argv[2]) || 80;
 const H8 = { 'X-N8N-API-KEY': N8N };

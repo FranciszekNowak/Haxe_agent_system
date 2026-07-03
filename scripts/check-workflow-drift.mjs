@@ -10,7 +10,7 @@
 // workflow with no live match). Run before committing, or in CI.
 //
 //   N8N_API_KEY=...  node scripts/check-workflow-drift.mjs
-//   (optional) N8N_API_URL=https://agents.haxe.ai/api/v1
+//   (optional) N8N_API_URL=https://agents.skalus.com/api/v1
 //
 // NOTE: this reports drift; it does not auto-fix. Drift is often bidirectional (the repo is
 // sometimes the correct/ahead version), so a human must decide direction — see docs/drift-check.md.
@@ -21,7 +21,7 @@ import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const WF_DIR = join(ROOT, 'n8n', 'workflows');
-const BASE = process.env.N8N_API_URL || 'https://agents.haxe.ai/api/v1';
+const BASE = process.env.N8N_API_URL || 'https://agents.skalus.com/api/v1';
 const KEY = process.env.N8N_API_KEY;
 if (!KEY) { console.error('FATAL: N8N_API_KEY not set'); process.exit(2); }
 const H = { 'X-N8N-API-KEY': KEY };

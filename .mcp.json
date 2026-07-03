@@ -7,7 +7,7 @@
         "MCP_MODE": "stdio",
         "LOG_LEVEL": "error",
         "DISABLE_CONSOLE_OUTPUT": "true",
-        "N8N_API_URL": "https://agents.haxe.ai",
+        "N8N_API_URL": "https://agents.skalus.com",
         "N8N_API_KEY": "${N8N_API_KEY}"
       }
     },

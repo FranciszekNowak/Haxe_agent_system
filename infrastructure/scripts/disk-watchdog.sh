@@ -8,7 +8,7 @@
 # Intake (v1)" webhook, which forwards to Post Alert (v1) -> ClickUp Alerts task (the swappable seam).
 #
 # Secrets + tunables come from /opt/haxe-agents/watchdog.env (NOT committed; chmod 600):
-#   WATCHDOG_URL=https://agents.haxe.ai/webhook/<path>
+#   WATCHDOG_URL=https://agents.skalus.com/webhook/<path>
 #   WATCHDOG_KEY=<value of the X-Watchdog-Key header-auth credential>
 #   # optional overrides: WARN_PCT, CRIT_PCT, N8N_DB_WARN_GB
 #

@@ -4,7 +4,7 @@ how the tool-call appears in the event stream (in-harness vs client-pause), and 
 duration the harness tolerates (kill-criterion: must clear ~170s for gpt-image-2 high).
 
 Registers a throwaway agent pointing at the live n8n MCP Server Trigger echo endpoint
-(https://agents.haxe.ai/mcp/spike-mcp-echo-053, built in Block 5.1), runs a session in the persistent
+(https://agents.skalus.com/mcp/spike-mcp-echo-053, built in Block 5.1), runs a session in the persistent
 prod env, and drives three turns: echo 0s, echo 30s, echo 200s. Records event types + wall time per turn.
 Cleans up (delete session, archive agent). Stdlib only. Reads ANTHROPIC_API_KEY from env."""
 import json, os, time, urllib.request, urllib.error
@@ -13,7 +13,7 @@ BASE = "https://api.anthropic.com"
 KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MA = "managed-agents-2026-04-01"
 ENV = "env_01T1PexJQheEUVnzVTKjyrz4"           # persistent prod environment (config.managed_agent_environment_id)
-MCP_URL = "https://agents.haxe.ai/mcp/spike-mcp-echo-053"
+MCP_URL = "https://agents.skalus.com/mcp/spike-mcp-echo-053"
 created = {"agent": None, "session": None}
 
 def api(method, path, body=None):

@@ -16,14 +16,14 @@
 // Usage:
 //   N8N_API_KEY=...  node scripts/test-image-delivery.mjs           # 2-image delivery
 //   N8N_API_KEY=...  node scripts/test-image-delivery.mjs --text    # text-only regression
-//   env: N8N_API_URL  (default https://agents.haxe.ai/api/v1)
+//   env: N8N_API_URL  (default https://agents.skalus.com/api/v1)
 //        TEST_TASK     (default 869dhad2q — Lista testy AI)
 //        TEST_REVIEWER (default 2521617 — Franciszek)
 // After it runs, inspect node-by-node:  node scripts/inspect-execution.mjs <execId>
 // NOTE: each generated/uploaded image becomes a task attachment ClickUp's API CANNOT delete
 // (no delete-attachment endpoint) — test litter accumulates on TEST_TASK; tidy in the UI.
 
-const BASE = process.env.N8N_API_URL || 'https://agents.haxe.ai/api/v1';
+const BASE = process.env.N8N_API_URL || 'https://agents.skalus.com/api/v1';
 const KEY = process.env.N8N_API_KEY;
 if (!KEY) { console.error('FATAL: N8N_API_KEY not set'); process.exit(2); }
 const H = { 'X-N8N-API-KEY': KEY, 'Content-Type': 'application/json' };

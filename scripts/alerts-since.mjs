@@ -7,7 +7,7 @@
 // task comment payload just to eyeball WARN/CRITICAL after a test. Read-only.
 //
 //   N8N_API_KEY=...  node scripts/alerts-since.mjs [minutes] [--crit] [--source <substr>] [--limit N]
-//   (optional) N8N_API_URL=https://agents.haxe.ai/api/v1
+//   (optional) N8N_API_URL=https://agents.skalus.com/api/v1
 //
 //   minutes          look-back window (default 30)
 //   --crit           only CRITICAL
@@ -19,7 +19,7 @@
 //   node scripts/alerts-since.mjs 60 --crit
 //   node scripts/alerts-since.mjs 30 --source multimodal
 
-const BASE = process.env.N8N_API_URL || 'https://agents.haxe.ai/api/v1';
+const BASE = process.env.N8N_API_URL || 'https://agents.skalus.com/api/v1';
 const KEY = process.env.N8N_API_KEY;
 if (!KEY) { console.error('FATAL: N8N_API_KEY not set'); process.exit(2); }
 const POST_ALERT_ID = 'YSCdHlmdf3p9XEUx';

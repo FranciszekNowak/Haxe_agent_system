@@ -24,9 +24,9 @@
 //         --keep          leave the harness in place (don't delete) — handy for repeated manual POSTs
 //         --raw           don't truncate long string fields in the printed result
 //         --timeout <sec> client timeout (default 300; gpt-image-2 high ≈ 176 s)
-//   env:  N8N_API_KEY (required), N8N_API_URL (default https://agents.haxe.ai/api/v1)
+//   env:  N8N_API_KEY (required), N8N_API_URL (default https://agents.skalus.com/api/v1)
 
-const BASE = process.env.N8N_API_URL || 'https://agents.haxe.ai/api/v1';
+const BASE = process.env.N8N_API_URL || 'https://agents.skalus.com/api/v1';
 const KEY = process.env.N8N_API_KEY;
 if (!KEY) { console.error('FATAL: N8N_API_KEY not set'); process.exit(2); }
 const H = { 'X-N8N-API-KEY': KEY, 'Content-Type': 'application/json' };

@@ -1,7 +1,7 @@
 # ADR-012: Nginx reverse proxy + TLS termination at agents.haxe.ai
 
 Date: 2026-05-30
-Status: Accepted
+Status: Superseded by ADR-070 (2026-07-03 — hard cutover to agents.skalus.com; agents.haxe.ai retired)
 
 ## Context
 n8n binds to `127.0.0.1:5678` — intentionally not exposed to the public

@@ -38,7 +38,7 @@
 //         --no-open  (print the URL only, don't try to launch a browser)
 //
 // REDIRECT NOTE: ClickUp validates redirect_uri against the OAuth app's registered list. The production app
-// registers https://agents.haxe.ai/webhook/clickup-oauth-callback. For this loopback flow, the app owner must
+// registers https://agents.skalus.com/webhook/clickup-oauth-callback. For this loopback flow, the app owner must
 // also have http://localhost:<port>/callback registered. If ClickUp returns an "invalid redirect_uri" error,
 // add http://localhost:8723/callback to the app's Redirect URLs (ClickUp app settings) and re-run.
 

@@ -7,7 +7,7 @@
 // Usage: MCP_BEARER=... node scripts/mcp-call.mjs [toolName] [promptOrArgsJson]
 //   default toolName=generate_image; arg is treated as {prompt:<arg>} unless it parses as a JSON object.
 
-const BASE = process.env.MCP_BASE || 'https://agents.haxe.ai';
+const BASE = process.env.MCP_BASE || 'https://agents.skalus.com';
 const MCP_PATH = process.env.MCP_PATH || '/mcp/haxe-image-gen';
 const BEARER = process.env.MCP_BEARER;
 const TOOL = process.argv[2] || 'generate_image';

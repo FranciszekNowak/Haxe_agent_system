@@ -16,7 +16,7 @@ the VPS was never updated after ADR-030 added `ANTHROPIC_API_KEY` to the litellm
 
 ## Nginx reverse proxy (host-level)
 
-`agents.haxe.ai` terminates at a **host-level nginx** (not a container; managed by Certbot),
+`agents.skalus.com` terminates at a **host-level nginx** (not a container; managed by Certbot),
 config at `/etc/nginx/conf.d/agents.conf`, proxying `location /` → `http://localhost:5678`
 (n8n-main, loopback-bound). Not in the repo / not scp-deployed — edit on the VPS directly.
 
@@ -319,7 +319,7 @@ ssh franciszek@185.25.149.174 '
 Secrets are NOT committed — `/opt/haxe-agents/watchdog.env` (chmod 600) holds:
 
 ```
-WATCHDOG_URL=https://agents.haxe.ai/webhook/<intake-path>
+WATCHDOG_URL=https://agents.skalus.com/webhook/<intake-path>
 WATCHDOG_KEY=<value of the "Storage Watchdog Header Auth" httpHeaderAuth credential, header X-Watchdog-Key>
 # optional overrides: WARN_PCT (default 60), CRIT_PCT (default 75), N8N_DB_WARN_GB (default 5)
 ```

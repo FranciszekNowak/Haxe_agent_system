@@ -8,7 +8,7 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.3,
       "position": [0, 300],
-      "notes": "ADR-055 Block 5.3: health dead-man's-switch for the self-hosted image MCP server (Haxe Image MCP (v1), https://agents.haxe.ai/mcp/haxe-image-gen). Probes the endpoint every 6h with the bearer so a down/misauthed endpoint — which would make EVERY image-via-MCP call fail once the managed lane is live — is caught within ~6h, not silently at the next real image task. Mirrors Managed Agents Auth Monitor (v1).",
+      "notes": "ADR-055 Block 5.3: health dead-man's-switch for the self-hosted image MCP server (Haxe Image MCP (v1), https://agents.skalus.com/mcp/haxe-image-gen). Probes the endpoint every 6h with the bearer so a down/misauthed endpoint — which would make EVERY image-via-MCP call fail once the managed lane is live — is caught within ~6h, not silently at the next real image task. Mirrors Managed Agents Auth Monitor (v1).",
       "parameters": {
         "rule": {
           "interval": [
@@ -93,7 +93,7 @@
       "notes": "POST an MCP 'initialize' (JSON-RPC) to the image MCP endpoint with the bearer. Verified (Block 5.3): authed initialize -> 200 text/event-stream, closes in ~18ms; bad/missing bearer -> 403; inactive/wrong path -> 404. So 2xx = healthy (endpoint up AND bearer accepted); any non-2xx/network error routes to the error output (onError) -> CRITICAL.",
       "parameters": {
         "method": "POST",
-        "url": "https://agents.haxe.ai/mcp/haxe-image-gen",
+        "url": "https://agents.skalus.com/mcp/haxe-image-gen",
         "sendHeaders": true,
         "specifyHeaders": "keypair",
         "headerParameters": {
@@ -182,7 +182,7 @@
             "severity": "CRITICAL",
             "source": "image-mcp/health",
             "message": "Sonda Image MCP (initialize) nie powiodla sie — endpoint niedostepny lub bearer odrzucony.",
-            "details": "=Blad: {{ (($json.error || {}).message) || $json.error || JSON.stringify($json).slice(0,300) }}. Endpoint: https://agents.haxe.ai/mcp/haxe-image-gen. Sprawdz: workflow 'Haxe Image MCP (v1)' aktywny; zgodnosc bearera (Vault image_mcp_bearer_token == n8n cred 'Image MCP bearer (ADR-055)' == Anthropic Vault config.image_mcp_vault_id); dostepnosc agents.haxe.ai."
+            "details": "=Blad: {{ (($json.error || {}).message) || $json.error || JSON.stringify($json).slice(0,300) }}. Endpoint: https://agents.skalus.com/mcp/haxe-image-gen. Sprawdz: workflow 'Haxe Image MCP (v1)' aktywny; zgodnosc bearera (Vault image_mcp_bearer_token == n8n cred 'Image MCP bearer (ADR-055)' == Anthropic Vault config.image_mcp_vault_id); dostepnosc agents.skalus.com."
           },
           "matchingColumns": [],
           "attemptToConvertTypes": false,

@@ -982,9 +982,9 @@ Target: 7–9 weeks to v1.
       `managed-agents/tail-unknown-tool` WARNs. A Block-8 probe confirmed the MCP is otherwise healthy (reads
       docs in-harness); we accept graceful degradation (re-run when healthy) rather than build an n8n REST
       fallback that would duplicate the MCP.
-- **Public endpoint**: `https://agents.haxe.ai` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing, 90-day). HTTP → HTTPS redirect active. See ADR-012.
+- **Public endpoint**: `https://agents.skalus.com` — Nginx reverse proxy + Let's Encrypt TLS (certbot, auto-renewing, 90-day). HTTP → HTTPS redirect active. See ADR-012.
 - **Build control plane**: Claude Code drives infrastructure via two MCP servers in `.mcp.json`:
-  - **`n8n-mcp`** (`n8n-mcp@2.56.0`) — n8n REST API (`https://agents.haxe.ai/api/v1`); key from `N8N_API_KEY` (setx; expiry 2026-08-31). See ADR-017/018.
+  - **`n8n-mcp`** (`n8n-mcp@2.56.0`) — n8n REST API (`https://agents.skalus.com/api/v1`); key from `N8N_API_KEY` (setx; expiry 2026-08-31). See ADR-017/018.
   - **`@supabase/mcp-server-supabase`** — Supabase Management API; key from `SUPABASE_ACCESS_TOKEN` (setx, no expiry set). Enables direct SQL execution + migrations without the Supabase dashboard.
   Both servers use `cmd /c npx` wrapper (Windows shim requirement — CLAUDE.md).
 - **AWS**: account 000500193947 (tax reg. Skalus). Root MFA via passkey. IAM user `haxe-agents-bedrock`. Billing alert 50 USD/mo. Region eu-central-1.
@@ -1018,7 +1018,7 @@ SSH private key  ──key auth──────►  franciszek account (NOPASS
                                       │    └─ n8n-redis     port 6379, internal only
                                       │
                                       └─ Nginx  0.0.0.0:443  (public, TLS)
-                                           ├─ agents.haxe.ai → localhost:5678
+                                           ├─ agents.skalus.com → localhost:5678
                                            └─ Let's Encrypt cert, auto-renewing via certbot
 
 1PASSWORD (off-server source of truth):
@@ -2084,7 +2084,7 @@ the **fallback** path; the queue is the primary path when `queue.enabled=true`.
   > 4 days old (tolerates NBP weekend/holiday gaps; verified quiet at age 3).
 - **Infra glue:** Supabase Postgres credential `EjK3iACTbSNRDhVz` (SSL=require +
   Ignore-SSL-Issues); migrations 002 (`model_routing`, seeded) + 003 (`fx_rates`) applied.
-  `N8N_EDITOR_BASE_URL` and `WEBHOOK_URL` (both `https://agents.haxe.ai`) are wired into the VPS
+  `N8N_EDITOR_BASE_URL` and `WEBHOOK_URL` (both `https://agents.skalus.com`) are wired into the VPS
   containers, so alert execution links are clickable and webhook/form URLs generate correctly.
 
 ### 15.9 Verification & fault injection

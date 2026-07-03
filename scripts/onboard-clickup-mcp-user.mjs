@@ -3,7 +3,7 @@
 //
 // WHY THIS EXISTS (the allowlist gate, 2026-06-22). The hosted ClickUp MCP is its own OAuth 2.1 server and
 // now ALLOWLISTS which integrations may register a real HTTPS redirect URI: DCR with our webhook redirect
-// (https://agents.haxe.ai/...) returns 400 "Your integration is not currently allowlisted", so the self-serve
+// (https://agents.skalus.com/...) returns 400 "Your integration is not currently allowlisted", so the self-serve
 // onboarding webhook's MCP phase is blocked until ClickUp approves the allowlist form. BUT ClickUp still allows
 // the OAuth LOOPBACK developer path (DCR with http://localhost:<port>/callback returns a client_id, and the
 // resulting token is honored by the MCP — proven by scripts/ma-spike-clickup-mcp-oauth.mjs). So this script

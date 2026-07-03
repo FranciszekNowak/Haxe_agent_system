@@ -8,7 +8,7 @@
 // fired), execution time, and a truncated dump of each node's output JSON. Read-only.
 //
 //   N8N_API_KEY=...  node scripts/inspect-execution.mjs <execId> [--nodes A,B] [--fields x,y] [--full] [--in] [--no-redact]
-//   (optional) N8N_API_URL=https://agents.haxe.ai/api/v1
+//   (optional) N8N_API_URL=https://agents.skalus.com/api/v1
 //
 //   --nodes A,B   only these nodes (default: all, in execution order)
 //   --fields x,y  only these json keys per node (default: all keys, truncated)
@@ -30,7 +30,7 @@
 //   node scripts/inspect-execution.mjs 1569 --nodes "Parse Response,Call Log Model Run" --fields image_unprocessable,model_used,cost_pln
 //   node scripts/inspect-execution.mjs 1569 --nodes "Retry Text-Only" --full
 
-const BASE = process.env.N8N_API_URL || 'https://agents.haxe.ai/api/v1';
+const BASE = process.env.N8N_API_URL || 'https://agents.skalus.com/api/v1';
 const KEY = process.env.N8N_API_KEY;
 if (!KEY) { console.error('FATAL: N8N_API_KEY not set'); process.exit(2); }
 

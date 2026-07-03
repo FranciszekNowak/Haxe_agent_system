@@ -9,7 +9,7 @@
       "typeVersion": 2,
       "position": [0, 80],
       "webhookId": "clickup-oauth-start",
-      "notes": "ADR-054 Block 1. The single self-serve onboarding link: hand https://agents.haxe.ai/webhook/clickup-oauth-start to a team member. They open it logged into ClickUp as themselves; it mints CSRF state and 302s to ClickUp's CLASSIC consent (phase 1 of 2). The whole chain mints TWO tokens (classic REST -> Supabase Vault; MCP-OAuth -> Anthropic Vault) under whoever is logged in here.",
+      "notes": "ADR-054 Block 1. The single self-serve onboarding link: hand https://agents.skalus.com/webhook/clickup-oauth-start to a team member. They open it logged into ClickUp as themselves; it mints CSRF state and 302s to ClickUp's CLASSIC consent (phase 1 of 2). The whole chain mints TWO tokens (classic REST -> Supabase Vault; MCP-OAuth -> Anthropic Vault) under whoever is logged in here.",
       "parameters": {
         "httpMethod": "GET",
         "path": "clickup-oauth-start",
@@ -49,7 +49,7 @@
       "notes": "302 to ClickUp's in-app CLASSIC consent (Block-0: authorize at app.clickup.com/api). redirect_uri must match the registered app redirect exactly.",
       "parameters": {
         "respondWith": "redirect",
-        "redirectURL": "=https://app.clickup.com/api?client_id={{ $json.client_id }}&redirect_uri=https%3A%2F%2Fagents.haxe.ai%2Fwebhook%2Fclickup-oauth-callback&state={{ $json.state }}",
+        "redirectURL": "=https://app.clickup.com/api?client_id={{ $json.client_id }}&redirect_uri=https%3A%2F%2Fagents.skalus.com%2Fwebhook%2Fclickup-oauth-callback&state={{ $json.state }}",
         "options": {
           "responseCode": 302
         }
@@ -62,7 +62,7 @@
       "typeVersion": 2,
       "position": [0, 320],
       "webhookId": "clickup-oauth-callback",
-      "notes": "CLASSIC callback. ClickUp redirects here with ?code=&state= after consent 1. Registered redirect_uri: https://agents.haxe.ai/webhook/clickup-oauth-callback. Ends by chaining a 302 to the MCP consent (phase 2), NOT a success page.",
+      "notes": "CLASSIC callback. ClickUp redirects here with ?code=&state= after consent 1. Registered redirect_uri: https://agents.skalus.com/webhook/clickup-oauth-callback. Ends by chaining a 302 to the MCP consent (phase 2), NOT a success page.",
       "parameters": {
         "httpMethod": "GET",
         "path": "clickup-oauth-callback",
@@ -326,7 +326,7 @@
         "url": "https://mcp.clickup.com/oauth/register",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ redirect_uris: ['https://agents.haxe.ai/webhook/clickup-mcp-callback'], token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'] }) }}",
+        "jsonBody": "={{ JSON.stringify({ redirect_uris: ['https://agents.skalus.com/webhook/clickup-mcp-callback'], token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'] }) }}",
         "options": {
           "timeout": 20000
         }
@@ -394,7 +394,7 @@
       "notes": "302 to the hosted MCP's consent (mcp.clickup.com/oauth/authorize), PKCE S256. challenge is base64url-encoded inline (split/join, no regex/crypto). resource indicator + scope=read (ClickUp grants read+write regardless; read-only is enforced by the Block-3 toolset allowlist). Ends the CLASSIC callback execution.",
       "parameters": {
         "respondWith": "redirect",
-        "redirectURL": "=https://mcp.clickup.com/oauth/authorize?response_type=code&client_id={{ $('DCR Register').first().json.client_id }}&redirect_uri=https%3A%2F%2Fagents.haxe.ai%2Fwebhook%2Fclickup-mcp-callback&code_challenge={{ $('Hash Challenge').first().json.challenge_b64.split('+').join('-').split('/').join('_').split('=').join('') }}&code_challenge_method=S256&scope=read&resource=https%3A%2F%2Fmcp.clickup.com&state={{ $json.state }}",
+        "redirectURL": "=https://mcp.clickup.com/oauth/authorize?response_type=code&client_id={{ $('DCR Register').first().json.client_id }}&redirect_uri=https%3A%2F%2Fagents.skalus.com%2Fwebhook%2Fclickup-mcp-callback&code_challenge={{ $('Hash Challenge').first().json.challenge_b64.split('+').join('-').split('/').join('_').split('=').join('') }}&code_challenge_method=S256&scope=read&resource=https%3A%2F%2Fmcp.clickup.com&state={{ $json.state }}",
         "options": {
           "responseCode": 302
         }
@@ -407,7 +407,7 @@
       "typeVersion": 2,
       "position": [0, 760],
       "webhookId": "clickup-mcp-callback",
-      "notes": "MCP phase callback. The hosted MCP redirects here with ?code=&state= after consent 2. This is the DCR-registered redirect_uri: https://agents.haxe.ai/webhook/clickup-mcp-callback.",
+      "notes": "MCP phase callback. The hosted MCP redirects here with ?code=&state= after consent 2. This is the DCR-registered redirect_uri: https://agents.skalus.com/webhook/clickup-mcp-callback.",
       "parameters": {
         "httpMethod": "GET",
         "path": "clickup-mcp-callback",
@@ -494,7 +494,7 @@
             },
             {
               "name": "redirect_uri",
-              "value": "https://agents.haxe.ai/webhook/clickup-mcp-callback"
+              "value": "https://agents.skalus.com/webhook/clickup-mcp-callback"
             },
             {
               "name": "client_id",

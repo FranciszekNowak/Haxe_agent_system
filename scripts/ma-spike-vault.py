@@ -3,7 +3,7 @@
 attached to a Managed Agents session via an Anthropic Vault (the 5.1 open item — the auth is NOT a
 field on the agent's mcp_servers entry; it is a per-session vault credential keyed by the MCP url).
 
-Verifies live, against our REAL image MCP server (https://agents.haxe.ai/mcp/haxe-image-gen):
+Verifies live, against our REAL image MCP server (https://agents.skalus.com/mcp/haxe-image-gen):
   1. the exact static_bearer credential shape the API accepts;
   2. that a session created with vault_ids=[vlt] injects the bearer so the bearerAuth-protected
      trigger accepts the call and generate_image runs in-harness (agent.mcp_tool_use, no client pause);
@@ -18,7 +18,7 @@ KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 BEARER = os.environ.get("IMAGE_MCP_BEARER", "")
 MA = "managed-agents-2026-04-01"
 ENV = "env_01T1PexJQheEUVnzVTKjyrz4"
-MCP_URL = "https://agents.haxe.ai/mcp/haxe-image-gen"
+MCP_URL = "https://agents.skalus.com/mcp/haxe-image-gen"
 created = {"agent": None, "session": None, "vault": None, "credential": None}
 
 def api(method, path, body=None):

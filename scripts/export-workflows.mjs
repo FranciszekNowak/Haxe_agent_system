@@ -17,7 +17,7 @@
 // sometimes the correct/ahead side), so you name exactly the files to overwrite:
 //
 //   N8N_API_KEY=...  node scripts/export-workflows.mjs read-input.json agent-orchestrator.json
-//   (optional) N8N_API_URL=https://agents.haxe.ai/api/v1
+//   (optional) N8N_API_URL=https://agents.skalus.com/api/v1
 //
 // Then re-run check-workflow-drift.mjs to confirm the file(s) now match live.
 
@@ -27,7 +27,7 @@ import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const WF_DIR = join(ROOT, 'n8n', 'workflows');
-const BASE = process.env.N8N_API_URL || 'https://agents.haxe.ai/api/v1';
+const BASE = process.env.N8N_API_URL || 'https://agents.skalus.com/api/v1';
 const KEY = process.env.N8N_API_KEY;
 if (!KEY) { console.error('FATAL: N8N_API_KEY not set'); process.exit(2); }
 const H = { 'X-N8N-API-KEY': KEY };

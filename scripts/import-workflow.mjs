@@ -10,7 +10,7 @@
 // Matches live by the file's "name" (same as export), so you pass the FILENAME, not an id:
 //
 //   N8N_API_KEY=...  node scripts/import-workflow.mjs image-resolver.json [more.json ...]
-//   (optional) N8N_API_URL=https://agents.haxe.ai/api/v1
+//   (optional) N8N_API_URL=https://agents.skalus.com/api/v1
 //
 // WHY THE settings WHITELIST: n8n's public API is asymmetric — GET /workflows/{id} returns a
 // settings object that can include keys (e.g. `binaryMode`) the PUT schema then REJECTS with
@@ -27,7 +27,7 @@ import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const WF_DIR = join(ROOT, 'n8n', 'workflows');
-const BASE = process.env.N8N_API_URL || 'https://agents.haxe.ai/api/v1';
+const BASE = process.env.N8N_API_URL || 'https://agents.skalus.com/api/v1';
 const KEY = process.env.N8N_API_KEY;
 if (!KEY) { console.error('FATAL: N8N_API_KEY not set'); process.exit(2); }
 const H = { 'X-N8N-API-KEY': KEY, 'Content-Type': 'application/json' };

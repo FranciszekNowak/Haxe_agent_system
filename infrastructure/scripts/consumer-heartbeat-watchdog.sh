@@ -12,7 +12,7 @@
 #
 # Secrets come from /opt/haxe-agents/watchdog.env (NOT committed; chmod 600) — REUSED from the
 # disk-watchdog, no new secret:
-#   WATCHDOG_URL=https://agents.haxe.ai/webhook/storage-watchdog-7e06358ac257ad20
+#   WATCHDOG_URL=https://agents.skalus.com/webhook/storage-watchdog-7e06358ac257ad20
 #   WATCHDOG_KEY=<value of the X-Watchdog-Key header-auth credential>
 #   # optional override: REDIS_CONTAINER (default n8n-redis), HEARTBEAT_KEY
 #
