@@ -250,5 +250,20 @@ green across all 51 workflows).
 
 **Knowingly not changed.** The probe still attaches only the ClickUp vault (so the image MCP still fails to init
 in-probe, now harmlessly ignored) rather than mirroring prod's two-vault session — the scoping fix makes that
-error a non-signal, and image health is covered elsewhere. **Out of scope / flagged separately:** `Fetch Probe
-Inputs` pulls the full Anthropic key into item JSON, so it is stored in plaintext in n8n execution history.
+error a non-signal, and image health is covered elsewhere.
+
+**Anthropic key in execution history — mitigated for the probe, systemic elsewhere.** `Fetch Probe Inputs` reads
+the raw Anthropic key via `get_anthropic_key()` (ADR-053 / migration 034) into node data, so it was persisted in
+plaintext in n8n execution history every 6 h. This is **not** a probe-specific bug: by that ADR's design, a
+Code-node lane obtains secrets through a credentialed Postgres read (n8n Code nodes cannot use n8n credentials and
+`$env`/`$vars` are unavailable on this community edition), so **12 workflows** read the key into data the same way
+(Execute Agent Session, image-tool handler, the auth monitor, etc.). Fix applied here: the probe now runs with
+`saveDataSuccessExecution: none`, `saveManualExecutions: false`, `saveExecutionProgress: false`, so no execution
+data — and therefore no key — is written to history on its routine healthy or alert-firing runs (both complete as
+`success`; alerts still persist independently through `Post Alert (v1)`, which never receives the key, and genuine
+crashes still alert via the global `errorWorkflow`). **Residual, not closed here:** (1) the same key remains in
+data across the other 11 managed-lane workflows — eliminating it system-wide is an ADR-level change (move the
+direct `api.anthropic.com` calls into a service that holds the key in its own process env, the way
+`services/session-waiter` already does), not a workflow edit; (2) copies of the key already written to history
+(probe + prod) are only truly neutralised by **rotating** the `anthropic_api_key` Vault secret (`select
+vault.update_secret(...)` per migration 034) — recommended as the closing step.

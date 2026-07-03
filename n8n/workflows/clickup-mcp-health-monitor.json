@@ -337,6 +337,9 @@
   "settings": {
     "errorWorkflow": "81eplXMD1v5ONhzs",
     "timezone": "Europe/Warsaw",
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
   }
 }
