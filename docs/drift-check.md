@@ -14,6 +14,7 @@ of relying on memory. They **report** drift — they do not auto-fix, because dr
 | System | Repo master | Check | Status |
 |---|---|---|---|
 | n8n workflows | `n8n/workflows/*.json` | `scripts/check-workflow-drift.mjs` | **implemented** |
+| Host nginx (VPS) | `n8n/nginx-agents.conf` | `scripts/check-nginx-drift.mjs` | **implemented** |
 | Supabase schema/seed | `supabase/migrations/*.sql` | (designed below) | scoped, not built |
 | LiteLLM models | `litellm-config.yaml` | (designed below) | scoped, not built |
 
@@ -54,6 +55,24 @@ N8N_API_KEY=...  node scripts/export-workflows.mjs read-input.json agent-orchest
   `notes`, compacts positions) and **preserves each repo file's existing `active` flag**.
 - Diffs are larger than the behavioural change (inline→expanded re-formatting) — trust the green check,
   not a line count. Re-run `check-workflow-drift.mjs` afterwards to confirm.
+
+## Host nginx check (implemented)
+
+`node scripts/check-nginx-drift.mjs` (needs SSH to the VPS; optional `VPS_SSH`, default
+`franciszek@185.25.149.174`, and `NGINX_LIVE_PATH`, default `/etc/nginx/conf.d/agents.conf`).
+Compares the repo reference `n8n/nginx-agents.conf` against the live host config.
+
+- Compares **semantically**: strips comments (`# managed by Certbot`, header notes) and all
+  whitespace/formatting (including certbot quirks like `}server {`), then diffs the directive
+  **token stream**. A blank-line difference is ignored; a missing/changed directive (e.g. a
+  dropped `proxy_read_timeout 300s`) is caught and the first difference is pinpointed with
+  repo-vs-live context.
+- Exit `0` = match, `1` = drift, `2` = could not read the live config over SSH.
+- **Why it exists:** the ADR-070 domain cutover found the live nginx block carried
+  `proxy_read_timeout/proxy_send_timeout 300s` (needed for ~200s MCP tool calls + session-waiter
+  long-polls) that were **never in the repo** — the exact live-only drift this now catches loudly.
+- **Limitations:** reports, never fixes; needs SSH (absent in headless CI unless a key is wired);
+  covers only the single vhost file `agents.conf`.
 
 ## Supabase check (design)
 
