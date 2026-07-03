@@ -52,7 +52,16 @@ Everything else is repo work Claude can do.
 | 4c | n8n workflow strings (sync-defs, health-monitor, onboarding) + re-run sync | ✅ sync re-run verified (Anthropic stores `.com`); health verified; onboarding edited (verify on next real onboard) |
 | 4d | VPS `watchdog.env` URL → `.com` | ✅ |
 | 5 | Repo + tooling + local env + new ADR | 🔶 repo/docs/workflows/ADR done; local `setx` (operator) + commit pending |
-| 6 | Decommission `agents.haxe.ai` | ☐ (gated on: 4b confirmed + `.ai` nginx access log quiet) |
+| 6 | Decommission `agents.haxe.ai` | 🔶 VPS done (nginx blocks removed, cert deleted); operator removes DNS record |
+
+> Block 6 (2026-07-03): VPS side torn down — `.ai` nginx server blocks removed, config now
+> `skalus.com`-only, `certbot delete --cert-name agents.haxe.ai` done (renewal stopped), skalus
+> still 200. **Timeout drift caught & fixed:** the live `.ai` block carried
+> `proxy_read_timeout/proxy_send_timeout 300s` (for ~200s MCP tool calls + session-waiter long-polls)
+> that were NEVER in the repo `nginx-agents.conf` reference — so the skalus block I first created
+> (from the stale reference) lacked them; added to both live and repo during teardown. **Remaining:**
+> operator removes the `agents.haxe.ai` A record at the registrar; operator `setx` on both desktops;
+> token rotation (coordinated: rotate → update n8n ClickUp credential → re-verify a mention).
 
 > Block 4c verification 2026-07-03: sync manual run (exec 8149) took the update branch for all 3
 > agents; `Upsert Agent` response from Anthropic shows `mcp_servers[0].url =
