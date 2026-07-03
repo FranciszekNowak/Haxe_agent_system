@@ -229,7 +229,7 @@
       },
       "onError": "continueErrorOutput",
       "retryOnFail": true,
-      "maxTries": 2,
+      "maxTries": 3,
       "waitBetweenTries": 3000
     },
     {
@@ -269,7 +269,7 @@
       },
       "onError": "continueErrorOutput",
       "retryOnFail": true,
-      "maxTries": 2,
+      "maxTries": 3,
       "waitBetweenTries": 3000
     },
     {

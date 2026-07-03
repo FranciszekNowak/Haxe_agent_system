@@ -372,7 +372,12 @@ Franciszek's ClickUp vault) and calls `clickup_get_workspace_hierarchy` in-harne
 is denied, routed as an unserviced client custom tool, or a session/auth error surfaces (the exact
 2026-07-01 silent-failure shape). The prior version only GET-pinged `/.well-known/oauth-authorization-server`,
 which returned 2xx even while the harness could not connect the MCP + inject the token, so it could not see
-that failure. **Verified live:** an
+that failure. **Hardened 2026-07-03 against two non-ClickUp false positives (ADR-054 amendment):** the two
+Anthropic session setup POSTs now retry 3× (prod `Execute Agent Session` raised to `maxTries:3` to match), and a
+persistent failure is a **WARN** on `managed-agents/session-api` — not a ClickUp CRITICAL; session-error
+detection is scoped to the `clickup` server, so the probe's own `haxe_image` MCP init failure no longer misfires
+as a ClickUp outage. Verdicts route through a `Route Probe Verdict` Switch (healthy / clickup_down /
+session_api_down / prereq_missing). **Verified live:** an
 onboarded run performed in-harness scoped discovery (the agent called `clickup_get_workspace_hierarchy` and
 returned the caller's real Spaces, `status:completed`, 0 warnings); an un-onboarded run completed cleanly
 (`outcome:done`, not terminated) with exactly one WARN; Alerts 0 CRITICAL / 1 expected WARN. **Built (Block 3b —

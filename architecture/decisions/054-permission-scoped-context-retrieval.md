@@ -207,3 +207,48 @@ connection hiccup at that time), not a standing misconfiguration. The incident r
 
 The caller-scoped REST fallback for doc/search tools (so a future MCP outage degrades to deterministic reads
 instead of nothing) remains the documented future block, still scoped OUT here.
+
+## Amendment (2026-07-03) — the health probe kept crying "ClickUp down" for two non-ClickUp reasons
+
+**Symptom.** After the 2026-07-02 real-session probe shipped (amendment above), the `clickup-mcp/health`
+CRITICAL kept firing intermittently and survived three fix attempts. Static/DoD verification always passed (the
+probe connects on demand), yet production misfired — the classic "it breaks only when you're not looking" shape.
+
+**Root cause — TWO independent false positives, neither of which is a ClickUp outage.** The probe runs the whole
+create-session → send-message → poll flow inside one Code node and treated *any* failure as "the ClickUp MCP did
+not connect," then posted a CRITICAL whose hard-coded text sends the operator to check status.clickup.com / DNS /
+the ClickUp token — the wrong system.
+1. **Transient Anthropic 500 on the two setup POSTs.** `POST /v1/sessions` and `POST /v1/sessions/{id}/events`
+   (both to `api.anthropic.com`) had **no retry**, while the real `Execute Agent Session` path retried them
+   (`maxTries: 2`). So the *monitor* was strictly more fragile than the system it monitors: a transient
+   Anthropic-side 500 that a real task silently absorbs fired a ClickUp CRITICAL. Proven by exec **7757**
+   (2026-07-02 16:00, error `Request failed with status code 500`) sitting between four healthy 6-second runs.
+2. **The probe's own `haxe_image` MCP failing to initialize.** The probe attaches only the caller's ClickUp
+   vault, so the agent's *image* MCP fails to init every run (`mcp_connection_failed_error`, "access forbidden").
+   The old catch treated **any** `session.error` as a ClickUp signal, and when that image error landed in a poll
+   *before* the ClickUp tool call, the loop broke early and mislabelled the run `clickup_down`. Intermittent
+   because it depended on event-ordering within the 4-second poll windows. Surfaced live as exec **8176**.
+
+**Fixes shipped.**
+- **Retry the two setup POSTs 3× (~3 s backoff) in the probe**, and **raise the same two nodes in
+  `Execute Agent Session (v1)` from `maxTries: 2` → `3`** (operator asked for three both places). A setup POST
+  that still fails after 3 attempts is now classified `session_api_down` → a **WARN** on a distinct source
+  `managed-agents/session-api` (explicitly "NOT a ClickUp outage"), never a ClickUp CRITICAL.
+- **Scope session-error detection to ClickUp only:** a `session.error` counts as `clickup_down` only if it
+  mentions `clickup` (the MCP server is literally named `clickup`); a `haxe_image` (or any other server's) init
+  error is ignored — image-MCP health has its own monitor.
+- **Verdict-based routing made inspectable:** `Run ClickUp Probe` now emits a single `{verdict}` item
+  (`healthy` | `clickup_down` | `session_api_down` | `prereq_missing`) instead of raw-throwing; a **`Route Probe
+  Verdict` Switch** fans it to Healthy / the ClickUp CRITICAL / the new Session-API WARN. The Code node's
+  `onError` error output stays wired to the CRITICAL as a catch-all for any *unexpected* exception.
+
+**Verified.** 19/19 offline logic assertions (stubbed `httpRequest`: 3 attempts on each POST, `session_api_down`
+on persistent 500, transient-then-healthy recovery, `clickup_down` on denial/custom-routing/**clickup** session
+error, `healthy` when a **haxe_image** session error is the only failure). Live: exec **8180** connected healthy
+in 6 s and posted nothing; prod diff is exactly the two `maxTries` bumps with zero drift (`check-workflow-drift`
+green across all 51 workflows).
+
+**Knowingly not changed.** The probe still attaches only the ClickUp vault (so the image MCP still fails to init
+in-probe, now harmlessly ignored) rather than mirroring prod's two-vault session — the scoping fix makes that
+error a non-signal, and image health is covered elsewhere. **Out of scope / flagged separately:** `Fetch Probe
+Inputs` pulls the full Anthropic key into item JSON, so it is stored in plaintext in n8n execution history.
