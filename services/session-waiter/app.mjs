@@ -201,11 +201,11 @@ async function getSession(key, sessionId) {
   if (!r.ok) throw new Error(`anthropic GET session ${r.status}`);
   return r.json();
 }
-async function postToolResult(key, sessionId, toolUseId, content) {
+async function postToolResult(key, sessionId, toolUseId, content, isError) {
   const r = await fetch(`${ANTHROPIC_API_BASE}/v1/sessions/${sessionId}/events`, {
     method: 'POST',
     headers: { ...anthropicHeaders(key), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ events: [{ type: 'user.custom_tool_result', custom_tool_use_id: toolUseId, content }] }),
+    body: JSON.stringify({ events: [{ type: 'user.custom_tool_result', custom_tool_use_id: toolUseId, content, ...(isError ? { is_error: true } : {}) }] }),
   });
   if (!r.ok) throw new Error(`anthropic POST tool_result ${r.status}: ${await r.text().catch(() => '')}`);
 }
@@ -257,6 +257,37 @@ function extractDeliverBlocks(picked) {
   let b = (picked.input.blocks !== undefined) ? picked.input.blocks : picked.input;
   if (typeof b === 'string') { try { b = JSON.parse(b); } catch (e) { return []; } }
   return Array.isArray(b) ? b : [];
+}
+
+// ---- empty-delivery detection + bounded reformat retry (ADR-071) ---------------------------------
+// The agent signals its final answer by calling deliver_output. It sometimes fires deliver_output with
+// an EMPTY blocks array and writes the answer as ordinary narration instead (which never reaches the
+// recipient). Before accepting an empty delivery as terminal, bounce it back ONCE as an is_error tool
+// result asking the agent to re-deliver with real content. A doc-ONLY delivery is legitimately
+// empty-blocks (ADR-069: the answer IS the file), so "empty" = empty blocks AND no session output files.
+const MAX_DELIVER_RETRIES = 1;
+const EMPTY_DELIVER_RETRY_MSG = [{ type: 'text', text: 'Twoje wywołanie deliver_output nie zawierało żadnych bloków treści (blocks) ani żadnych zapisanych plików wyjściowych. Pusty wynik NIE dotrze do odbiorcy. Dostarcz teraz pełną odpowiedź ponownie, umieszczając CAŁĄ treść w blokach (text/image/doc) w deliver_output. Jeśli uznajesz, że zadanie nie jest dla AI albo go nie wykonasz, i tak dostarcz tę konkluzję (powód i ewentualną rekomendację) jako blok text — nadal przez deliver_output.' }];
+async function listSessionFiles(key, sessionId) {
+  const r = await fetch(`${ANTHROPIC_API_BASE}/v1/files?scope_id=${encodeURIComponent(sessionId)}`, { headers: anthropicHeaders(key) });
+  if (!r.ok) throw new Error(`anthropic GET files ${r.status}`);
+  const b = await r.json();
+  return Array.isArray(b.data) ? b.data : [];
+}
+// TRUE only when the delivery is genuinely empty (no content blocks AND no session output files).
+// The blocks check runs first, so the Files API call only fires on the rare empty-blocks path.
+// Fail-OPEN on a files-lookup error: return false (don't retry), so a transient API blip never bounces
+// a real doc-only delivery back to the agent — worst case we fall through to the existing incomplete
+// path exactly as before this change.
+async function deliverIsEmpty(key, sessionId, delivered) {
+  if (extractDeliverBlocks(delivered).length > 0) return false;
+  try {
+    const files = await listSessionFiles(key, sessionId);
+    if (files.length > 0) return false; // doc-only delivery (ADR-069) — legitimate, not empty
+  } catch (e) {
+    log('warn', 'deliver_files_check_failed', { session_id: sessionId, err: e.message });
+    return false;
+  }
+  return true;
 }
 
 // ---- client-tool servicing via the n8n bridge (anti-duplication; SSOT handlers stay authoritative) --
@@ -453,7 +484,7 @@ async function driveSession(handoff) {
 // (status). Proven and SSE-independent (A1). Returns the terminal result object for driveSession to finish.
 async function runPollLoop(key, handoff, deadlineAt) {
   const sessionId = handoff.session_id;
-  let warnings = [], toolRound = 0, consecErr = 0;
+  let warnings = [], toolRound = 0, consecErr = 0, deliverRetries = 0;
   let outcome = null, picked = null, analysis = null, statusObj = {};
   await sleep(1500);
   while (true) {
@@ -470,7 +501,16 @@ async function runPollLoop(key, handoff, deadlineAt) {
       if (status === 'idle') {
         if (analysis.pending.length > 0) {
           const delivered = analysis.pending.find((e) => e.name === 'deliver_output');
-          if (delivered) { outcome = 'delivered'; picked = delivered; break; }
+          if (delivered) {
+            if (deliverRetries < MAX_DELIVER_RETRIES && await deliverIsEmpty(key, sessionId, delivered)) {
+              await postToolResult(key, sessionId, delivered.id, EMPTY_DELIVER_RETRY_MSG, true);
+              deliverRetries += 1;
+              warnings.push({ source: 'session-waiter/deliver-output-empty-retry', err: 'deliver_output bez bloków ani plików — zażądano ponownego dostarczenia (retry ' + deliverRetries + '/' + MAX_DELIVER_RETRIES + ').', severity: 'WARN' });
+              log('warn', 'deliver_empty_retry', { session_id: sessionId, retry: deliverRetries, via: 'poll' });
+              continue; // re-poll; the agent should re-deliver with real content
+            }
+            outcome = 'delivered'; picked = delivered; break;
+          }
           if (toolRound >= MAX_TOOL_ROUNDS) { outcome = 'max_rounds'; break; }
           const tool = analysis.pending[0];
           const svc = await serviceToolSafe(key, handoff, tool);
@@ -503,7 +543,7 @@ function runSseLoop(key, handoff, deadlineAt) {
   return new Promise((resolve, reject) => {
     const state = { sessionId, events: [], seen: new Set(), cursor: null };
     const servicedIds = new Set(); // tool ids already answered (immediate re-eval can race the result's propagation)
-    let outcome = null, picked = null, analysis = null, statusObj = {}, warnings = [], toolRound = 0;
+    let outcome = null, picked = null, analysis = null, statusObj = {}, warnings = [], toolRound = 0, deliverRetries = 0;
     let done = false, settled = false, evaluating = false, reEval = false, sseFailures = 0;
     let streamCtrl = null, safetyTimer = null, deadlineTimer = null;
 
@@ -532,7 +572,19 @@ function runSseLoop(key, handoff, deadlineAt) {
       if (status === 'idle') {
         if (analysis.pending.length > 0) {
           const delivered = analysis.pending.find((e) => e.name === 'deliver_output');
-          if (delivered) { outcome = 'delivered'; picked = delivered; done = true; return; }
+          if (delivered) {
+            if (servicedIds.has(delivered.id)) return; // retry already requested for this delivery; await re-delivery
+            if (deliverRetries < MAX_DELIVER_RETRIES && await deliverIsEmpty(key, sessionId, delivered)) {
+              await postToolResult(key, sessionId, delivered.id, EMPTY_DELIVER_RETRY_MSG, true);
+              servicedIds.add(delivered.id);
+              deliverRetries += 1;
+              warnings.push({ source: 'session-waiter/deliver-output-empty-retry', err: 'deliver_output bez bloków ani plików — zażądano ponownego dostarczenia (retry ' + deliverRetries + '/' + MAX_DELIVER_RETRIES + ').', severity: 'WARN' });
+              log('warn', 'deliver_empty_retry', { session_id: sessionId, retry: deliverRetries, via: 'sse' });
+              await pullDelta(key, state, 'post-deliver-retry').catch(() => {}); // reflect our own tool_result promptly
+              reEval = true; return;
+            }
+            outcome = 'delivered'; picked = delivered; done = true; return;
+          }
           if (toolRound >= MAX_TOOL_ROUNDS) { outcome = 'max_rounds'; done = true; return; }
           const tool = analysis.pending[0];
           if (servicedIds.has(tool.id)) return; // already answered; wait for the result to propagate (next SSE wakeup)

@@ -312,6 +312,30 @@ Finish → Build Result` and `Execute Agent Session → Build Final Output` fire
 narration + WARN); gate checked against the real payload; all 4 workflows validate, repo drift-clean. Files:
 `publish-managed-result.json`, `render-agent-output.json`, `session-waiter-finish.json`,
 `execute-agent-session.json`.
+**Amendment 5 — ADR-071 empty-delivery retry + honest incomplete notice (2026-07-06):** task `869e0t8r2`
+recurred the empty-delivery failure — the agent called `deliver_output` with an empty block array and no
+files (its answer written as inline narration, which reaches nobody), so `Session OK?` correctly rejected it
+but the notice claimed a **timeout that never happened** (the run finished, `outcome=delivered`). Structural
+fix: (1) the **Session Waiter** (`services/session-waiter/app.mjs`) now treats an empty `deliver_output`
+(empty blocks **AND** no session output files — the ADR-069 doc-only case is preserved via a Files-API
+`scope_id` check) as a tool error rather than a terminal success: it posts an `is_error`
+`user.custom_tool_result` asking the agent to re-deliver its full answer in blocks and keeps driving —
+bounded to **one** retry (`MAX_DELIVER_RETRIES=1`), on both the SSE and long-poll paths, fail-open on a
+files-lookup error, emitting a `session-waiter/deliver-output-empty-retry` WARN; (2) the contract gained an
+explicit **decline clause** (`sync-agent-definitions.json → Build System`, CONV 17→18, re-synced to all
+agents) — a refusal / "not for AI" / cannot-complete conclusion must still be delivered as a text block via
+`deliver_output`, never an empty call; (3) the `Call Post Reply (Incomplete)` notice and `Alert Non-Delivery`
+message in `publish-managed-result.json` are now **outcome-aware** — a `delivered`/`done`-but-empty session
+reads *"Agent zakończył pracę, ale nie przekazał żadnej treści odpowiedzi (pusty wynik)"* instead of the false
+timeout wording. **Rejected:** enforcing non-empty `blocks` via JSON-Schema `minItems` — verified against the
+Anthropic reference that the Messages / Managed-Agents API does not enforce array constraints server-side
+(even `strict` excludes them; an empty `[]` satisfies `required`), so the only structural guards are the retry
+plus the existing gate. Verified: service rebuilt + healthy on the VPS (`readopt_none`, clean startup),
+syntax-checked; contract synced (`all_synced:true`, CONV 18, zero alerts); `publish-managed-result` validates
+0 errors, drift-clean. A live empty→retry→re-deliver round cannot be force-induced deterministically; it will
+be exercised on the next real empty delivery, with the (now-accurate) incomplete notice as the bounded
+fallback. Files: `services/session-waiter/app.mjs`, `sync-agent-definitions.json` (Build System, CONV 18),
+`publish-managed-result.json` (`Call Post Reply (Incomplete)`, `Alert Non-Delivery`).
 
 **Reliability:** an auth dead-man's-switch (`Managed Agents Auth Monitor (v1)`), the CU-rules sync +
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the

@@ -416,7 +416,7 @@
         "workflowInputs": {
           "mappingMode": "defineBelow",
           "value": {
-            "completion": "={{ 'Nie udało się dokończyć zadania w wyznaczonym czasie — agent nie dostarczył wyniku (' + ($('Normalize Input').first().json.outcome || 'brak') + '). Spróbuj podzielić zadanie na mniejsze kroki albo ponów zlecenie.' }}",
+            "completion": "={{ (function(){ var o = $('Normalize Input').first().json.outcome || 'brak'; var base = (o === 'delivered' || o === 'done') ? 'Agent zakończył pracę, ale nie przekazał żadnej treści odpowiedzi (pusty wynik)' : 'Nie udało się dokończyć zadania w wyznaczonym czasie — agent nie dostarczył wyniku'; return base + ' (' + o + '). Spróbuj podzielić zadanie na mniejsze kroki albo ponów zlecenie.'; })() }}",
             "model": "={{ $('Normalize Input').first().json.model_used }}",
             "cost_pln": "={{ $('Normalize Input').first().json.cost_pln }}",
             "clickup_task_id": "={{ $('Normalize Input').first().json.clickup_task_id }}",
@@ -424,7 +424,7 @@
             "triggering_comment_id": "={{ $('Normalize Input').first().json.triggering_comment_id }}",
             "web_sources": "={{ '[]' }}",
             "image_manifest": "={{ [] }}",
-            "rendered_delta": "={{ [ { text: 'Nie udało się dokończyć zadania w wyznaczonym czasie — agent nie dostarczył wyniku (' + ($('Normalize Input').first().json.outcome || 'brak') + '). Spróbuj podzielić zadanie na mniejsze kroki albo ponów zlecenie.' } ] }}",
+            "rendered_delta": "={{ [ { text: (function(){ var o = $('Normalize Input').first().json.outcome || 'brak'; var base = (o === 'delivered' || o === 'done') ? 'Agent zakończył pracę, ale nie przekazał żadnej treści odpowiedzi (pusty wynik)' : 'Nie udało się dokończyć zadania w wyznaczonym czasie — agent nie dostarczył wyniku'; return base + ' (' + o + '). Spróbuj podzielić zadanie na mniejsze kroki albo ponów zlecenie.'; })() } ] }}",
             "image_models": "={{ [] }}",
             "total_image_cost_pln": "={{ 0 }}",
             "doc_attachments": "={{ [] }}",
@@ -458,7 +458,7 @@
           "value": {
             "severity": "CRITICAL",
             "source": "managed-agents/non-delivery",
-            "message": "Sesja Managed Agents nie dostarczyła wyniku (timeout/błąd) — opublikowano komunikat o niepowodzeniu.",
+            "message": "=Sesja Managed Agents {{ ($('Normalize Input').first().json.outcome === 'delivered' || $('Normalize Input').first().json.outcome === 'done') ? 'zakończyła się bez treści odpowiedzi (pusty deliver_output)' : 'nie dostarczyła wyniku (timeout/błąd)' }} — opublikowano komunikat o niepowodzeniu.",
             "details": "=task={{ $('Normalize Input').first().json.clickup_task_id }}; outcome={{ $('Normalize Input').first().json.outcome }}; status={{ $('Normalize Input').first().json.status }}; duration={{ $('Normalize Input').first().json.duration_seconds }}s"
           },
           "matchingColumns": [],
