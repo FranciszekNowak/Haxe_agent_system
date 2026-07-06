@@ -75,6 +75,48 @@ switch):
   echoes it in the `client_id` field of the webhook object) and must be rotated as a
   follow-up.
 
+## Amendment (2026-07-06) — missed fifth dependency: the image MCP's Vault credential URL
+
+The cutover had a **fifth** out-of-repo dependency that the four-item list in Context missed, and it
+broke image-capable managed sessions silently for three days.
+
+**What broke.** A managed-agent Vault *credential* is keyed by `mcp_server_url` (ADR-055; see the
+`Create Credential` node in `clickup-onboarding.json`: `auth.mcp_server_url` is the join key by which
+Anthropic decides which stored bearer to inject for a given `mcp_servers` entry). The image vault
+(`vlt_011CcCBgjtCiZewXB8c6Ty47`, "Image MCP (ADR-055)") held one credential
+(`vcrd_01NX2XArpUzTe4iTCF8WLbmf`) keyed to the **old** `https://agents.haxe.ai/mcp/haxe-image-gen`.
+This cutover changed the agent definition's `mcp_servers` URL to `agents.skalus.com` (dependency 4,
+done) but **did not** re-key the Vault credential. From then on, Anthropic could not match a credential
+to the new server URL, so it initialized the `haxe_image` MCP with **no bearer**; the n8n MCP Server
+Trigger rejected the unauthenticated request with 403 "Authorization data is wrong!", and the harness
+**terminated the whole session** (`mcp_connection_failed_error`, retries exhausted) before the model ran
+— every managed session failed to deliver, not just image ones, because MCP servers initialize at
+session start regardless of whether the tool is used.
+
+**Why it stayed hidden.** (1) No managed session ran between the cutover (07-03) and 07-06, so the first
+real post-cutover session was the first failure. (2) The verification bullet in Consequences ("the image
+MCP endpoint returned a valid `initialize` on the new domain") exercised the endpoint via an internal
+caller that presents the bearer directly (n8n credential / curl), which returns 200 — it never drove a
+real Anthropic session through the Vault-injected path, which is the only path that depends on the
+credential's `mcp_server_url`. The Image MCP Health Monitor shares this blind spot (it probes with the
+correct internal token, so it stayed green).
+
+**Fix applied (this session).** Added a new credential (`vcrd_01GG9M4syBvPKwsWPzQo1AEQ`) to the same
+vault keyed to `https://agents.skalus.com/mcp/haxe-image-gen` with the same service bearer (read from
+the canonical Supabase Vault secret `image_mcp_bearer_token` via `get_image_mcp_bearer()`, migration
+036). Verified end-to-end: a real managed session on the test task now returns `Claude-User` 200 on the
+MCP and `outcome=delivered` with an empty `terminated_error_json`. The stale old-URL credential
+`vcrd_01NX2XArpUzTe4iTCF8WLbmf` is inert (haxe.ai no longer resolves) and is left for a separate,
+explicitly-authorized deletion.
+
+**Standing lesson for the next domain move.** Any cutover that changes an MCP server URL must also
+re-key **every Anthropic Vault credential** bound to that URL (image MCP here; the per-user ClickUp
+MCP credentials are keyed to `mcp.clickup.com`, which did not move, so they were unaffected — but a
+future ClickUp-MCP URL change would hit the same trap across *every onboarded user's* vault). This
+class of drift has no repo artifact mastering it and is invisible to the internal-token health probes;
+making the drift-check (or a health probe) exercise the Vault-injected path is tracked as a separate
+structural follow-up.
+
 ## Related
 
 Supersedes ADR-012 (Nginx + TLS at agents.haxe.ai). See also ADR-025 (alert links use
