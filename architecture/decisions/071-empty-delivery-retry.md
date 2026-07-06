@@ -3,6 +3,21 @@ ADR-071: An empty deliver_output is bounced back once for re-delivery; the incom
 Status: ACCEPTED (shipped + verified live 2026-07-06). Refines ADR-063 (structured tool-call delivery),
 ADR-066 (async session waiter), ADR-069 (document-only delivery).
 
+Correction (2026-07-06, same day — supersedes the "empty delivery" framing below)
+
+The first fix (retry + decline clause + honest notice, all described below) treated the symptom as an
+EMPTY / declined delivery. A same-day recurrence on the same task (`869e0t8r2`) proved the actual root
+cause: the agent produces a COMPLETE, correct answer but hand-serializes `blocks` into a JSON STRING that
+is INVALID JSON — an unescaped `"` inside a Polish „…" quotation (`…o nowości"*`) — so every `JSON.parse`
+throws and the whole answer is silently dropped, looking empty. The content was never missing. **Primary
+fix:** `extractDeliverBlocks` (session-waiter) now repairs a malformed `blocks` string with the `jsonrepair`
+library and re-parses, recovering the answer (validated: the exact failing delivery recovers to a full
+2,185-character report). The retry, decline clause, and outcome-aware notice below are RETAINED as
+backstops for a genuinely empty delivery, but they do NOT fix this failure — re-asking just makes the model
+re-serialize the same broken string (observed: the retry fired and the second attempt failed at the same
+character). Files (this correction): `services/session-waiter/app.mjs` (`extractDeliverBlocks` +
+`jsonrepair` dependency), `services/session-waiter/package.json`.
+
 Context
 
 A managed agent submits its final answer by *calling* the `deliver_output` custom tool with a `blocks`

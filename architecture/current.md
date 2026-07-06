@@ -336,6 +336,14 @@ syntax-checked; contract synced (`all_synced:true`, CONV 18, zero alerts); `publ
 be exercised on the next real empty delivery, with the (now-accurate) incomplete notice as the bounded
 fallback. Files: `services/session-waiter/app.mjs`, `sync-agent-definitions.json` (Build System, CONV 18),
 `publish-managed-result.json` (`Call Post Reply (Incomplete)`, `Alert Non-Delivery`).
+**Correction (2026-07-06, same day):** a recurrence on the same task proved the real root cause is **not** an
+empty or declined delivery but an **invalid-JSON-string `blocks`** — Sonnet hand-serializes `blocks` into a
+JSON string that is *invalid* (an unescaped `"` inside Polish „…" quotes), so every `JSON.parse` throws and
+the whole (complete, correct) answer is dropped as if empty. **Primary fix:** `extractDeliverBlocks`
+(`services/session-waiter/app.mjs`) now repairs a malformed `blocks` string with the `jsonrepair` library and
+re-parses (validated: the exact failing delivery recovers to a full report). The retry / decline clause /
+outcome-aware notice above are retained only as backstops for a *genuinely* empty delivery — they do not fix
+this class (re-asking just re-serializes the same broken string).
 
 **Reliability:** an auth dead-man's-switch (`Managed Agents Auth Monitor (v1)`), the CU-rules sync +
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the

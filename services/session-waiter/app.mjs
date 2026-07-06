@@ -57,6 +57,7 @@
 // Mirrors services/queue-consumer (ADR-056) and services/zip-extractor (ADR-058).
 
 import express from 'express';
+import { jsonrepair } from 'jsonrepair';
 
 const VERSION = '1.3.0-block7';
 const STARTED_AT = Date.now();
@@ -255,7 +256,17 @@ function extractText(msg) {
 function extractDeliverBlocks(picked) {
   if (!picked || !picked.input) return [];
   let b = (picked.input.blocks !== undefined) ? picked.input.blocks : picked.input;
-  if (typeof b === 'string') { try { b = JSON.parse(b); } catch (e) { return []; } }
+  if (typeof b === 'string') {
+    try { b = JSON.parse(b); }
+    catch (e) {
+      // ADR-071: Sonnet sometimes hand-serializes `blocks` into a JSON STRING that is INVALID JSON —
+      // e.g. an unescaped `"` inside Polish „…" quotes (real task 869e0t8r2) — so JSON.parse throws and
+      // the whole answer is dropped as if empty. jsonrepair fixes the malformed serialization; the retry
+      // + incomplete notice remain the fallback only if even repair fails.
+      try { b = JSON.parse(jsonrepair(b)); log('warn', 'deliver_blocks_repaired', { blocks: Array.isArray(b) ? b.length : 0 }); }
+      catch (e2) { log('warn', 'deliver_blocks_unrepairable', { err: String(e2.message).slice(0, 150) }); return []; }
+    }
+  }
   return Array.isArray(b) ? b : [];
 }
 
