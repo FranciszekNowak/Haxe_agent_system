@@ -345,6 +345,39 @@ re-parses (validated: the exact failing delivery recovers to a full report). The
 outcome-aware notice above are retained only as backstops for a *genuinely* empty delivery — they do not fix
 this class (re-asking just re-serializes the same broken string).
 
+**ADR-072 — markdown-native `deliver_output` (built + LIVE 2026-07-17):** the correction above finally
+fixed the *shape*, not the parser. The root cause is that we transported the whole free-form Polish answer
+inside a **nested `blocks` array** in the tool arguments; the moment Sonnet stringifies that container the
+API's per-string escaping guarantee is lost and we are back to hand-parsing model-authored JSON with
+embedded prose. **`deliver_output` now takes a single flat scalar: `markdown`** — the entire answer as
+ordinary markdown prose, with images embedded **inline** via standard markdown image syntax
+`![opis](file_id)` (`file_id` from `generate_image`) or `![opis](ref)` (an input attachment). There is no
+nested container to stringify, so the misescape class is **structurally impossible**; and there is no
+multi-call segment protocol (an interim `attach_*` design was tried and **retired** — Sonnet ignored the
+segment tools and wrote the old blocks-array into `markdown`, orphaning the image silently). Managed agents
+now answer the way the Managed-Agents platform designs them to — one final message — instead of a foreign
+tool protocol. The **session-waiter** parses that one markdown string into the renderer's existing
+text/image block array by splitting on `![…](…)` (`services/session-waiter/lib/deliver-blocks.mjs`
+`parseMarkdownDelivery`; inline code spans / fenced blocks are masked so a backtick-quoted example is not a
+spurious image), so `Render Agent Output → Parse Blocks` and Post Reply are **unchanged**. Interleaving is
+free — it is just where the `![](…)` sits in the prose. The `jsonrepair` repair machinery (and the
+uncommitted `sanitizeStrayValueQuotes` state machine) are **deleted**; the ADR-071 empty-delivery retry +
+outcome-aware incomplete notice + ADR-069 doc-only handling are all retained as backstops. **Proactive
+degradation guard (reliability rule):** the waiter fires a `Post Alert` WARN if a delivery still looks
+wrong — `markdown` that parses as a JSON blocks-array (backslide; unwrapped defensively so the user still
+gets content) or `generate_image` ran but no image reference reached the answer (orphaned image) — on a
+side branch, so the run still returns. The persona output-format contract flipped to markdown-native in
+`sync-agent-definitions.json → Build System` (**CONV 18→20**, re-synced to all agents). Both dormant lanes
+carry the same schema (one contract, all lanes): `Invoke Model (v1)` `deliver_output_tool` is now a flat
+`{markdown}` function and `Parse Response` splits markdown→blocks; `Execute Agent Session (v1)` `Poll Round`
+assembles `output_blocks_json` from `markdown` the same way (shared `md2blocks`, kept in sync with the
+waiter lib). **Verified end-to-end** (managed lane, full spine, Sonnet): a realistic interleaved one-pager
+with a generated product image + `.xlsx` posted one threaded comment with the **inline image, ordered
+prose, and the attachment, zero alerts**, the event log showing a single `deliver_output(markdown)` with an
+inline `![…](file_…)`. Waiter live at `1.5.1-adr072-blk5`. Files: `services/session-waiter/`
+(`lib/deliver-blocks.mjs`, `app.mjs`, tests, `package.json`), `sync-agent-definitions.json`,
+`invoke-model.json`, `execute-agent-session.json`. See ADR-072.
+
 **Reliability:** an auth dead-man's-switch (`Managed Agents Auth Monitor (v1)`), the CU-rules sync +
 freshness dead-man's-switch (`Sync Agent Definitions (v1)` / `Agent Rules Freshness Check (v1)`), and the
 image-MCP health monitor (`Image MCP Health Monitor (v1)`), all every 6h via `Post Alert (v1)`. The

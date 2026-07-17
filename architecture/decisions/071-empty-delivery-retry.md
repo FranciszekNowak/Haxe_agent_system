@@ -3,6 +3,12 @@ ADR-071: An empty deliver_output is bounced back once for re-delivery; the incom
 Status: ACCEPTED (shipped + verified live 2026-07-06). Refines ADR-063 (structured tool-call delivery),
 ADR-066 (async session waiter), ADR-069 (document-only delivery).
 
+**Repair machinery retired by ADR-072 (2026-07-17):** the invalid-`blocks`-string root cause (see the
+Correction below) is fixed at the *shape* — `deliver_output` now takes flat scalar `markdown`, so there is
+no stringified array to repair. The `jsonrepair` primary fix (and the uncommitted `sanitizeStrayValueQuotes`)
+are deleted. This ADR's **empty-delivery retry** (one-shot bounce) and **outcome-aware incomplete notice**
+survive as backstops for a genuinely empty delivery.
+
 Correction (2026-07-06, same day — supersedes the "empty delivery" framing below)
 
 The first fix (retry + decline clause + honest notice, all described below) treated the symptom as an

@@ -1,8 +1,11 @@
 # ADR-063: Structured tool-call output delivery (`deliver_output` contract)
 
-Status: **Accepted** (2026-06-27 — both lanes consume the contract; the managed lane is deployed and
-verified end-to-end, the bare lane is repo-built and dormant pending a VPS key refresh). Master plan:
-`architecture/Build plans/adr-063-structured-output-delivery/master-plan.md`.
+Status: **Superseded by ADR-072 (2026-07-17)** on the *schema* — the nested `blocks` array is replaced by a
+flat scalar `deliver_output(markdown)` with inline `![](file_id)` images (the nested array was the stringify
+surface that reopened the misescape defect ADR-063 set out to close). ADR-063's core thesis stands — the
+agent still *calls* `deliver_output` as the terminal delivery channel, and the renderer still consumes the
+same text/image block array (now assembled by the waiter from the markdown). Originally Accepted 2026-06-27.
+Master plan: `architecture/Build plans/adr-063-structured-output-delivery/master-plan.md`.
 
 ## Context
 
