@@ -11,6 +11,7 @@ COPY package.json package-lock.json* ./
 RUN npm install --omit=dev --no-audit --no-fund
 
 COPY app.mjs ./
+COPY lib ./lib
 
 ENV PORT=8080
 EXPOSE 8080

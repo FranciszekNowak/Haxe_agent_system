@@ -57,9 +57,9 @@
 // Mirrors services/queue-consumer (ADR-056) and services/zip-extractor (ADR-058).
 
 import express from 'express';
-import { jsonrepair } from 'jsonrepair';
+import { buildOutputBlocks, collectAttachEvents } from './lib/deliver-blocks.mjs';
 
-const VERSION = '1.3.0-block7';
+const VERSION = '1.4.0-adr072-blk1';
 const STARTED_AT = Date.now();
 
 const {
@@ -246,31 +246,20 @@ function analyze(events) {
   const clickupToolDeniedUniq = [...new Set(clickupToolDenied)];
   let webSearchCount = 0;
   for (const e of events) { if (e.type === 'agent.tool_use' && e.name === 'web_search') webSearchCount++; }
-  return { pending, agentRepliedAfter, lastAgentMsg, sessionError, clickupAuthError, clickupToolDenied: clickupToolDeniedUniq, webSearchCount };
+  // ADR-072: the flat delivery-block tool calls (attach_text/attach_generated_image/attach_input_image),
+  // in event order — assembled into output_blocks at terminal alongside deliver_output(markdown).
+  const attachEvents = collectAttachEvents(events);
+  return { pending, agentRepliedAfter, lastAgentMsg, sessionError, clickupAuthError, clickupToolDenied: clickupToolDeniedUniq, webSearchCount, attachEvents };
 }
 function extractText(msg) {
   if (!msg) return '';
   const c = msg.content || [];
   return c.filter((b) => b && b.type === 'text').map((b) => b.text || '').join('');
 }
-function extractDeliverBlocks(picked) {
-  if (!picked || !picked.input) return [];
-  let b = (picked.input.blocks !== undefined) ? picked.input.blocks : picked.input;
-  if (typeof b === 'string') {
-    try { b = JSON.parse(b); }
-    catch (e) {
-      // ADR-071: Sonnet sometimes hand-serializes `blocks` into a JSON STRING that is INVALID JSON —
-      // e.g. an unescaped `"` inside Polish „…" quotes (real task 869e0t8r2) — so JSON.parse throws and
-      // the whole answer is dropped as if empty. jsonrepair fixes the malformed serialization; the retry
-      // + incomplete notice remain the fallback only if even repair fails.
-      try { b = JSON.parse(jsonrepair(b)); log('warn', 'deliver_blocks_repaired', { blocks: Array.isArray(b) ? b.length : 0 }); }
-      catch (e2) { log('warn', 'deliver_blocks_unrepairable', { err: String(e2.message).slice(0, 150) }); return []; }
-    }
-  }
-  return Array.isArray(b) ? b : [];
-}
+// ADR-072: deliver-block assembly (flat deliver_output(markdown) + attach_* calls; legacy nested-blocks
+// fallback during the Block 1→2 rollout) lives in ./lib/deliver-blocks.mjs (pure + unit-tested).
 
-// ---- empty-delivery detection + bounded reformat retry (ADR-071) ---------------------------------
+// ---- empty-delivery detection + bounded reformat retry (ADR-071/072) -----------------------------
 // The agent signals its final answer by calling deliver_output. It sometimes fires deliver_output with
 // an EMPTY blocks array and writes the answer as ordinary narration instead (which never reaches the
 // recipient). Before accepting an empty delivery as terminal, bounce it back ONCE as an is_error tool
@@ -289,8 +278,8 @@ async function listSessionFiles(key, sessionId) {
 // Fail-OPEN on a files-lookup error: return false (don't retry), so a transient API blip never bounces
 // a real doc-only delivery back to the agent — worst case we fall through to the existing incomplete
 // path exactly as before this change.
-async function deliverIsEmpty(key, sessionId, delivered) {
-  if (extractDeliverBlocks(delivered).length > 0) return false;
+async function deliverIsEmpty(key, sessionId, delivered, attachEvents) {
+  if (buildOutputBlocks(delivered, attachEvents).length > 0) return false;
   try {
     const files = await listSessionFiles(key, sessionId);
     if (files.length > 0) return false; // doc-only delivery (ADR-069) — legitimate, not empty
@@ -397,6 +386,12 @@ async function consumeSse(key, sessionId, signal, onEvent) {
 // Service a pending client tool via the n8n bridge, always returning a {content, warnings} shape — a bridge
 // failure yields a fail-soft text result (so the caller ALWAYS resolves the tool; no session deadlock).
 async function serviceToolSafe(key, handoff, tool) {
+  // ADR-072: attach_* are the flat delivery-block tools. They carry FINAL-ANSWER content, not a capability
+  // call — so they are serviced LOCALLY (acked here; the waiter assembles them from the event log into
+  // output_blocks at terminal) and are NEVER bridged to n8n. This runs on both the poll and SSE paths.
+  if (tool && typeof tool.name === 'string' && tool.name.indexOf('attach_') === 0) {
+    return { content: [{ type: 'text', text: 'Zarejestrowano blok odpowiedzi.' }], warnings: [] };
+  }
   try {
     return await serviceClientTool(handoff, tool);
   } catch (e) {
@@ -432,7 +427,7 @@ async function driveSession(handoff) {
 
     const { outcome, picked, analysis, statusObj, warnings, toolRound } = result;
     const finalText = extractText(analysis ? analysis.lastAgentMsg : null);
-    const output_blocks = (outcome === 'delivered') ? extractDeliverBlocks(picked) : [];
+    const output_blocks = (outcome === 'delivered') ? buildOutputBlocks(picked, analysis ? analysis.attachEvents : []) : [];
     const delivered_via_tool = (outcome === 'delivered');
     const rowStatus = (outcome === 'delivered' || outcome === 'done') ? 'delivered' : 'failed';
 
@@ -513,7 +508,7 @@ async function runPollLoop(key, handoff, deadlineAt) {
         if (analysis.pending.length > 0) {
           const delivered = analysis.pending.find((e) => e.name === 'deliver_output');
           if (delivered) {
-            if (deliverRetries < MAX_DELIVER_RETRIES && await deliverIsEmpty(key, sessionId, delivered)) {
+            if (deliverRetries < MAX_DELIVER_RETRIES && await deliverIsEmpty(key, sessionId, delivered, analysis.attachEvents)) {
               await postToolResult(key, sessionId, delivered.id, EMPTY_DELIVER_RETRY_MSG, true);
               deliverRetries += 1;
               warnings.push({ source: 'session-waiter/deliver-output-empty-retry', err: 'deliver_output bez bloków ani plików — zażądano ponownego dostarczenia (retry ' + deliverRetries + '/' + MAX_DELIVER_RETRIES + ').', severity: 'WARN' });
@@ -585,7 +580,7 @@ function runSseLoop(key, handoff, deadlineAt) {
           const delivered = analysis.pending.find((e) => e.name === 'deliver_output');
           if (delivered) {
             if (servicedIds.has(delivered.id)) return; // retry already requested for this delivery; await re-delivery
-            if (deliverRetries < MAX_DELIVER_RETRIES && await deliverIsEmpty(key, sessionId, delivered)) {
+            if (deliverRetries < MAX_DELIVER_RETRIES && await deliverIsEmpty(key, sessionId, delivered, analysis.attachEvents)) {
               await postToolResult(key, sessionId, delivered.id, EMPTY_DELIVER_RETRY_MSG, true);
               servicedIds.add(delivered.id);
               deliverRetries += 1;
