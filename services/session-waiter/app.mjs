@@ -57,9 +57,9 @@
 // Mirrors services/queue-consumer (ADR-056) and services/zip-extractor (ADR-058).
 
 import express from 'express';
-import { parseMarkdownDelivery } from './lib/deliver-blocks.mjs';
+import { parseMarkdownDelivery, blocksArrayInMarkdown } from './lib/deliver-blocks.mjs';
 
-const VERSION = '1.5.1-adr072-blk5';
+const VERSION = '1.6.0-adr072-backslide-retry';
 const STARTED_AT = Date.now();
 
 const {
@@ -268,7 +268,17 @@ function extractText(msg) {
 // result asking the agent to re-deliver with real content. A doc-ONLY delivery is legitimately
 // empty-blocks (ADR-069: the answer IS the file), so "empty" = empty blocks AND no session output files.
 const MAX_DELIVER_RETRIES = 1;
-const EMPTY_DELIVER_RETRY_MSG = [{ type: 'text', text: 'Twoje wywołanie deliver_output nie zawierało żadnych bloków treści (blocks) ani żadnych zapisanych plików wyjściowych. Pusty wynik NIE dotrze do odbiorcy. Dostarcz teraz pełną odpowiedź ponownie, umieszczając CAŁĄ treść w blokach (text/image/doc) w deliver_output. Jeśli uznajesz, że zadanie nie jest dla AI albo go nie wykonasz, i tak dostarcz tę konkluzję (powód i ewentualną rekomendację) jako blok text — nadal przez deliver_output.' }];
+const EMPTY_DELIVER_RETRY_MSG = [{ type: 'text', text: 'Twoje wywołanie deliver_output nie zawierało żadnej treści (pusty markdown) ani żadnych zapisanych plików wyjściowych. Pusty wynik NIE dotrze do odbiorcy. Dostarcz teraz pełną odpowiedź ponownie w parametrze markdown (zwykły tekst markdown; obrazy wstaw inline składnią ![opis](file_id)). Jeśli uznajesz, że zadanie nie jest dla AI albo go nie wykonasz, i tak dostarcz tę konkluzję (powód i ewentualną rekomendację) jako tekst — nadal przez deliver_output.' }];
+// ADR-072 (amended): the model occasionally BACKSLIDES — it serializes a JSON blocks array into `markdown`
+// instead of writing prose. parseMarkdownDelivery unwraps it so nothing is lost, but the old-format image
+// blocks carry no valid file_id, so inline images are dropped. Before accepting a backslid delivery, bounce
+// it back ONCE asking for real markdown prose with inline ![](file_id) — the agent still holds the generated
+// file_ids, so this recovers the images. Bounded (MAX_BACKSLIDE_RETRIES=1), separate from the empty retry.
+const MAX_BACKSLIDE_RETRIES = 1;
+const BACKSLIDE_RETRY_MSG = [{ type: 'text', text: 'Twoja odpowiedź w deliver_output(markdown) była tablicą JSON bloków, a nie zwykłym tekstem. Prześlij CAŁĄ odpowiedź jeszcze raz jako zwykłą prozę markdown (nagłówki, listy, tabele, pogrubienia). Obrazy wstaw INLINE w treści składnią ![opis](file_id), używając file_id zwróconych wcześniej przez generate_image w tej sesji. NIE wysyłaj tablicy JSON ani obiektów-bloków — tylko markdown.' }];
+function deliverIsBackslide(delivered) {
+  return !!(delivered && delivered.input && blocksArrayInMarkdown(delivered.input.markdown));
+}
 async function listSessionFiles(key, sessionId) {
   const r = await fetch(`${ANTHROPIC_API_BASE}/v1/files?scope_id=${encodeURIComponent(sessionId)}`, { headers: anthropicHeaders(key) });
   if (!r.ok) throw new Error(`anthropic GET files ${r.status}`);
@@ -495,7 +505,7 @@ async function driveSession(handoff) {
 // (status). Proven and SSE-independent (A1). Returns the terminal result object for driveSession to finish.
 async function runPollLoop(key, handoff, deadlineAt) {
   const sessionId = handoff.session_id;
-  let warnings = [], toolRound = 0, consecErr = 0, deliverRetries = 0;
+  let warnings = [], toolRound = 0, consecErr = 0, deliverRetries = 0, backslideRetries = 0;
   let outcome = null, picked = null, analysis = null, statusObj = {};
   await sleep(1500);
   while (true) {
@@ -519,6 +529,13 @@ async function runPollLoop(key, handoff, deadlineAt) {
               warnings.push({ source: 'session-waiter/deliver-output-empty-retry', err: 'deliver_output bez bloków ani plików — zażądano ponownego dostarczenia (retry ' + deliverRetries + '/' + MAX_DELIVER_RETRIES + ').', severity: 'WARN' });
               log('warn', 'deliver_empty_retry', { session_id: sessionId, retry: deliverRetries, via: 'poll' });
               continue; // re-poll; the agent should re-deliver with real content
+            }
+            if (backslideRetries < MAX_BACKSLIDE_RETRIES && deliverIsBackslide(delivered)) {
+              await postToolResult(key, sessionId, delivered.id, BACKSLIDE_RETRY_MSG, true);
+              backslideRetries += 1;
+              warnings.push({ source: 'session-waiter/deliver-blocks-array-retry', err: 'deliver_output.markdown było tablicą JSON bloków — zażądano ponownego dostarczenia jako proza markdown z inline ![](file_id) (retry ' + backslideRetries + '/' + MAX_BACKSLIDE_RETRIES + ').', severity: 'WARN' });
+              log('warn', 'deliver_backslide_retry', { session_id: sessionId, retry: backslideRetries, via: 'poll' });
+              continue; // re-poll; the agent should re-deliver as markdown prose (recovering inline images)
             }
             outcome = 'delivered'; picked = delivered; break;
           }
@@ -554,7 +571,7 @@ function runSseLoop(key, handoff, deadlineAt) {
   return new Promise((resolve, reject) => {
     const state = { sessionId, events: [], seen: new Set(), cursor: null };
     const servicedIds = new Set(); // tool ids already answered (immediate re-eval can race the result's propagation)
-    let outcome = null, picked = null, analysis = null, statusObj = {}, warnings = [], toolRound = 0, deliverRetries = 0;
+    let outcome = null, picked = null, analysis = null, statusObj = {}, warnings = [], toolRound = 0, deliverRetries = 0, backslideRetries = 0;
     let done = false, settled = false, evaluating = false, reEval = false, sseFailures = 0;
     let streamCtrl = null, safetyTimer = null, deadlineTimer = null;
 
@@ -592,6 +609,15 @@ function runSseLoop(key, handoff, deadlineAt) {
               warnings.push({ source: 'session-waiter/deliver-output-empty-retry', err: 'deliver_output bez bloków ani plików — zażądano ponownego dostarczenia (retry ' + deliverRetries + '/' + MAX_DELIVER_RETRIES + ').', severity: 'WARN' });
               log('warn', 'deliver_empty_retry', { session_id: sessionId, retry: deliverRetries, via: 'sse' });
               await pullDelta(key, state, 'post-deliver-retry').catch(() => {}); // reflect our own tool_result promptly
+              reEval = true; return;
+            }
+            if (backslideRetries < MAX_BACKSLIDE_RETRIES && deliverIsBackslide(delivered)) {
+              await postToolResult(key, sessionId, delivered.id, BACKSLIDE_RETRY_MSG, true);
+              servicedIds.add(delivered.id);
+              backslideRetries += 1;
+              warnings.push({ source: 'session-waiter/deliver-blocks-array-retry', err: 'deliver_output.markdown było tablicą JSON bloków — zażądano ponownego dostarczenia jako proza markdown z inline ![](file_id) (retry ' + backslideRetries + '/' + MAX_BACKSLIDE_RETRIES + ').', severity: 'WARN' });
+              log('warn', 'deliver_backslide_retry', { session_id: sessionId, retry: backslideRetries, via: 'sse' });
+              await pullDelta(key, state, 'post-backslide-retry').catch(() => {});
               reEval = true; return;
             }
             outcome = 'delivered'; picked = delivered; done = true; return;

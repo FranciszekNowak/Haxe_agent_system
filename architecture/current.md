@@ -366,7 +366,12 @@ outcome-aware incomplete notice + ADR-069 doc-only handling are all retained as 
 degradation guard (reliability rule):** the waiter fires a `Post Alert` WARN if a delivery still looks
 wrong — `markdown` that parses as a JSON blocks-array (backslide; unwrapped defensively so the user still
 gets content) or `generate_image` ran but no image reference reached the answer (orphaned image) — on a
-side branch, so the run still returns. The persona output-format contract flipped to markdown-native in
+side branch, so the run still returns. A backslide is additionally **bounced once** (an `is_error` tool
+result asking the agent to re-send as markdown prose with inline `![](file_id)`, mirroring the ADR-071
+empty-delivery retry, `MAX_BACKSLIDE_RETRIES=1`, both SSE + poll paths) — the unwrap preserves text and
+attached files but cannot recover images from an old-format array (its image blocks carry no valid
+`file_id`), so the retry gives the agent a second, correct attempt to inline its already-generated images.
+Waiter `1.6.0-adr072-backslide-retry`. The persona output-format contract flipped to markdown-native in
 `sync-agent-definitions.json → Build System` (**CONV 18→20**, re-synced to all agents). Both dormant lanes
 carry the same schema (one contract, all lanes): `Invoke Model (v1)` `deliver_output_tool` is now a flat
 `{markdown}` function and `Parse Response` splits markdown→blocks; `Execute Agent Session (v1)` `Poll Round`

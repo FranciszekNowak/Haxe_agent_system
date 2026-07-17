@@ -63,7 +63,15 @@ Node service, cannot share a module).
 without breaking the main result — when a delivery still looks wrong: `markdown` that parses as a JSON
 blocks-array (a model backslide; the waiter unwraps it defensively so the user still gets content), or
 `generate_image` ran but no image reference reached the delivered markdown (an orphaned image). This turns
-the previously-silent media degradation into a loud, actionable signal.
+the previously-silent media degradation into a loud, actionable signal. A backslide is additionally
+**bounced once** — an `is_error` tool result asking the agent to re-send its answer as markdown prose with
+inline `![](file_id)`, mirroring the ADR-071 empty-delivery retry (`MAX_BACKSLIDE_RETRIES=1`, both SSE and
+poll paths). The unwrap preserves text and attached files but cannot recover images from an old-format
+array (its image blocks carry no valid `file_id`), so the retry gives the agent a second, correct attempt
+to inline its already-generated images. Verified live: a Sonnet run that backslid on the first attempt (task
+`869e62jzh`) delivered clean markdown with both inline images on a subsequent run; the backslide rate is
+non-trivial (~1 in 3 on complex 2-image + 2-file tasks in testing), which is why the loud guard + bounce
+matter.
 
 Recorded as ADR-072, **superseding ADR-063's `blocks`-array schema** and **retiring ADR-071's repair
 machinery** (`jsonrepair`, and the uncommitted `sanitizeStrayValueQuotes`). The ADR-071 empty-delivery
