@@ -57,9 +57,9 @@
 // Mirrors services/queue-consumer (ADR-056) and services/zip-extractor (ADR-058).
 
 import express from 'express';
-import { buildOutputBlocks, collectAttachEvents } from './lib/deliver-blocks.mjs';
+import { parseMarkdownDelivery } from './lib/deliver-blocks.mjs';
 
-const VERSION = '1.4.0-adr072-blk1';
+const VERSION = '1.5.0-adr072-blk2-md';
 const STARTED_AT = Date.now();
 
 const {
@@ -246,10 +246,12 @@ function analyze(events) {
   const clickupToolDeniedUniq = [...new Set(clickupToolDenied)];
   let webSearchCount = 0;
   for (const e of events) { if (e.type === 'agent.tool_use' && e.name === 'web_search') webSearchCount++; }
-  // ADR-072: the flat delivery-block tool calls (attach_text/attach_generated_image/attach_input_image),
-  // in event order — assembled into output_blocks at terminal alongside deliver_output(markdown).
-  const attachEvents = collectAttachEvents(events);
-  return { pending, agentRepliedAfter, lastAgentMsg, sessionError, clickupAuthError, clickupToolDenied: clickupToolDeniedUniq, webSearchCount, attachEvents };
+  // ADR-072 (amended): the answer arrives as deliver_output(markdown) with inline ![](file_id) images.
+  // Track whether generate_image ran so driveSession can WARN on an orphaned generated image (one produced
+  // but never referenced in the delivered markdown).
+  let generateImageUsed = false;
+  for (const e of events) { if (e.type === 'agent.mcp_tool_use' && e.name === 'generate_image') generateImageUsed = true; }
+  return { pending, agentRepliedAfter, lastAgentMsg, sessionError, clickupAuthError, clickupToolDenied: clickupToolDeniedUniq, webSearchCount, generateImageUsed };
 }
 function extractText(msg) {
   if (!msg) return '';
@@ -278,8 +280,8 @@ async function listSessionFiles(key, sessionId) {
 // Fail-OPEN on a files-lookup error: return false (don't retry), so a transient API blip never bounces
 // a real doc-only delivery back to the agent — worst case we fall through to the existing incomplete
 // path exactly as before this change.
-async function deliverIsEmpty(key, sessionId, delivered, attachEvents) {
-  if (buildOutputBlocks(delivered, attachEvents).length > 0) return false;
+async function deliverIsEmpty(key, sessionId, delivered) {
+  if (parseMarkdownDelivery(delivered, {}).blocks.length > 0) return false;
   try {
     const files = await listSessionFiles(key, sessionId);
     if (files.length > 0) return false; // doc-only delivery (ADR-069) — legitimate, not empty
@@ -427,7 +429,10 @@ async function driveSession(handoff) {
 
     const { outcome, picked, analysis, statusObj, warnings, toolRound } = result;
     const finalText = extractText(analysis ? analysis.lastAgentMsg : null);
-    const output_blocks = (outcome === 'delivered') ? buildOutputBlocks(picked, analysis ? analysis.attachEvents : []) : [];
+    const delivery = (outcome === 'delivered')
+      ? parseMarkdownDelivery(picked, { generateImageUsed: analysis ? analysis.generateImageUsed : false })
+      : { blocks: [], warnings: [] };
+    const output_blocks = delivery.blocks;
     const delivered_via_tool = (outcome === 'delivered');
     const rowStatus = (outcome === 'delivered' || outcome === 'done') ? 'delivered' : 'failed';
 
@@ -437,6 +442,12 @@ async function driveSession(handoff) {
     // Silent-degrade guard (ADR-054/066): raise ONE consolidated WARN if the ClickUp MCP failed to
     // connect and its tools were denied at runtime. Side-channel only — the run still returns its result.
     const finalWarnings = Array.isArray(warnings) ? warnings.slice() : [];
+    // ADR-072 (amended): proactive delivery-degradation WARNs (blocks-array-in-markdown backslide,
+    // orphaned generated image). Side-channel only — output_blocks still returns.
+    if (Array.isArray(delivery.warnings) && delivery.warnings.length) {
+      finalWarnings.push(...delivery.warnings);
+      log('warn', 'delivery_degraded', { session_id: sessionId, sources: delivery.warnings.map((w) => w.source) });
+    }
     if (analysis && Array.isArray(analysis.clickupToolDenied) && analysis.clickupToolDenied.length) {
       finalWarnings.push({
         source: 'managed-agents/clickup-tool-denied',
@@ -508,7 +519,7 @@ async function runPollLoop(key, handoff, deadlineAt) {
         if (analysis.pending.length > 0) {
           const delivered = analysis.pending.find((e) => e.name === 'deliver_output');
           if (delivered) {
-            if (deliverRetries < MAX_DELIVER_RETRIES && await deliverIsEmpty(key, sessionId, delivered, analysis.attachEvents)) {
+            if (deliverRetries < MAX_DELIVER_RETRIES && await deliverIsEmpty(key, sessionId, delivered)) {
               await postToolResult(key, sessionId, delivered.id, EMPTY_DELIVER_RETRY_MSG, true);
               deliverRetries += 1;
               warnings.push({ source: 'session-waiter/deliver-output-empty-retry', err: 'deliver_output bez bloków ani plików — zażądano ponownego dostarczenia (retry ' + deliverRetries + '/' + MAX_DELIVER_RETRIES + ').', severity: 'WARN' });
@@ -580,7 +591,7 @@ function runSseLoop(key, handoff, deadlineAt) {
           const delivered = analysis.pending.find((e) => e.name === 'deliver_output');
           if (delivered) {
             if (servicedIds.has(delivered.id)) return; // retry already requested for this delivery; await re-delivery
-            if (deliverRetries < MAX_DELIVER_RETRIES && await deliverIsEmpty(key, sessionId, delivered, analysis.attachEvents)) {
+            if (deliverRetries < MAX_DELIVER_RETRIES && await deliverIsEmpty(key, sessionId, delivered)) {
               await postToolResult(key, sessionId, delivered.id, EMPTY_DELIVER_RETRY_MSG, true);
               servicedIds.add(delivered.id);
               deliverRetries += 1;
