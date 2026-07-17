@@ -59,7 +59,7 @@
 import express from 'express';
 import { parseMarkdownDelivery } from './lib/deliver-blocks.mjs';
 
-const VERSION = '1.5.0-adr072-blk2-md';
+const VERSION = '1.5.1-adr072-blk5';
 const STARTED_AT = Date.now();
 
 const {
@@ -258,8 +258,8 @@ function extractText(msg) {
   const c = msg.content || [];
   return c.filter((b) => b && b.type === 'text').map((b) => b.text || '').join('');
 }
-// ADR-072: deliver-block assembly (flat deliver_output(markdown) + attach_* calls; legacy nested-blocks
-// fallback during the Block 1→2 rollout) lives in ./lib/deliver-blocks.mjs (pure + unit-tested).
+// ADR-072 (amended): deliver-block assembly (deliver_output(markdown) → renderer block array by splitting
+// on inline ![…](…) image refs) lives in ./lib/deliver-blocks.mjs (pure + unit-tested).
 
 // ---- empty-delivery detection + bounded reformat retry (ADR-071/072) -----------------------------
 // The agent signals its final answer by calling deliver_output. It sometimes fires deliver_output with
@@ -388,12 +388,6 @@ async function consumeSse(key, sessionId, signal, onEvent) {
 // Service a pending client tool via the n8n bridge, always returning a {content, warnings} shape — a bridge
 // failure yields a fail-soft text result (so the caller ALWAYS resolves the tool; no session deadlock).
 async function serviceToolSafe(key, handoff, tool) {
-  // ADR-072: attach_* are the flat delivery-block tools. They carry FINAL-ANSWER content, not a capability
-  // call — so they are serviced LOCALLY (acked here; the waiter assembles them from the event log into
-  // output_blocks at terminal) and are NEVER bridged to n8n. This runs on both the poll and SSE paths.
-  if (tool && typeof tool.name === 'string' && tool.name.indexOf('attach_') === 0) {
-    return { content: [{ type: 'text', text: 'Zarejestrowano blok odpowiedzi.' }], warnings: [] };
-  }
   try {
     return await serviceClientTool(handoff, tool);
   } catch (e) {

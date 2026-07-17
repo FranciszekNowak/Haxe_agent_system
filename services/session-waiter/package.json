@@ -12,7 +12,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "express": "^4.21.2",
-    "jsonrepair": "^3.15.0"
+    "express": "^4.21.2"
   }
 }
