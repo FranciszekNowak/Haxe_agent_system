@@ -913,8 +913,8 @@ Target: 7–9 weeks to v1.
 ## Infrastructure status (Phase 0 — COMPLETE)
 
 - **VPS**: Cyberfolks vroot_SPRINT, AlmaLinux 10, 185.25.149.174 (KVM, 4 vCPU / 8 GB / 100 GB, hostname vps57524999).
-- **Access**: key-based SSH (ed25519). Separate keypair per machine — home and office desktops each have their own key installed for `franciszek` (private keys passphrase-free, for non-interactive automation). Non-root sudo user `franciszek` (wheel + docker + NOPASSWD sudoers); root reserved for exceptions. firewalld: ssh/http/https open. See ADR-010.
-- **Password auth: DISABLED.** Both workstations (home + office) have key-based SSH access; with both keyed, password authentication was turned off (`PasswordAuthentication no`) as the final hardening step. Access is now key-only.
+- **Access**: key-based SSH (ed25519). Separate keypair per machine — the home desktop, the office desktop and the laptop `Laptop_FN` (keyed 2026-09-24) each have their own key installed for `franciszek` (private keys passphrase-free, for non-interactive automation; see the ADR-010 update of 2026-09-24 for why that convention is worth revisiting on a portable machine). `komputer-marketing` is not keyed. Non-root sudo user `franciszek` (wheel + docker + NOPASSWD sudoers); root reserved for exceptions. firewalld: ssh/http/https open. See ADR-010.
+- **Password auth: DISABLED.** The home and office workstations had key-based SSH access; with both keyed, password authentication was turned off (`PasswordAuthentication no`) as the final hardening step. Access is now key-only. A consequence: since 2026-06-01 a new machine cannot enroll itself — its key must be appended from an already-keyed machine, or through the Solus VNC console.
 - **Docker stack**: `/opt/haxe-agents/`, eight containers on private bridge network `n8n-internal`, queue mode. Image versions pinned. See ADR-011.
   - `n8n-postgres` (postgres:16) — n8n's internal DB; named volume; healthcheck-gated.
   - `n8n-redis` (redis:7-alpine) — queue backing; AOF persistence enabled; named volume.
