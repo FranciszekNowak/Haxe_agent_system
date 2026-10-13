@@ -1,0 +1,79 @@
+{
+  "name": "Doc Access Test (agent token)",
+  "active": false,
+  "nodes": [
+    {
+      "id": "form-trigger",
+      "name": "Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [0, 300],
+      "webhookId": "97fe9e81-4f8e-4faa-bc76-e74eff6d3398",
+      "parameters": {
+        "formTitle": "Doc Access Test",
+        "formDescription": "Fire to test agent-token read of ClickUp Docs v3 API.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "go",
+              "requiredField": false
+            }
+          ]
+        },
+        "responseMode": "lastNode"
+      }
+    },
+    {
+      "id": "fetch-doc-pages",
+      "name": "Fetch Doc Pages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.clickup.com/api/v3/workspaces/761759/docs/q7wz-1219/pages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "content_format",
+              "value": "text/md"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Form Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Doc Pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

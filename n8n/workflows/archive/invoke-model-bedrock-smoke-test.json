@@ -1,0 +1,82 @@
+{
+  "name": "Invoke Model (Bedrock smoke test)",
+  "active": false,
+  "nodes": [
+    {
+      "id": "form-trigger",
+      "name": "Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [0, 300],
+      "webhookId": "f1dd1f1a-1716-4356-a18b-70a37c294180",
+      "parameters": {
+        "formTitle": "Bedrock Smoke Test",
+        "formDescription": "Fire to send one fixed prompt to Bedrock Claude via the native node.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "go",
+              "requiredField": false
+            }
+          ]
+        },
+        "responseMode": "lastNode"
+      }
+    },
+    {
+      "id": "llm-chain",
+      "name": "Basic LLM Chain",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [240, 300],
+      "parameters": {
+        "promptType": "define",
+        "text": "Reply with exactly: OK"
+      }
+    },
+    {
+      "id": "bedrock-model",
+      "name": "AWS Bedrock Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
+      "typeVersion": 1.1,
+      "position": [240, 520],
+      "parameters": {
+        "modelSource": "inferenceProfile",
+        "model": "eu.anthropic.claude-sonnet-4-6"
+      },
+      "credentials": {
+        "aws": {
+          "id": "8TDwsQAJFkSWUEJF",
+          "name": "AWS (IAM) account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Form Trigger": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AWS Bedrock Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
