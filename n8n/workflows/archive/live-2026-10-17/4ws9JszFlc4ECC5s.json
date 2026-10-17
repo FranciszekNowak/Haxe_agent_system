@@ -1,0 +1,127 @@
+{
+  "updatedAt": "2026-06-03T07:19:40.207Z",
+  "createdAt": "2026-06-03T06:26:09.943Z",
+  "id": "4ws9JszFlc4ECC5s",
+  "name": "Invoke Model (Bedrock smoke test)",
+  "description": null,
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "form-trigger",
+      "name": "Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "formTitle": "Bedrock Smoke Test",
+        "formDescription": "Fire to send one fixed prompt to Bedrock Claude via the native node.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "go",
+              "requiredField": false
+            }
+          ]
+        },
+        "responseMode": "lastNode"
+      },
+      "webhookId": "f1dd1f1a-1716-4356-a18b-70a37c294180"
+    },
+    {
+      "id": "llm-chain",
+      "name": "Basic LLM Chain",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "Reply with exactly: OK"
+      }
+    },
+    {
+      "id": "bedrock-model",
+      "name": "AWS Bedrock Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        520
+      ],
+      "parameters": {
+        "modelSource": "inferenceProfile",
+        "model": "eu.anthropic.claude-sonnet-4-6"
+      },
+      "credentials": {
+        "aws": {
+          "id": "8TDwsQAJFkSWUEJF",
+          "name": "AWS (IAM) account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Form Trigger": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AWS Bedrock Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "da676ebb-0929-49c6-8cff-ccaa5f6309c9",
+  "activeVersionId": null,
+  "versionCounter": 11,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-03T06:26:09.943Z",
+      "createdAt": "2026-06-03T06:26:09.943Z",
+      "role": "workflow:owner",
+      "workflowId": "4ws9JszFlc4ECC5s",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

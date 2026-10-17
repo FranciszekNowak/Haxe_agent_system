@@ -1,0 +1,536 @@
+{
+  "updatedAt": "2026-08-07T14:47:49.281Z",
+  "createdAt": "2026-08-07T08:47:42.780Z",
+  "id": "z9ipv6yYa1wQJN5x",
+  "name": "Flow: Status Dictionary Sync",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "sched",
+      "name": "Weekly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -460,
+        0
+      ],
+      "notes": "Monday 05:00, two hours before the Monday email so the dictionary is fresh when it runs.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 5,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "startrun",
+      "name": "Start Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -240,
+        0
+      ],
+      "notes": "Opens the sync_runs row FIRST. A run that dies mid-way leaves finished_at null, which is what the freshness dead-man's-switch looks for. statuses_before is the first-run guard: on run one every status is new, and 60+ WARNs would train everyone to ignore the channel.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into flow.sync_runs (job, started_at)\nvalues ('status_dictionary', now())\nreturning run_id, (select count(*) from flow.statuses) as statuses_before;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "spaceslive",
+      "name": "Get Spaces Live",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -20,
+        -100
+      ],
+      "notes": "Uses `Flow ClickUp`, the credential this repository OWNS, pinned as flow_clickup_credential_id in contracts/agent-system.md and asserted by check-contract.mjs. It used to borrow the agent system's `ClickUp account`; Block 4 found that credential is a different ClickUp user which cannot see two of the workspace's spaces, so this walk had a horizon nobody had measured. ADR-007.",
+      "parameters": {
+        "url": "https://api.clickup.com/api/v2/team/761759/space",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "archived",
+              "value": "false"
+            }
+          ]
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "v1T1NVCSPHhMzl7X",
+          "name": "Flow ClickUp"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "spacesarch",
+      "name": "Get Spaces Archived",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -20,
+        100
+      ],
+      "notes": "NOT optional: it found 2 archived spaces holding 15 statuses, including a decision queue, that archived=false does not return (CRM i HelpDesk 42414302, Rozrachunki 90121087901). It does NOT close every gap. Two spaces hold tasks and appear in NEITHER listing: 769349 is private and returns ACCESS_015 to this token (45 tasks, and probably where the alerts task lives), and 90120686353 is Franciszek's personal space, which the team space endpoint omits entirely (3 tasks). Those 48 tasks resolve to a null to_status_id and surface through status_events_unresolved_idx rather than failing silently.",
+      "parameters": {
+        "url": "https://api.clickup.com/api/v2/team/761759/space",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "archived",
+              "value": "true"
+            }
+          ]
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "v1T1NVCSPHhMzl7X",
+          "name": "Flow ClickUp"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "mergespaces",
+      "name": "Merge Spaces",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        200,
+        0
+      ],
+      "notes": "Append, not combine. Live and archived space lists are disjoint sets, not two halves of one record.",
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 2
+      }
+    },
+    {
+      "id": "splitspaces",
+      "name": "Split Spaces",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        420,
+        0
+      ],
+      "parameters": {
+        "fieldToSplitOut": "spaces",
+        "options": {}
+      }
+    },
+    {
+      "id": "trim",
+      "name": "Keep Id Name Statuses",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        640,
+        0
+      ],
+      "notes": "Drops members, features and the rest of the space payload. Only these three fields reach the database, so execution data stays small and no member PII is embedded in a SQL string.",
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "id",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "name",
+              "value": "={{ $json.name }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "statuses",
+              "value": "={{ $json.statuses }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "agg",
+      "name": "Aggregate Spaces",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        860,
+        0
+      ],
+      "notes": "Collapses every space into ONE item so the upsert below is a single set-based statement rather than 60-odd round trips. Exactly one incoming connection, deliberately: an aggregator with several inputs runs once per input and silently drops the other branches' items.",
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "data",
+        "options": {}
+      }
+    },
+    {
+      "id": "upsert",
+      "name": "Upsert Statuses",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1080,
+        0
+      ],
+      "notes": "The payload is embedded with a dollar-quoted tag rather than n8n's Query Parameters, because that option splits its value on commas and JSON is full of them. $payload$ cannot appear inside JSON, so the quoting is safe. is_decision_queue is set by NAME match, not a hard-coded list of ids: Block 0 found twelve czeka-na-akcept ids across twelve spaces, and a thirteenth space gaining the status must be covered without a code change. xmax = 0 distinguishes an insert from an update, which is how a genuinely new status is detected.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=with payload as (\n  select $payload${{ JSON.stringify($json.data) }}$payload$::jsonb as doc\n),\nsp as (\n  select jsonb_array_elements(doc) as s from payload\n),\nst as (\n  select s->>'id' as space_id, s->>'name' as space_name,\n         jsonb_array_elements(s->'statuses') as t\n  from sp\n),\ndedup as (\n  select distinct on (t->>'id')\n         t->>'id'      as status_id,\n         t->>'status'  as status_name,\n         space_id, space_name,\n         t->>'type'    as status_type,\n         nullif(t->>'orderindex','')::int as orderindex\n  from st\n  order by t->>'id'\n)\ninsert into flow.statuses\n  (status_id, status_name, space_id, space_name, status_type, orderindex, is_decision_queue, first_seen, last_seen)\nselect status_id, status_name, space_id, space_name, status_type, orderindex,\n       lower(status_name) = 'czeka na akcept',\n       now(), now()\nfrom dedup\non conflict (status_id) do update set\n  status_name       = excluded.status_name,\n  space_name        = excluded.space_name,\n  status_type       = excluded.status_type,\n  orderindex        = excluded.orderindex,\n  is_decision_queue = excluded.is_decision_queue,\n  last_seen         = now()\nreturning status_id, status_name, space_id, space_name, status_type, is_decision_queue, (xmax = 0) as is_new;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "aggres",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        -120
+      ],
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "data",
+        "options": {}
+      }
+    },
+    {
+      "id": "finish",
+      "name": "Finish Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1520,
+        -120
+      ],
+      "notes": "Only integers are interpolated here, so plain expression substitution is safe. Closing the row is what tells the freshness check the job actually completed rather than merely started.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=update flow.sync_runs\n   set finished_at = now(),\n       ok = true,\n       detail = jsonb_build_object(\n         'statuses_seen', {{ $json.data.length }},\n         'statuses_new',  {{ $json.data.filter(function (r) { return r.is_new; }).length }},\n         'decision_queue_statuses', {{ $json.data.filter(function (r) { return r.is_decision_queue; }).length }}\n       )\n where run_id = {{ $('Start Run').first().json.run_id }};",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "onlynew",
+      "name": "Only New Statuses",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        1300,
+        120
+      ],
+      "notes": "Both conditions matter. The second suppresses the first run, when every status is new by definition. A channel that gets 60 WARNs on day one is a channel nobody reads on day two.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.is_new }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $('Start Run').first().json.statuses_before }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "alert",
+      "name": "Alert New Status",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1520,
+        120
+      ],
+      "notes": "Routed through the Post Alert (v1) seam by pinned id, never posting to ClickUp directly, so the alert channel stays swappable. source carries the flow/ prefix because that is the only thing in the rendered comment telling a reader which of the two systems raised it. Polish, matching the existing channel. details is a STRING: the seam declares it as one and an object would render as [object Object].\n\nRouted through Flow: Post Alert (gated) rather than calling Post Alert (v1) directly, and onError is continueRegularOutput. Both are fixes for the 2026-08-07 cascade: Post Alert writes a ClickUp comment, so it is rate-limited by the same bucket an alert storm saturates, and without onError its 429 propagated back through this node and failed the whole run — which made n8n call Error Handler (v1), which called Post Alert again. 96 events became 192 failed alert executions and nothing delivered. CLAUDE.md already required this: a degradation alert must not break the main path.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "v1xd2oTRlIvCim4M",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "flow/status-dictionary",
+            "message": "=Nowy status w ClickUp: \"{{ $json.status_name }}\" w przestrzeni {{ $json.space_name }}. Sprawdz, czy to kolejka decyzyjna.",
+            "details": "=status_id={{ $json.status_id }} | nazwa={{ $json.status_name }} | przestrzen={{ $json.space_name }} ({{ $json.space_id }}) | typ={{ $json.status_type }} | is_decision_queue ustawiono na {{ $json.is_decision_queue }}. Jesli to kolejka akceptacji a flaga jest false, ustaw ja recznie: update flow.statuses set is_decision_queue = true where status_id = '{{ $json.status_id }}';",
+            "alert_key": "flow/status-dictionary:new-status",
+            "list_id": ""
+          }
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Weekly Schedule": {
+      "main": [
+        [
+          {
+            "node": "Start Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Run": {
+      "main": [
+        [
+          {
+            "node": "Get Spaces Live",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Spaces Archived",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Spaces Live": {
+      "main": [
+        [
+          {
+            "node": "Merge Spaces",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Spaces Archived": {
+      "main": [
+        [
+          {
+            "node": "Merge Spaces",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Spaces": {
+      "main": [
+        [
+          {
+            "node": "Split Spaces",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Spaces": {
+      "main": [
+        [
+          {
+            "node": "Keep Id Name Statuses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep Id Name Statuses": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Spaces",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Spaces": {
+      "main": [
+        [
+          {
+            "node": "Upsert Statuses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Statuses": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Only New Statuses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Finish Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Only New Statuses": {
+      "main": [
+        [
+          {
+            "node": "Alert New Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": {
+    "node:Weekly Schedule": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "1b2b6f60-cade-4944-8c1b-622b60d5d1d4",
+  "activeVersionId": "1b2b6f60-cade-4944-8c1b-622b60d5d1d4",
+  "versionCounter": 7,
+  "triggerCount": 1,
+  "tags": [
+    {
+      "updatedAt": "2026-08-07T08:47:56.370Z",
+      "createdAt": "2026-08-07T08:47:56.370Z",
+      "id": "DXFc9QNvYvnQxnPd",
+      "name": "flow"
+    }
+  ],
+  "shared": [
+    {
+      "updatedAt": "2026-08-07T08:47:42.780Z",
+      "createdAt": "2026-08-07T08:47:42.780Z",
+      "role": "workflow:owner",
+      "workflowId": "z9ipv6yYa1wQJN5x",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

@@ -1,0 +1,737 @@
+{
+  "updatedAt": "2026-08-07T14:47:49.200Z",
+  "createdAt": "2026-08-07T09:43:32.970Z",
+  "id": "UxQxPKxtKCdwM6q1",
+  "name": "Flow: Reconcile",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "sched",
+      "name": "Nightly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -680,
+        0
+      ],
+      "notes": "03:30 Europe/Warsaw, chosen to sit well clear of the agent system's own scheduled work and of the 05:00 Monday dictionary sync. Registered in flow.sync_jobs with max_age_hours = 36, so one missed night warns and a late start does not.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 3,
+              "triggerAtMinute": 30
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "startrun",
+      "name": "Start Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -460,
+        0
+      ],
+      "notes": "Opens the sync_runs row FIRST and computes the window in the same statement. A run that dies mid-way leaves finished_at null, which is exactly what Flow: Sync Freshness Check looks for. The window is the last SUCCESSFUL run minus six hours, per master plan Block 3: the overlap re-reads work already seen so a transition landing between a fetch and the next run is not lost, and the ingest function is idempotent so re-reading costs nothing. With no successful run yet it falls back to 48 hours, which is the first-run case. Subqueries in RETURNING see the pre-statement snapshot, so the row being inserted here cannot become its own baseline.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into flow.sync_runs (job, started_at)\nvalues ('reconcile', now())\nreturning\n  run_id,\n  (select (extract(epoch from coalesce(max(r.started_at), now() - interval '48 hours')) - 6*3600)::bigint * 1000\n     from flow.sync_runs r where r.job = 'reconcile' and r.ok) as since_ms,\n  (select to_char(coalesce(max(r.started_at), now() - interval '48 hours') - interval '6 hours', 'YYYY-MM-DD HH24:MI')\n     from flow.sync_runs r where r.job = 'reconcile' and r.ok) as since_human,\n  (select drift_warn_threshold from flow.sync_jobs where job = 'reconcile') as drift_threshold;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "gettasks",
+      "name": "Get Changed Tasks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -240,
+        0
+      ],
+      "notes": "Same endpoint and the same scope as the one-off backfill (scripts/backfill-tasks.mjs), plus date_updated_gt. subtasks and include_closed both true, and custom_items 0 and 1, because Milestones are the project set and a walk without them misses every project.\n\nTHE WHOLE QUERY STRING IS IN THE URL, and that is not a style choice. n8n's Query Parameters collection is keyed by name, so two entries called custom_items[] collapse to one and only the LAST survives. The first version of this node was built that way and it silently reconciled ONLY Milestones: the run succeeded, sync_runs closed ok, and tasks_seen was a plausible 21 instead of the 592 it should have been. Nothing threw and nothing looked wrong. ClickUp needs the parameter repeated, so it is spelled out in the URL where nothing can deduplicate it. Verify by count, never by the node succeeding.\n\nThat rule caught a second, worse instance of the same shape on 2026-08-07. This node used to run on the BORROWED `ClickUp account` credential, which turns out to be a different ClickUp user that cannot see Logistyka-Magazyn (6,073 tasks) or Sprzedaz-PL (403) — so every run since Block 3 walked 31.7% less of the workspace than it reported, with every node green and ok = true. It now uses `Flow ClickUp`, the credential this repository owns. ADR-007 records why.\n\nPaged: ClickUp returns 100 per page and sets last_page on the final one. maxRequests 60 caps a single run at 6,000 tasks against a normal nightly churn in the low hundreds; hitting the cap means the window is wrong, so Page Cap Hit? turns that into a WARN rather than a silent truncation.",
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v2/team/761759/task?subtasks=true&include_closed=true&custom_items[]=0&custom_items[]=1&date_updated_gt={{ $json.since_ms }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "page",
+                    "value": "={{ $pageCount }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ $response.body.last_page === true || ($response.body.tasks || []).length === 0 }}",
+              "limitPagesFetched": true,
+              "maxRequests": 60
+            }
+          }
+        }
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "v1T1NVCSPHhMzl7X",
+          "name": "Flow ClickUp"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "collect",
+      "name": "Collect Pages",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        0
+      ],
+      "notes": "Flattens one item per page into ONE item holding every changed task. It exists for the empty case as much as for the merge: the HTTP node always emits at least one page item even when nothing changed, so this node always runs and always produces exactly one item, which lets Any Changes? below make a single deterministic decision. Splitting straight off the pages instead would emit zero items on a quiet night, every downstream node would be skipped, the sync_runs row would never be closed, and the freshness check would report a failure that did not happen. Exactly one incoming connection, deliberately.",
+      "parameters": {
+        "aggregate": "aggregateIndividualFields",
+        "fieldsToAggregate": {
+          "fieldToAggregate": [
+            {
+              "fieldToAggregate": "tasks",
+              "renameField": false
+            }
+          ]
+        },
+        "options": {
+          "mergeLists": true
+        }
+      }
+    },
+    {
+      "id": "anychanges",
+      "name": "Any Changes?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        200,
+        0
+      ],
+      "notes": "A quiet night is a success, not a no-op: the false branch still closes the sync_runs row. Without it the dead-man's switch could not tell 'nothing changed' from 'the job died'.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ ($json.tasks || []).length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "split",
+      "name": "Split Tasks",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        420,
+        -120
+      ],
+      "parameters": {
+        "fieldToSplitOut": "tasks",
+        "options": {}
+      }
+    },
+    {
+      "id": "trim",
+      "name": "Trim Task Fields",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        640,
+        -120
+      ],
+      "notes": "Drops description, text_content, custom_fields, watchers, tags and the rest of the ClickUp task payload. Two reasons, both real: execution data stays small on a shared instance, and no task text or assignee email is embedded in a SQL string. ONE assignment of type object rather than a dozen typed fields, because a JavaScript object literal preserves null exactly, whereas a typed string field turns a null date into an empty string and the ingest function would store '' as a parent task id. The shape is ClickUp's own nested shape, identical to trim() in scripts/backfill-tasks.mjs, so both callers hand flow.upsert_tasks_from_payload the same thing.",
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "task",
+              "type": "object",
+              "value": "={{ ({ id: $json.id, name: $json.name, custom_item_id: $json.custom_item_id, parent: $json.parent, date_created: $json.date_created, date_updated: $json.date_updated, date_done: $json.date_done, date_closed: $json.date_closed, status: $json.status ? { id: $json.status.id, status: $json.status.status, type: $json.status.type, orderindex: $json.status.orderindex } : null, list: $json.list ? { id: $json.list.id, name: $json.list.name } : null, folder: $json.folder ? { id: $json.folder.id, name: $json.folder.name } : null, space: $json.space ? { id: $json.space.id } : null, assignees: ($json.assignees || []).map(a => ({ id: a.id })) }) }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "aggtasks",
+      "name": "Aggregate Tasks",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        860,
+        -120
+      ],
+      "notes": "Collapses every task into ONE item so the upsert below is a single set-based statement rather than one round trip per task. Exactly one incoming connection, deliberately: an aggregator with several inputs runs once per input and silently drops the other branches' items.",
+      "parameters": {
+        "aggregate": "aggregateIndividualFields",
+        "fieldsToAggregate": {
+          "fieldToAggregate": [
+            {
+              "fieldToAggregate": "task",
+              "renameField": true,
+              "outputFieldName": "data"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "upsert",
+      "name": "Upsert Tasks",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1080,
+        -120
+      ],
+      "notes": "All the ingest logic lives in flow.upsert_tasks_from_payload (migration 007), not here, because the one-off backfill script does the same thing to the same three tables for the same reason. Two copies of sixty lines of SQL would drift and nothing would fail loudly. The second argument is true: unlike the backfill, reconcile has prior knowledge and so may write source='reconcile' drift events. The payload is embedded with a dollar-quoted tag rather than n8n's Query Parameters, because that option splits its value on commas and JSON is full of them; $payload$ cannot appear inside JSON, so the quoting is safe.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=select * from flow.upsert_tasks_from_payload($payload${{ JSON.stringify($json.data) }}$payload$::jsonb, true);",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "repair",
+      "name": "Repair Unresolved Events",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1080,
+        60
+      ],
+      "notes": "Required by Block 4, and it exists because of an operator decision made in Block 3: the weekly Flow: Status Dictionary Sync keeps walking spaces only and will NOT be extended to hunt folders and lists for statuses nobody is standing in. A status enters flow.statuses when a task is in it — which the upsert immediately above has just done for everything that changed tonight.\n\nThe consequence that decision leaves behind is this: the FIRST transition into a newly-adopted status reaches the webhook BEFORE the dictionary knows the status exists, so it lands with to_status_id null. The event is not lost — to_status_name is NOT NULL and to_status_type makes workflow_state derivable with no join — but until it is resolved it is invisible to any view that joins the dictionary. Without this node the first transition into every newly-adopted status would stay unattributed forever, starting with czeka na akcept, which the team has just begun using and which output 6 depends on entirely.\n\nIt runs AFTER the upsert on purpose: the dictionary must already have learned tonight's statuses. It uses flow.resolve_status_id, the same function and therefore the same most-specific-first rule the producer used, so a repair can never write an id the producer would not have written.\n\nOnly on this branch. On a night when nothing changed, this job has taught the dictionary nothing new, so a repair pass would have nothing new to resolve with.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from flow.repair_unresolved_events();",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "stillunresolved",
+      "name": "Still Unresolved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1300,
+        320
+      ],
+      "notes": "A row that is still unresolved AFTER a repair pass is a different problem from one that arrived unresolved. It is not a lagging dictionary — the dictionary has just been refreshed — it is a container nobody can read. Two are known and expected: space 769349 is private and returns ACCESS_015 to the operator's own token, and 90120686353 is a personal space the team endpoint omits entirely. Anything else is new and worth looking at.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.still_unresolved }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "unresolvedalert",
+      "name": "Alert Unresolved After Repair",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1520,
+        320
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "v1xd2oTRlIvCim4M",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "flow/reconcile",
+            "message": "=Po nocnej naprawie {{ $json.still_unresolved }} zdarzen statusu nadal nie da sie przypisac do zadnego statusu ze slownika. Te zdarzenia nie licza sie do metryk opartych na slowniku.",
+            "details": "=run_id={{ $('Start Run').first().json.run_id }} | naprawiono w tym przebiegu: {{ $json.repaired_to }} (do) / {{ $json.repaired_from }} (z) | nadal nierozwiazane: {{ $json.still_unresolved }} | {{ $json.unresolved_note }}. Slownik zostal wlasnie odswiezony, wiec to NIE jest opoznienie slownika — to kontener, ktorego nie da sie odczytac. Dwa sa znane i oczekiwane: przestrzen 769349 (prywatna, ACCESS_015) i 90120686353 (przestrzen osobista, pomijana przez /team/{id}/space). Jesli w tresci sa inne listy, sprawdz: select task_id, list_id, to_status_name, occurred_at from flow.status_events where to_status_id is null order by occurred_at desc limit 20;",
+            "alert_key": "flow/reconcile:unresolved-after-repair",
+            "list_id": ""
+          }
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput",
+      "notes": "\n\nRouted through Flow: Post Alert (gated) rather than calling Post Alert (v1) directly, and onError is continueRegularOutput. Both are fixes for the 2026-08-07 cascade: Post Alert writes a ClickUp comment, so it is rate-limited by the same bucket an alert storm saturates, and without onError its 429 propagated back through this node and failed the whole run — which made n8n call Error Handler (v1), which called Post Alert again. 96 events became 192 failed alert executions and nothing delivered. CLAUDE.md already required this: a degradation alert must not break the main path."
+    },
+    {
+      "id": "finish",
+      "name": "Finish Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1300,
+        -220
+      ],
+      "notes": "Closing the row is what tells the freshness check the job completed rather than merely started. Only integers and one to_char'd timestamp are interpolated, so plain expression substitution is safe. The counts are read off $('Upsert Tasks') by name rather than off $json, because Repair Unresolved Events now sits between the two and $json is its output.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=update flow.sync_runs\n   set finished_at = now(),\n       ok = true,\n       detail = jsonb_build_object(\n         'tasks_seen',       {{ $('Upsert Tasks').first().json.tasks_seen }},\n         'tasks_new',        {{ $('Upsert Tasks').first().json.tasks_new }},\n         'lists_new',        {{ $('Upsert Tasks').first().json.lists_new }},\n         'statuses_new',     {{ $('Upsert Tasks').first().json.statuses_new }},\n         'drift_events',     {{ $('Upsert Tasks').first().json.drift_events }},\n         'repaired_to',      {{ $json.repaired_to }},\n         'repaired_from',    {{ $json.repaired_from }},\n         'still_unresolved', {{ $json.still_unresolved }},\n         'pages_fetched',    {{ $('Get Changed Tasks').all().length }},\n         'since',            '{{ $('Start Run').first().json.since_human }}'\n       )\n where run_id = {{ $('Start Run').first().json.run_id }};",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "finishempty",
+      "name": "Finish Run No Changes",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        420,
+        140
+      ],
+      "notes": "A separate terminal rather than a shared one, because the successful branch's detail references $('Upsert Tasks'), which does not exist on this path and would evaluate to an error rather than to zero.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=update flow.sync_runs\n   set finished_at = now(),\n       ok = true,\n       detail = jsonb_build_object(\n         'tasks_seen', 0,\n         'note', 'no tasks changed in the window',\n         'since', '{{ $('Start Run').first().json.since_human }}'\n       )\n where run_id = {{ $('Start Run').first().json.run_id }};",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "driftif",
+      "name": "Drift Above Threshold?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1300,
+        -40
+      ],
+      "notes": "The proactive half of this workflow's alerting. Reconcile repairing a handful of transitions a night is the system working; repairing many means the webhook is dropping them and the nightly estimate is carrying metrics that are supposed to be observed. The threshold is data (flow.sync_jobs.drift_warn_threshold), read by Start Run, so tuning it is an update statement rather than a workflow edit.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Upsert Tasks').first().json.drift_events }}",
+              "rightValue": "={{ $('Start Run').first().json.drift_threshold }}",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "driftalert",
+      "name": "Alert Drift",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1520,
+        -40
+      ],
+      "notes": "Routed through the Post Alert (v1) seam by pinned id, never posting to ClickUp directly, so the alert channel stays swappable. source carries the flow/ prefix because that is the only thing in the rendered comment telling a reader which of the two systems raised it. Polish, matching the existing channel. details is a STRING: the seam declares it as one and an object would render as [object Object].\n\nRouted through Flow: Post Alert (gated) rather than calling Post Alert (v1) directly, and onError is continueRegularOutput. Both are fixes for the 2026-08-07 cascade: Post Alert writes a ClickUp comment, so it is rate-limited by the same bucket an alert storm saturates, and without onError its 429 propagated back through this node and failed the whole run — which made n8n call Error Handler (v1), which called Post Alert again. 96 events became 192 failed alert executions and nothing delivered. CLAUDE.md already required this: a degradation alert must not break the main path.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "v1xd2oTRlIvCim4M",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "flow/reconcile",
+            "message": "=Nocna rekoncyliacja naprawila {{ $('Upsert Tasks').first().json.drift_events }} zmian statusu. To znaczy, ze webhook gubi zdarzenia i metryki opieraja sie na szacunkach zamiast na obserwacji.",
+            "details": "=run_id={{ $('Start Run').first().json.run_id }} | zdarzen source=reconcile: {{ $('Upsert Tasks').first().json.drift_events }} | prog: {{ $('Start Run').first().json.drift_threshold }} | zadan przejrzanych: {{ $('Upsert Tasks').first().json.tasks_seen }} | okno od {{ $('Start Run').first().json.since_human }}. Sprawdz workflow Flow: CU Status Producer i webhook ClickUp na /webhook/cu-status: ClickUp wiaze webhook z kontem, ktore go utworzylo, i kasuje endpoint po okolo stu bledach z rzedu. Prog zmienisz przez: update flow.sync_jobs set drift_warn_threshold = <n> where job = 'reconcile';",
+            "alert_key": "flow/reconcile:drift",
+            "list_id": ""
+          }
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "capif",
+      "name": "Page Cap Hit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1300,
+        140
+      ],
+      "notes": "Covers a silent degradation rather than a failure. If paging stopped because it hit maxRequests instead of because ClickUp said last_page, the run truncated its own input and still reported ok. Nothing throws, the row closes, and the missing tasks look like tasks that simply did not change.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Get Changed Tasks').all().length }}",
+              "rightValue": 60,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "capalert",
+      "name": "Alert Page Cap",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1520,
+        140
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "v1xd2oTRlIvCim4M",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "flow/reconcile",
+            "message": "=Rekoncyliacja osiagnela limit stron (60). Czesc zmienionych zadan mogla NIE zostac pobrana, a przebieg mimo to zakonczyl sie sukcesem.",
+            "details": "=run_id={{ $('Start Run').first().json.run_id }} | stron pobranych: {{ $('Get Changed Tasks').all().length }} (limit 60 = 6000 zadan) | zadan przetworzonych: {{ $('Upsert Tasks').first().json.tasks_seen }} | okno od {{ $('Start Run').first().json.since_human }}. Normalna nocna zmiennosc to setki zadan, wiec limit oznacza zle okno albo masowa edycje w ClickUp. Uruchom recznie node scripts/backfill-tasks.mjs, zeby domknac luke, i sprawdz czy poprzedni udany przebieg nie jest sprzed wielu dni.",
+            "alert_key": "flow/reconcile:page-cap",
+            "list_id": ""
+          }
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput",
+      "notes": "\n\nRouted through Flow: Post Alert (gated) rather than calling Post Alert (v1) directly, and onError is continueRegularOutput. Both are fixes for the 2026-08-07 cascade: Post Alert writes a ClickUp comment, so it is rate-limited by the same bucket an alert storm saturates, and without onError its 429 propagated back through this node and failed the whole run — which made n8n call Error Handler (v1), which called Post Alert again. 96 events became 192 failed alert executions and nothing delivered. CLAUDE.md already required this: a degradation alert must not break the main path."
+    }
+  ],
+  "connections": {
+    "Nightly Schedule": {
+      "main": [
+        [
+          {
+            "node": "Start Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Run": {
+      "main": [
+        [
+          {
+            "node": "Get Changed Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Changed Tasks": {
+      "main": [
+        [
+          {
+            "node": "Collect Pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Pages": {
+      "main": [
+        [
+          {
+            "node": "Any Changes?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Changes?": {
+      "main": [
+        [
+          {
+            "node": "Split Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Finish Run No Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Tasks": {
+      "main": [
+        [
+          {
+            "node": "Trim Task Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trim Task Fields": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Tasks": {
+      "main": [
+        [
+          {
+            "node": "Upsert Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Tasks": {
+      "main": [
+        [
+          {
+            "node": "Repair Unresolved Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Repair Unresolved Events": {
+      "main": [
+        [
+          {
+            "node": "Finish Run",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Drift Above Threshold?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Page Cap Hit?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Still Unresolved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still Unresolved?": {
+      "main": [
+        [
+          {
+            "node": "Alert Unresolved After Repair",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drift Above Threshold?": {
+      "main": [
+        [
+          {
+            "node": "Alert Drift",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Page Cap Hit?": {
+      "main": [
+        [
+          {
+            "node": "Alert Page Cap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "timezone": "Europe/Warsaw",
+    "executionOrder": "v1"
+  },
+  "staticData": {
+    "node:Nightly Schedule": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "2a407e50-fde0-4e90-8449-9c8414d4f0ec",
+  "activeVersionId": "2a407e50-fde0-4e90-8449-9c8414d4f0ec",
+  "versionCounter": 14,
+  "triggerCount": 1,
+  "tags": [
+    {
+      "updatedAt": "2026-08-07T08:47:56.370Z",
+      "createdAt": "2026-08-07T08:47:56.370Z",
+      "id": "DXFc9QNvYvnQxnPd",
+      "name": "flow"
+    }
+  ],
+  "shared": [
+    {
+      "updatedAt": "2026-08-07T09:43:32.970Z",
+      "createdAt": "2026-08-07T09:43:32.970Z",
+      "role": "workflow:owner",
+      "workflowId": "UxQxPKxtKCdwM6q1",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

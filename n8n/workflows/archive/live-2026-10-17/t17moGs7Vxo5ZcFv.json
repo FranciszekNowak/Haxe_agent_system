@@ -1,0 +1,1805 @@
+{
+  "updatedAt": "2026-06-30T12:03:37.758Z",
+  "createdAt": "2026-06-09T15:42:06.917Z",
+  "id": "t17moGs7Vxo5ZcFv",
+  "name": "Post Reply (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "completion"
+            },
+            {
+              "name": "model"
+            },
+            {
+              "name": "cost_pln"
+            },
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "reviewer_user_id"
+            },
+            {
+              "name": "triggering_comment_id"
+            },
+            {
+              "name": "web_sources"
+            },
+            {
+              "name": "image_manifest"
+            },
+            {
+              "name": "rendered_delta"
+            },
+            {
+              "name": "image_models"
+            },
+            {
+              "name": "total_image_cost_pln"
+            },
+            {
+              "name": "doc_attachments"
+            },
+            {
+              "name": "session_id"
+            },
+            {
+              "name": "surface"
+            },
+            {
+              "name": "surface_ref"
+            },
+            {
+              "name": "output_blocks_json"
+            }
+          ]
+        }
+      },
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -80,
+        208
+      ],
+      "notes": "Inputs: model output (completion, model, cost_pln) + routing fields (clickup_task_id, reviewer_user_id, triggering_comment_id, web_sources)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "s1",
+              "leftValue": "={{ $('When Called').first().json.triggering_comment_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "is-mention",
+      "name": "Is @mention?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        400,
+        208
+      ],
+      "notes": "True (triggering_comment_id set) -> reply in-thread. False (autonomous trigger) -> new top-level comment."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/comment/{{ $('When Called').first().json.triggering_comment_id }}/reply",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ comment: $json.ops, notify_all: false }) }}",
+        "options": {}
+      },
+      "id": "post-reply",
+      "name": "Post Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        672,
+        128
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Reply path for @mention triggers. onError=continueErrorOutput -> Alert Reply Failed, then fallback to Post Draft Comment."
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "post-reply/thread-reply",
+            "message": "Nie udało się odpowiedzieć w wątku — fallback na nowy komentarz najwyższego poziomu.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; triggering_comment={{ $('When Called').first().json.triggering_comment_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "details",
+              "displayName": "details",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "alert-reply-failed",
+      "name": "Alert Reply Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        864,
+        -224
+      ],
+      "notes": "WARN when replying in-thread fails. Run continues via Post Draft Comment fallback."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}/comment",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ comment: $json.ops, notify_all: false }) }}",
+        "options": {}
+      },
+      "id": "post-draft-comment",
+      "name": "Post Draft Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        672,
+        304
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Posts agent output as a new top-level comment. Used for autonomous triggers or as Post Reply fallback."
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "post-reply/post-back",
+            "message": "Nie udało się opublikować wersji roboczej (komentarza) na zadaniu CU.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; reviewer={{ $('When Called').first().json.reviewer_user_id }}; orphaned_attachments={{ $('Rewrite Delta').isExecuted ? JSON.stringify($('Rewrite Delta').first().json.attachment_ids) : '[]' }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "details",
+              "displayName": "details",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "alert-postback-failed",
+      "name": "Alert Post-back Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        880,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}/field/30130652-01c2-451b-954a-c36a455790fe",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ value: '6fcac9a5-0a76-4f9e-a92a-a2a34c60d794' }) }}",
+        "options": {}
+      },
+      "id": "set-status-zakonczono",
+      "name": "Set Status Zakonczono",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1104,
+        176
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Sets [AI] Status agenta -> 'Zakończono' after draft comment is posted."
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "post-reply/status",
+            "message": "Nie udało się zaktualizować pola CU '[AI] Status agenta' na Zakończono.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "details",
+              "displayName": "details",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "alert-status-failed",
+      "name": "Alert Status Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1344,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with target as (\n  select id from agent_runs where clickup_task_id = $1 order by id desc limit 1\n), upd as (\n  update agent_runs set clickup_comment_id = $2, run_payload_bytes = $3, n8n_execution_id = $4, clickup_attachment_ids = $5::jsonb\n  where id = (select id from target)\n  returning id\n)\nselect (select id from target) as target_id, (select count(*) from upd)::int as updated;",
+        "options": {
+          "queryReplacement": "={{ [ $('When Called').first().json.clickup_task_id, ($('Post Draft Comment').isExecuted && $('Post Draft Comment').first().json.id) ? $('Post Draft Comment').first().json.id : ($('Post Reply').isExecuted ? $('Post Reply').first().json.id : ''), $('Finalize Comment').isExecuted ? $('Finalize Comment').first().json.run_payload_bytes : null, $execution.id, JSON.stringify([].concat($('Rewrite Delta').isExecuted ? ($('Rewrite Delta').first().json.attachment_ids || []) : [], $('Append Doc Ops').isExecuted ? ($('Append Doc Ops').first().json.doc_attachment_ids || []) : [])) ] }}"
+        }
+      },
+      "id": "record-artifact",
+      "name": "Record Artifact",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1328,
+        576
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "ADR-044 erasure-readiness: writes the posted ClickUp comment id onto the task's latest agent_runs row. Side branch off Set Status success — cannot affect the already-complete reply/status. CTE always returns one row (target_id, updated 0/1) so a 0-row UPDATE is detectable, not a silent 0-item drop. Block 10: also records run_payload_bytes + n8n_execution_id. Block 7 ($5): clickup_attachment_ids = jsonb array combining inline image attachment ids (Rewrite Delta) + office-doc task attachment ids (Append Doc Ops) so an erasure request can delete the ClickUp artifacts this run created. Reuses the sanctioned post-delivery UPDATE (no second agent_runs writer)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "r1",
+              "leftValue": "={{ $json.updated }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "recorded",
+      "name": "Recorded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1552,
+        496
+      ],
+      "notes": "True: clickup_comment_id written (updated=1) -> done. False: no matching agent_runs row (updated=0) -> WARN."
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "post-reply/record-artifact",
+            "message": "Nie zapisano clickup_comment_id na agent_runs (obserwowalność/erasure-readiness; odpowiedź i status zostały dostarczone).",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; target_id={{ $('Record Artifact').first().json.target_id || 'null' }}; updated={{ $('Record Artifact').first().json.updated }}; err={{ ($json.error && (($json.error.message) || $json.error)) || 'none' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "details",
+              "displayName": "details",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "alert-record-artifact",
+      "name": "Alert Record Artifact",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1760,
+        752
+      ],
+      "notes": "WARN when the comment-id write found no row or errored. Defense-in-depth: a missing run row is also alerted upstream by Log Model Run. Posts to the Alerts task (disjoint from the answer task) so no webhook loop; does not block reply/status."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "h1",
+              "leftValue": "={{ Array.isArray($('When Called').first().json.image_manifest) ? $('When Called').first().json.image_manifest.length > 0 : (typeof $('When Called').first().json.image_manifest === 'string' && $('When Called').first().json.image_manifest.trim() !== '' && $('When Called').first().json.image_manifest.trim() !== '[]') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "has-images",
+      "name": "Has Images?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        80,
+        208
+      ],
+      "notes": "True: image_manifest non-empty -> in-memory base64 image path. False: text-only path (Build Comment), unchanged from pre-Block-10."
+    },
+    {
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nlet manifest = wc.image_manifest;\nif (typeof manifest === 'string') { try { manifest = JSON.parse(manifest || '[]'); } catch (e) { manifest = []; } }\nif (!Array.isArray(manifest)) manifest = [];\nconst out = [];\nfor (const m of manifest) {\n  out.push({ json: { b64: m.b64 || '', mime: m.mime || 'image/png', placeholder_id: m.placeholder_id, caption: m.caption || '', alt: m.alt || '' } });\n}\nreturn out;"
+      },
+      "id": "parse-manifest",
+      "name": "Parse Manifest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        304,
+        -80
+      ],
+      "notes": "Parses image_manifest (base64 entries: {placeholder_id,b64,mime,caption,alt}) -> one item per image. In-memory (Option A); no disk."
+    },
+    {
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "b64",
+        "options": {
+          "fileName": "={{ ($json.placeholder_id || 'image') }}.png",
+          "mimeType": "={{ $json.mime || 'image/png' }}"
+        }
+      },
+      "id": "to-binary",
+      "name": "To Binary",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        480,
+        -80
+      ],
+      "notes": "Decodes each manifest base64 string into binary \"data\" for multipart upload. No file ever touches disk."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}/attachment",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "attachment",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "upload-att",
+      "name": "Upload Attachment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        864,
+        -80
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Uploads each decoded image to the task -> {id,url}. onError=continueRegularOutput so a failed upload still flows in order (Aggregate substitutes [obraz niedostępny] + WARN)."
+    },
+    {
+      "parameters": {
+        "jsCode": "const manifest = $('Parse Manifest').all().map(i => i.json);\nconst uploads = items.map(i => i.json);\nconst map = {};\nlet failed = 0;\nfor (let i = 0; i < manifest.length; i++) {\n  const ph = manifest[i].placeholder_id;\n  const up = uploads[i];\n  if (up && up.id && up.url) { map[ph] = { id: up.id, url: up.url }; }\n  else { failed++; }\n}\nconst attachment_ids = Object.values(map).map(v => v.id);\nreturn [{ json: { upload_map: map, attachment_ids, failed_count: failed } }];"
+      },
+      "id": "aggregate-uploads",
+      "name": "Aggregate Uploads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1088,
+        -80
+      ],
+      "notes": "Correlates uploads to manifest by order (1:1). Emits upload_map placeholder_id->{id,url}, attachment_ids, failed_count. One incoming connection only (CLAUDE.md aggregator trap)."
+    },
+    {
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nlet ops = wc.rendered_delta;\nif (typeof ops === 'string') { try { ops = JSON.parse(ops || '[]'); } catch (e) { ops = []; } }\nif (!Array.isArray(ops)) ops = [];\nconst agg = $('Aggregate Uploads').first().json;\nconst map = agg.upload_map || {};\nconst out = [];\nconst reviewer = Number(wc.reviewer_user_id);\nif (reviewer) { out.push({ type: 'tag', user: { id: reviewer } }); out.push({ text: '\\n' }); }\nfor (const op of ops) {\n  if (op && op.type === 'image_ref') {\n    const m = map[op.placeholder_id];\n    if (m && m.id) out.push({ type: 'attachment', attachment: { id: m.id, url: m.url } });\n    else out.push({ text: '[obraz niedostępny]\\n', attributes: { italic: true } });\n  } else {\n    out.push(op);\n  }\n}\nreturn [{ json: { ops: out, attachment_ids: agg.attachment_ids || [], failed_count: agg.failed_count || 0 } }];"
+      },
+      "id": "rewrite-delta",
+      "name": "Rewrite Delta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1312,
+        0
+      ],
+      "notes": "Rewrites {type:image_ref,placeholder_id} -> {type:attachment,attachment:{id,url}} (the ClickUp inline-image op proven in the Block 10 spike). Missing upload -> [obraz niedostępny]."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "u1",
+              "leftValue": "={{ $json.failed_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "uploads-failed",
+      "name": "Uploads Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1312,
+        -208
+      ],
+      "notes": "True: >=1 image upload failed -> WARN (side branch, non-blocking). The comment still posts with [obraz niedostępny] in place of failed images."
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "post-reply/image-upload",
+            "message": "Nie udało się przesłać co najmniej jednego obrazu do ClickUp — komentarz publikuje się z zastępnikiem [obraz niedostępny].",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; failed_count={{ $json.failed_count }}; uploaded={{ JSON.stringify($json.attachment_ids) }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "details",
+              "displayName": "details",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "alert-upload-failed",
+      "name": "Alert Upload Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1536,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const wc = $('When Called').first().json;\nconst ops = Array.isArray($json.ops) ? $json.ops : [];\nlet manifest = wc.image_manifest;\nif (typeof manifest === 'string') { try { manifest = JSON.parse(manifest || '[]'); } catch (e) { manifest = []; } }\nif (!Array.isArray(manifest)) manifest = [];\n\n// Attribution footer (Block 11): name model per modality (text + image) + aggregate cost.\nconst textModel = wc.model || '—';\nlet imgModels = wc.image_models;\nif (typeof imgModels === 'string') { try { imgModels = JSON.parse(imgModels); } catch (e) { imgModels = imgModels ? [imgModels] : []; } }\nimgModels = Array.isArray(imgModels) ? imgModels.filter(Boolean) : [];\nconst totalCost = (Number(wc.cost_pln || 0) + Number(wc.total_image_cost_pln || 0)).toFixed(4);\nconst attribution = imgModels.length\n  ? ('Przygotowane przez agenta AI (tekst: ' + textModel + ', obraz: ' + imgModels.join(', ') + '; koszt łączny: ' + totalCost + ' PLN). Do weryfikacji — nie finalizuje zadania.')\n  : ('Przygotowane przez agenta AI (model: ' + textModel + ', koszt: ' + totalCost + ' PLN). Do weryfikacji — nie finalizuje zadania.');\nconst out = ops.slice();\nlet webSources = [];\ntry { const raw = wc.web_sources; webSources = Array.isArray(raw) ? raw : (raw ? JSON.parse(raw) : []); } catch(e) {}\nif (webSources.length) {\n  out.push({ text: 'Źródła' });\n  out.push({ text: '\\n', attributes: { header: 2 } });\n  for (const s of webSources) {\n    out.push({ text: (s.title || s.url), attributes: { link: s.url } });\n    out.push({ text: '\\n', attributes: { list: 'bullet' } });\n  }\n}\nout.push({ text: '\\n—\\n' });\nout.push({ text: attribution, attributes: { italic: true } });\nout.push({ text: '\\n' });\nconst payloadStr = JSON.stringify({ rendered_comment: out, image_manifest: manifest });\nlet bytes;\ntry { bytes = Buffer.byteLength(payloadStr, 'utf8'); } catch (e) { bytes = payloadStr.length; }\nconst fmt = bytes >= 1048576 ? (bytes / 1048576).toFixed(2).replace('.', ',') + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB';\nout.push({ text: '\\nrozmiar danych przebiegu: ' + fmt + '\\n', attributes: { italic: true } });\nconst sp = (() => { try { return $('Get Spend Status').first().json || {}; } catch(e){ return {}; } })();\nif (sp && sp.warn) {\n  const uPct = Math.round(Number(sp.user_ratio||0)*100), cPct = Math.round(Number(sp.company_ratio||0)*100);\n  const uStr = '⚠️ Wykorzystano ' + uPct + '% Twojego dziennego limitu wydatków (' + Number(sp.user_spend||0).toFixed(2) + ' / ' + Number(sp.user_limit||0).toFixed(2) + ' PLN).';\n  const cStr = '⚠️ Wykorzystano ' + cPct + '% firmowego dziennego limitu wydatków (' + Number(sp.company_spend||0).toFixed(2) + ' / ' + Number(sp.company_limit||0).toFixed(2) + ' PLN).';\n  if (sp.warn_reason === 'company') out.push({ text: '\\n' + cStr + '\\n', attributes: { italic: true } });\n  else if (sp.warn_reason === 'both') out.push({ text: '\\n' + uStr + '\\n' + cStr + '\\n', attributes: { italic: true } });\n  else out.push({ text: '\\n' + uStr + '\\n', attributes: { italic: true } });\n}\nreturn { json: { ops: out, run_payload_bytes: bytes, attachment_ids: $json.attachment_ids || [] } };"
+      },
+      "id": "finalize-comment",
+      "name": "Finalize Comment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1616,
+        288
+      ],
+      "notes": "Converges text + image paths. Computes run_payload_bytes = UTF-8 bytes of {rendered_comment,image_manifest} (proxy/lower-bound for execution-data weight; recorded for ALL runs) and appends the Polish size footer line. runOnceForEachItem avoids the multi-incoming aggregator trap."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Block 12: no-upload delta path (manifest empty: text-only or embed-only result).\n// Uses the resolver's rendered_delta directly; prepends the reviewer @-mention (parity with\n// Build Comment / Rewrite Delta). image_ref ops are not expected here (those imply a manifest),\n// but are handled defensively.\nconst wc = $('When Called').first().json;\nlet ops = wc.rendered_delta;\nif (typeof ops === 'string') { try { ops = JSON.parse(ops || '[]'); } catch (e) { ops = []; } }\nif (!Array.isArray(ops)) ops = [];\nconst out = [];\nconst reviewer = Number(wc.reviewer_user_id);\nif (reviewer) { out.push({ type: 'tag', user: { id: reviewer } }); out.push({ text: '\\n' }); }\nfor (const op of ops) {\n  if (op && op.type === 'image_ref') { out.push({ text: '[obraz niedostępny]\\n', attributes: { italic: true } }); }\n  else { out.push(op); }\n}\nreturn [{ json: { ops: out, attachment_ids: [], failed_count: 0 } }];"
+      },
+      "id": "7db4ac78-cf8f-4ff7-aaa5-5f1ab3903baa",
+      "name": "Pass Delta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d1",
+              "leftValue": "={{ (function(){ let d=$('When Called').first().json.doc_attachments; if(typeof d==='string'){ try{ d=JSON.parse(d||'[]'); }catch(e){ d=[]; } } return Array.isArray(d) && d.length>0; })() }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5ca58416-03fc-4d8a-aa0c-14e59b04003c",
+      "name": "Has Docs?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1744,
+        368
+      ],
+      "notes": "True: doc_attachments non-empty -> office-doc delivery branch (download from Files API, validate, upload to ClickUp task attachment). False: no docs -> straight to Is @mention? (unchanged text/image path). Office-doc OUTPUT files are downloadable from the Files API (Block 0), unlike images. doc_attachments + session_id come from Execute Agent Session's doc_files (Block 8 wiring); the bare lane never sets them so this stays false there."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_anthropic_key() as key;",
+        "options": {}
+      },
+      "id": "0b1ca021-e661-405c-bea7-a2ce8ff1637d",
+      "name": "Get Doc Key",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1968,
+        352
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "notes": "Reads the anthropic_api_key Vault secret via SECURITY DEFINER getter public.get_anthropic_key() (migration 034) so Download Doc can fetch session output files from the Files API. Same getter Execute Agent Session uses; keeps the key out of the inter-workflow contract. retryOnFail; a hard DB failure throws -> errorWorkflow CRITICAL."
+    },
+    {
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nlet docs = wc.doc_attachments;\nif (typeof docs === 'string') { try { docs = JSON.parse(docs || '[]'); } catch (e) { docs = []; } }\nif (!Array.isArray(docs)) docs = [];\nconst out = [];\nfor (let i = 0; i < docs.length; i++) {\n  const d = docs[i] || {};\n  out.push({ json: { file_id: d.file_id || '', filename: d.filename || ('dokument-' + (i+1)), mime: d.mime || 'application/octet-stream', idx: i } });\n}\nreturn out;"
+      },
+      "id": "1d192179-b084-4f53-a044-c91af9b5127e",
+      "name": "Parse Docs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1952,
+        560
+      ],
+      "notes": "Parse doc_attachments ([{file_id,filename,mime}]) -> one item per produced office-doc. Mirrors Parse Manifest for images. Has Docs? guarantees non-empty input."
+    },
+    {
+      "parameters": {
+        "url": "=https://api.anthropic.com/v1/files/{{ $json.file_id }}/content?scope_id={{ $('When Called').first().json.session_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $('Get Doc Key').first().json.key }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "managed-agents-2026-04-01,files-api-2025-04-14"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "13f7d7e1-9a60-4630-a3f0-eaf4b304722e",
+      "name": "Download Doc",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2144,
+        560
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "notes": "GET /v1/files/{file_id}/content (scope_id=session_id, both betas) -> binary `data`. Office-doc OUTPUT files are downloadable (Block 0). onError=continueErrorOutput: a fetch failure (expired/missing/network) -> Build Doc Download Failed -> dropped + WARN, never thrown. Key from Get Doc Key."
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst docs = $('Parse Docs').all();\nconst REQUIRED = {\n  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xl/workbook.xml',\n  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'word/document.xml',\n  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'ppt/presentation.xml'\n};\nconst out = [];\nfor (let k = 0; k < items.length; k++) {\n  let srcIdx = 0;\n  const pi = items[k].pairedItem;\n  if (pi != null) srcIdx = (typeof pi === 'number') ? pi : (pi.item != null ? pi.item : 0);\n  const meta = (docs[srcIdx] && docs[srcIdx].json) || {};\n  const filename = meta.filename || 'dokument';\n  const mime = meta.mime || '';\n  let buf = null;\n  try { buf = await this.helpers.getBinaryDataBuffer(k, 'data'); } catch (e) {}\n  let valid = false, reason = '';\n  if (!buf || buf.length < 200) {\n    reason = 'plik pusty lub zbyt maly (' + (buf ? buf.length : 0) + ' B)';\n  } else if (mime === 'application/pdf') {\n    const head = buf.slice(0, 5).toString('latin1');\n    const tail = buf.slice(Math.max(0, buf.length - 2048)).toString('latin1');\n    if (head !== '%PDF-') reason = 'naglowek PDF nieprawidlowy';\n    else if (tail.indexOf('%%EOF') < 0) reason = 'brak znacznika %%EOF (plik obciety?)';\n    else if (buf.toString('latin1').indexOf('/Page') < 0) reason = 'brak stron w dokumencie PDF';\n    else valid = true;\n  } else if (REQUIRED[mime]) {\n    const isZip = buf[0] === 0x50 && buf[1] === 0x4B && (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07);\n    const latin = buf.toString('latin1');\n    const hasEOCD = latin.indexOf('PK\u0005\u0006') >= 0;\n    const hasCT = latin.indexOf('[Content_Types].xml') >= 0;\n    const hasPart = latin.indexOf(REQUIRED[mime]) >= 0;\n    if (!isZip) reason = 'nie jest archiwum ZIP/OOXML';\n    else if (!hasEOCD) reason = 'uszkodzone archiwum (brak rekordu EOCD — plik obciety?)';\n    else if (!hasCT) reason = 'brak [Content_Types].xml';\n    else if (!hasPart) reason = 'brak wymaganej czesci ' + REQUIRED[mime];\n    else valid = true;\n  } else {\n    valid = true;\n  }\n  const o = { json: { valid: valid, file_id: meta.file_id, filename: filename, mime: mime, reason: reason } };\n  if (valid && items[k].binary && items[k].binary.data) {\n    o.binary = { data: Object.assign({}, items[k].binary.data, { fileName: filename, mimeType: mime }) };\n  }\n  out.push(o);\n}\nreturn out;"
+      },
+      "id": "f737d69b-76be-4d3e-b0f1-24305fd0e711",
+      "name": "Validate Doc",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2352,
+        560
+      ],
+      "notes": "VALIDATION GATE (Block 7 DoD). Reads each downloaded doc's bytes (binary is filesystem-mode -> getBinaryDataBuffer, not binary.data.data) and asserts structural integrity + the required part is present, WITHOUT a zip library (crypto/zlib unavailable in Code nodes): OOXML (xlsx/docx/pptx) must be a PK ZIP, contain the End-Of-Central-Directory record (PK\\x05\\x06 -> not truncated), [Content_Types].xml, and the type's required part (xl/workbook.xml | word/document.xml | ppt/presentation.xml — these member names are stored as plaintext in the zip). PDF must start %PDF-, contain %%EOF in the tail, and have /Page. Valid -> pass binary (fileName/mime set) to Upload Doc; invalid -> reason (Polish) -> Build Doc Invalid. Paired-item idiom maps bytes back to Parse Docs meta (mirrors Extract B64)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "v1",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e0e0c57c-007c-4498-90aa-d9714c541109",
+      "name": "Doc Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2544,
+        560
+      ],
+      "notes": "True: structurally valid -> Upload Doc (binary rides along). False: corrupt/unreadable -> Build Doc Invalid (dropped + WARN + Polish note, never a broken attachment)."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}/attachment",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "attachment",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "071a510b-9ffd-41a5-8932-305e8ac896d6",
+      "name": "Upload Doc",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2752,
+        464
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "notes": "Uploads each VALID doc to the ClickUp task -> {id,title,url} (reuses the Block-10 attachment-upload pattern). Multipart field `attachment` <- binary data (fileName set by Validate Doc). onError=continueRegularOutput so a failed upload flows on as dropped (Build Doc Uploaded marks it). ClickUp has no delete-attachment API; on partial failure the WARN surfaces orphaned ids."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const r = $json || {};\nconst ok = !!(r.id);\nlet fn = r.title || r.name || '';\nif (!fn) { try { fn = $('Validate Doc').item.json.filename; } catch (e) { fn = 'dokument'; } }\nreturn { json: { ok: ok, dropped: !ok, id: r.id || '', url: r.url || '', filename: fn || 'dokument', reason: ok ? '' : 'przesylanie do ClickUp nie powiodlo sie' } };"
+      },
+      "id": "39b3b8d2-037c-4813-8109-e642c95ac487",
+      "name": "Build Doc Uploaded",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2944,
+        464
+      ],
+      "notes": "Normalize an upload outcome -> {ok,id,url,filename,reason}. Success: ClickUp {id,title,url}. Failure (continueRegularOutput): no id -> dropped, reason 'upload'. filename from ClickUp title, fallback to the paired Validate Doc item."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const r = $json || {};\nreturn { json: { ok: false, dropped: true, id: '', url: '', filename: r.filename || 'dokument', reason: r.reason || 'plik uszkodzony' } };"
+      },
+      "id": "65e0794d-ad30-4880-9561-0abdfc1fd83a",
+      "name": "Build Doc Invalid",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2752,
+        672
+      ],
+      "notes": "Validation-failed branch: the doc is corrupt/unreadable -> dropped with the Polish reason from Validate Doc. Never uploaded (no broken attachment)."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const r = $json || {};\nconst err = (r.error && (r.error.message || r.error)) || 'pobranie nie powiodlo sie';\nreturn { json: { ok: false, dropped: true, id: '', url: '', filename: r.filename || 'dokument', reason: 'pobranie: ' + String(err).slice(0,150) } };"
+      },
+      "id": "4fe648cb-7ec3-4d6a-a984-2f52abeeb602",
+      "name": "Build Doc Download Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2352,
+        768
+      ],
+      "notes": "Download error branch (continueErrorOutput): the produced doc could not be fetched from the Files API (expired/missing/network) -> dropped with reason. The error item retains the Parse Docs json (filename/file_id)."
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "id": "99f321aa-d543-42bb-892d-76ead823f06a",
+      "name": "Merge Docs",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        3152,
+        560
+      ],
+      "notes": "Converge uploaded (0), invalid (1) and download-failed (2) doc outcomes into ONE stream so Aggregate Docs keeps a single input (CLAUDE.md aggregator trap)."
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(function(i){ return i.json; }).filter(Boolean);\nconst doc_attachment_ids = [];\nconst links = [];\nconst dropped = [];\nfor (const r of rows) {\n  if (r.ok && r.id) { doc_attachment_ids.push(r.id); links.push({ filename: r.filename, url: r.url }); }\n  else { dropped.push({ filename: r.filename, reason: r.reason || 'nieznany' }); }\n}\nconst warnings = [];\nif (dropped.length) warnings.push({ source: 'post-reply/doc-delivery', err: 'Nie dostarczono ' + dropped.length + ' pliku(ow): ' + dropped.map(function(d){ return d.filename + ' (' + d.reason + ')'; }).join('; '), severity: 'WARN' });\nreturn [{ json: { doc_attachment_ids: doc_attachment_ids, links: links, dropped: dropped, dropped_count: dropped.length, warnings: warnings } }];"
+      },
+      "id": "2cee5331-496b-46d8-ab69-3f374c814f9e",
+      "name": "Aggregate Docs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3344,
+        560
+      ],
+      "notes": "Reduce doc outcomes -> doc_attachment_ids[] (successful ClickUp ids, for erasure recording), links[{filename,url}] (for the comment), dropped[{filename,reason}], and a single consolidated WARN if anything was dropped. One incoming connection only."
+    },
+    {
+      "parameters": {
+        "jsCode": "const agg = ($input.first() && $input.first().json) || {};\nconst fin = $('Finalize Comment').first().json;\nconst ops = Array.isArray(fin.ops) ? fin.ops.slice() : [];\nconst links = Array.isArray(agg.links) ? agg.links : [];\nconst dropped = Array.isArray(agg.dropped) ? agg.dropped : [];\nif (links.length || dropped.length) {\n  ops.push({ text: '\\n' });\n  ops.push({ text: 'Załączniki' });\n  ops.push({ text: '\\n', attributes: { header: 2 } });\n  for (const l of links) {\n    ops.push({ text: '📎 ' });\n    ops.push({ text: l.filename, attributes: { link: l.url } });\n    ops.push({ text: '\\n', attributes: { list: 'bullet' } });\n  }\n  for (const d of dropped) {\n    ops.push({ text: '⚠️ Nie udało się dołączyć pliku „' + d.filename + '” (plik uszkodzony lub niedostępny).\\n', attributes: { italic: true } });\n  }\n}\nreturn [{ json: { ops: ops, run_payload_bytes: fin.run_payload_bytes, attachment_ids: fin.attachment_ids || [], doc_attachment_ids: agg.doc_attachment_ids || [] } }];"
+      },
+      "id": "ef2e6d68-71d3-4201-8656-0c45dbf13723",
+      "name": "Append Doc Ops",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3552,
+        560
+      ],
+      "notes": "Append a 'Załączniki' section to Finalize Comment's ops: a link line per delivered doc and a Polish note per dropped doc. Re-reads Finalize Comment's ops (absolute ref) and carries doc_attachment_ids forward for Record Artifact. Feeds Is @mention? ($json.ops is what Post Reply/Post Draft post)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "dd1",
+              "leftValue": "={{ $json.dropped_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b13f2dfb-2df8-49b4-97b1-b42469279211",
+      "name": "Docs Dropped?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3344,
+        768
+      ],
+      "notes": "True: >=1 doc dropped (corrupt/download/upload) -> WARN (side branch, non-blocking). The comment still posts with the delivered docs + Polish notes for the dropped ones."
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "post-reply/doc-delivery",
+            "message": "Nie udało się dostarczyć co najmniej jednego pliku biurowego do ClickUp — komentarz publikuje się z notką zamiast uszkodzonego/niedostępnego pliku.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; dropped_count={{ $json.dropped_count }}; dropped={{ JSON.stringify($json.dropped) }}; delivered={{ JSON.stringify($json.doc_attachment_ids) }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "da604be4-ace5-405d-b8c3-092c2b1eab46",
+      "name": "Alert Docs Dropped",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        3552,
+        768
+      ],
+      "notes": "WARN via the centralized Post Alert (v1) seam when an office-doc could not be delivered (validation/download/upload). Side branch; does not block the comment."
+    },
+    {
+      "id": "6ecf3c29-a1d1-4f5f-a29a-d0d126085c42",
+      "name": "Get Spend Status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        160,
+        380
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from get_spend_status($1);",
+        "options": {
+          "queryReplacement": "={{ [ $('When Called').first().json.reviewer_user_id || '' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "notes": "ADR-064 end-of-message warning: get_spend_status(reviewer_user_id) at reply time (post-run -> the just-finished run's cost is already counted). Finalize Comment appends a Polish warning line when warn=true (>60% user / >70% company). onError continueRegularOutput + alwaysOutputData so a DB miss just omits the warning, never blocks the reply. Covers both lanes since both call Post Reply (v1).",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "surface-chat",
+      "name": "Surface = chat?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        80,
+        40
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "sc1",
+              "leftValue": "={{ $('When Called').first().json.surface }}",
+              "rightValue": "chat",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "notes": "ADR-068 delivery router. surface=='chat' -> post a threaded reply under the invoking chat message (text/markdown only in Block 2), then dead-end (no task status flip / artifact record — those are task-bound). Task (false) -> existing path (Get Spend Status -> ...)."
+    },
+    {
+      "id": "build-chat-md",
+      "name": "Build Chat Markdown",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        -80
+      ],
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nfunction blocksToMd(blocks){ if(!Array.isArray(blocks)) return ''; return blocks.filter(b=>b&&b.type==='text'&&b.md).map(b=>String(b.md)).join('\\n\\n').trim(); }\nlet md = '';\n// 1) deliver_output blocks (ADR-063 tool path)\nlet ob = wc.output_blocks_json;\nif (typeof ob === 'string') { try { ob = JSON.parse(ob || '[]'); } catch (e) { ob = []; } }\nmd = blocksToMd(ob);\n// 2) completion: the agent often returns the block ARRAY as its final text (chat prompt asks for a JSON block array)\nif (!md) {\n  const c = String(wc.completion || '').trim();\n  if (c.startsWith('[')) { try { md = blocksToMd(JSON.parse(c)); } catch (e) {} }\n  if (!md) md = c; // plain text fallback\n}\nif (!md) md = '(brak treści odpowiedzi)';\nconst model = wc.model || '—';\nconst cost = (Number(wc.cost_pln || 0) + Number(wc.total_image_cost_pln || 0)).toFixed(4);\nmd += '\\n\\n—\\n_Przygotowane przez agenta AI (model: ' + model + ', koszt: ' + cost + ' PLN). Do weryfikacji._';\nlet ref = wc.surface_ref;\nif (typeof ref === 'string') { try { ref = JSON.parse(ref || '{}'); } catch (e) { ref = {}; } }\nif (!ref || typeof ref !== 'object') ref = {};\nreturn [{ json: { content: md, channel_id: String(ref.channel_id || ''), message_id: String(ref.message_id || '') } }];"
+      },
+      "notes": "ADR-068: build the chat reply markdown. Prefer the managed session's output_message; when the agent delivered via tool (output_message empty, ADR-063) reconstruct from output_blocks text mds. Appends a short attribution footer. Parses surface_ref (JSON string) for the channel/message ids."
+    },
+    {
+      "id": "post-chat-reply",
+      "name": "Post Chat Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        -80
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v3/workspaces/761759/chat/messages/{{ $json.message_id }}/replies",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ type: 'message', content: $json.content, content_format: 'text/md' }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "notes": "ADR-068: POST a threaded reply under the invoking chat message (v3 chat replies endpoint, bot token). onError=continueErrorOutput -> Alert Chat Reply Failed (WARN); the main path still returns. Markdown only (chat image delivery deferred).",
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "alert-chat-reply-failed",
+      "name": "Alert Chat Reply Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        740,
+        40
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "post-reply/chat-reply",
+            "message": "Nie udało się opublikować odpowiedzi agenta na czacie ClickUp (wątek).",
+            "details": "=channel={{ $('Build Chat Markdown').first().json.channel_id }}; message={{ $('Build Chat Markdown').first().json.message_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "notes": "ADR-068 WARN via Post Alert (v1): the chat threaded reply failed to post. The agent's answer was produced but not delivered to chat.",
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Is @mention?": {
+      "main": [
+        [
+          {
+            "node": "Post Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post Draft Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Reply": {
+      "main": [
+        [
+          {
+            "node": "Set Status Zakonczono",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Reply Failed",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Post Draft Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Draft Comment": {
+      "main": [
+        [
+          {
+            "node": "Set Status Zakonczono",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Post-back Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Status Zakonczono": {
+      "main": [
+        [
+          {
+            "node": "Record Artifact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Status Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Artifact": {
+      "main": [
+        [
+          {
+            "node": "Recorded?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Record Artifact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recorded?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Alert Record Artifact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Images?": {
+      "main": [
+        [
+          {
+            "node": "Parse Manifest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pass Delta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Manifest": {
+      "main": [
+        [
+          {
+            "node": "To Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "To Binary": {
+      "main": [
+        [
+          {
+            "node": "Upload Attachment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Attachment": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Uploads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Uploads": {
+      "main": [
+        [
+          {
+            "node": "Rewrite Delta",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Uploads Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Uploads Failed?": {
+      "main": [
+        [
+          {
+            "node": "Alert Upload Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rewrite Delta": {
+      "main": [
+        [
+          {
+            "node": "Finalize Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pass Delta": {
+      "main": [
+        [
+          {
+            "node": "Finalize Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Comment": {
+      "main": [
+        [
+          {
+            "node": "Has Docs?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Docs?": {
+      "main": [
+        [
+          {
+            "node": "Get Doc Key",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is @mention?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Doc Key": {
+      "main": [
+        [
+          {
+            "node": "Parse Docs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Docs": {
+      "main": [
+        [
+          {
+            "node": "Download Doc",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Doc": {
+      "main": [
+        [
+          {
+            "node": "Validate Doc",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Doc Download Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Doc": {
+      "main": [
+        [
+          {
+            "node": "Doc Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Doc Valid?": {
+      "main": [
+        [
+          {
+            "node": "Upload Doc",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Doc Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Doc": {
+      "main": [
+        [
+          {
+            "node": "Build Doc Uploaded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Doc Uploaded": {
+      "main": [
+        [
+          {
+            "node": "Merge Docs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Doc Invalid": {
+      "main": [
+        [
+          {
+            "node": "Merge Docs",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Build Doc Download Failed": {
+      "main": [
+        [
+          {
+            "node": "Merge Docs",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge Docs": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Docs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Docs": {
+      "main": [
+        [
+          {
+            "node": "Append Doc Ops",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Docs Dropped?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Doc Ops": {
+      "main": [
+        [
+          {
+            "node": "Is @mention?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Docs Dropped?": {
+      "main": [
+        [
+          {
+            "node": "Alert Docs Dropped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Spend Status": {
+      "main": [
+        [
+          {
+            "node": "Has Images?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Surface = chat?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Surface = chat?": {
+      "main": [
+        [
+          {
+            "node": "Build Chat Markdown",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Spend Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Chat Markdown": {
+      "main": [
+        [
+          {
+            "node": "Post Chat Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Chat Reply": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Alert Chat Reply Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "binaryMode": "separate"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "2dd552ba-e075-462b-832b-09dc35498835",
+  "activeVersionId": "2dd552ba-e075-462b-832b-09dc35498835",
+  "versionCounter": 37,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-09T15:42:06.917Z",
+      "createdAt": "2026-06-09T15:42:06.917Z",
+      "role": "workflow:owner",
+      "workflowId": "t17moGs7Vxo5ZcFv",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

@@ -1,0 +1,677 @@
+{
+  "updatedAt": "2026-06-27T19:40:10.721Z",
+  "createdAt": "2026-06-27T19:09:18.412Z",
+  "id": "Ubwr6fRmStFwwJfP",
+  "name": "Daily Due-Date Producer (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Daily 00:00 Warsaw",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -260,
+        200
+      ],
+      "notes": "ADR-065 Phase-3 autonomous producer. Fires daily at 01:00 Europe/Warsaw (workflow timezone is set to Europe/Warsaw in settings; 01:00 rather than 00:00 to avoid midnight-boundary brittleness). Scans ClickUp for tasks due TODAY (Warsaw) with exactly one assignee + [AI] Czy zadanie dla AI=Tak, not already actioned today, not closed/done, and enqueues one autonomous run per task. The schedule can't be fired via API — use the Form Trigger harness to test.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 1,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "formseed",
+      "name": "Run now (manual)",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        -260,
+        400
+      ],
+      "webhookId": "due-date-producer-manual-seed",
+      "notes": "Manual harness to run the producer on demand (the Schedule Trigger can't be fired via API). Same downstream path. Requires the workflow active to serve the form URL.",
+      "parameters": {
+        "formTitle": "Daily Due-Date Producer (manual run)",
+        "formDescription": "Press submit to scan ClickUp for today's AI due-date tasks and enqueue autonomous runs.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "confirm",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "run"
+                  }
+                ]
+              },
+              "requiredField": true
+            }
+          ]
+        },
+        "responseMode": "lastNode"
+      }
+    },
+    {
+      "id": "compute",
+      "name": "Compute Window",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -40,
+        300
+      ],
+      "notes": "todayStr = today's date in Europe/Warsaw (en-CA YYYY-MM-DD), the authoritative day key. dueGt/dueLt = a WIDE (+-48h) unix-ms window for the ClickUp server-side prefilter; the real due-today gate is the in-memory Warsaw-date equality in Gate Tasks, so ClickUp's date-only storage-time convention can't cause a miss.",
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const now = Date.now();\nconst todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Warsaw' }).format(new Date(now));\nreturn [{ json: { todayStr, dueGt: now - 48*3600*1000, dueLt: now + 48*3600*1000, now } }];"
+      }
+    },
+    {
+      "id": "queueflag",
+      "name": "Read Queue Flag",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        180,
+        300
+      ],
+      "notes": "ADR-056: read config.queue.enabled ONCE (global, not per task) to choose enqueue vs synchronous fallback. onError:continueRegularOutput + retry -> a DB blip passes the Compute Window item through with no `value`, so Queue Enabled? evaluates false and every task falls back to the synchronous Run Agent Spine (fail-safe to the known-good path).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select value from config where key = 'queue.enabled' limit 1;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "fetch",
+      "name": "Fetch Due Tasks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        300
+      ],
+      "notes": "ClickUp Get Filtered Team Tasks (team 761759). Wide due window (Compute Window dueGt/dueLt), include_closed=false, subtasks=true (process tasks are usually subtasks). Single page (page=0): the 5-person team has far fewer than 100 tasks/day; if last_page comes back false, Build Summary Message escalates to WARN (truncation). NO onError: a total fetch failure must be LOUD -> global Error Handler CRITICAL, not a silent empty batch.",
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.clickup.com/api/v2/team/761759/task",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "due_date_gt",
+              "value": "={{ $('Compute Window').first().json.dueGt }}"
+            },
+            {
+              "name": "due_date_lt",
+              "value": "={{ $('Compute Window').first().json.dueLt }}"
+            },
+            {
+              "name": "include_closed",
+              "value": "false"
+            },
+            {
+              "name": "subtasks",
+              "value": "true"
+            },
+            {
+              "name": "page",
+              "value": "0"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "gate",
+      "name": "Gate Tasks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        300
+      ],
+      "notes": "Per-task gate (ADR-065): keep iff due-today in Europe/Warsaw AND exactly one assignee AND [AI] Czy zadanie dla AI=Tak AND status not closed/done. Drops the Alerts telemetry task defensively. Resolves impact ([AI] Wpływ) to one of 4 tiers (default Średni). Dropdown values may be the option id OR the orderindex int -> optName matches both. Emits ONE item {candidates, counts, last_page} so the summary path always has data even with 0 candidates.",
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const TASKS = ($('Fetch Due Tasks').first().json.tasks) || [];\nconst lastPage = $('Fetch Due Tasks').first().json.last_page;\nconst todayStr = $('Compute Window').first().json.todayStr;\nconst TELEMETRY = new Set(['869dj2z2c']);\nconst AI_FIELD = '088d66e2-6095-4604-b70d-e50ebb085ae2';\nconst IMPACT_FIELD = '55c7ff79-1857-41e6-87b4-bd46678e1470';\nconst IMPACT_VALID = ['Niski','Średni','Wysoki','Krytycznie ważne'];\nconst tzDate = (ms) => new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Warsaw'}).format(new Date(Number(ms)));\nfunction optName(cf){ if(!cf) return ''; const v=cf.value; if(v===undefined||v===null||v==='') return ''; const opts=(cf.type_config&&cf.type_config.options)||[]; const m=opts.find(o=>o.id===v)||opts.find(o=>String(o.orderindex)===String(v)); return m?m.name:''; }\nconst counts={found:TASKS.length,wrong_day:0,no_due:0,not_tak:0,assignee_count:0,closed_done:0,telemetry:0,candidates:0};\nconst candidates=[];\nfor(const t of TASKS){\n  if(TELEMETRY.has(t.id)){counts.telemetry++;continue;}\n  if(!t.due_date){counts.no_due++;continue;}\n  if(tzDate(t.due_date)!==todayStr){counts.wrong_day++;continue;}\n  const cfs=t.custom_fields||[];\n  if(optName(cfs.find(f=>f.id===AI_FIELD))!=='Tak'){counts.not_tak++;continue;}\n  const as=t.assignees||[];\n  if(as.length!==1){counts.assignee_count++;continue;}\n  const st=(t.status&&typeof t.status==='object')?(t.status.type||''):'';\n  if(st==='closed'||st==='done'){counts.closed_done++;continue;}\n  let impact=optName(cfs.find(f=>f.id===IMPACT_FIELD));\n  if(IMPACT_VALID.indexOf(impact)===-1) impact='Średni';\n  candidates.push({taskId:t.id,taskName:t.name||'',assigneeId:String(as[0].id),assigneeUsername:as[0].username||'',impact});\n}\ncounts.candidates=candidates.length;\nreturn [{json:{candidates,counts,last_page:lastPage}}];"
+      }
+    },
+    {
+      "id": "dedup",
+      "name": "Dedup Query",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        840,
+        300
+      ],
+      "notes": "ADR-065 operator rule: drop any task the agent ALREADY acted on today (Europe/Warsaw), ANY trigger. Returns the distinct task ids with an agent_runs row since Warsaw midnight. onError:continueRegularOutput + alwaysOutputData -> a DB blip passes through (no clickup_task_id rows), so Finalize treats it as no-dedup (fail-open: a missed dedup = at worst one extra run, also caught by the consumer's 24h bucket). param $1 = the candidate id array.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select distinct clickup_task_id from agent_runs where clickup_task_id = any($1::text[]) and created_at >= (date_trunc('day', now() at time zone 'Europe/Warsaw') at time zone 'Europe/Warsaw');",
+        "options": {
+          "queryReplacement": "={{ [ $json.candidates.map(c => c.taskId) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "finalize",
+      "name": "Finalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        300
+      ],
+      "notes": "Subtract the already-actioned-today ids (Dedup Query rows) from the candidates. Emits one item per surviving task (_kind:task) PLUS exactly one summary item (_kind:summary) so the summary+heartbeat path ALWAYS runs (even with 0 survivors).",
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const gate=$('Gate Tasks').first().json;\nconst candidates=gate.candidates||[];\nconst counts=Object.assign({},gate.counts);\nconst rows=$('Dedup Query').all().map(i=>i.json).filter(r=>r&&r.clickup_task_id);\nconst matched=new Set(rows.map(r=>String(r.clickup_task_id)));\nconst survivors=candidates.filter(c=>!matched.has(String(c.taskId)));\ncounts.already_actioned=candidates.length-survivors.length;\ncounts.enqueued=survivors.length;\ncounts.last_page=gate.last_page;\nconst out=survivors.map(c=>({json:Object.assign({_kind:'task'},c)}));\nout.push({json:{_kind:'summary',counts}});\nreturn out;"
+      }
+    },
+    {
+      "id": "route",
+      "name": "Route Kind",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1280,
+        300
+      ],
+      "notes": "Splits the Finalize output: _kind=task (output 0) -> dispatch; _kind=summary (output 1) -> heartbeat + batch summary.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "rk1",
+              "leftValue": "={{ $json._kind }}",
+              "rightValue": "task",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "qenabled",
+      "name": "Queue Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1500,
+        180
+      ],
+      "notes": "ADR-056: queue.enabled=true -> enqueue (output 0); else (or unreadable) -> synchronous Run Agent Spine (output 1). Reads the global flag from Read Queue Flag.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "qe1",
+              "leftValue": "={{ String(($('Read Queue Flag').first().json.value ?? '')).trim().toLowerCase() }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "buildjob",
+      "name": "Build Enqueue Job",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1720,
+        80
+      ],
+      "notes": "ADR-065 enqueue job (ADR-056 contract). invocation_type=due_date (consumer -> priority 5-8, triggered_by=due_date_daily, spine invocation_type=autonomous). caller_user_id=the single assignee (ADR-054 scope + ADR-064 spend gate). Empty triggering_comment_id -> Post Reply posts a NEW top-level comment. Keeps the task fields at top level alongside `job` so the enqueue-failed error branch reaches Run Agent Spine with the same shape as the queue-off branch.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const t=$json;\nconst job={ task_id:t.taskId, caller_user_id:t.assigneeId, impact:t.impact, invocation_type:'due_date', enqueued_at:new Date().toISOString(), payload:{ reviewer_user_id:t.assigneeId, caller_username:t.assigneeUsername||'', triggered_by:'due_date_daily', invocation_type:'autonomous', triggering_comment_id:'', triggering_comment_text:'' } };\nreturn { json: Object.assign({}, t, { job }) };"
+      }
+    },
+    {
+      "id": "enqueue",
+      "name": "Enqueue Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1940,
+        80
+      ],
+      "notes": "POST the job to the queue-consumer over the internal Docker network. onError:continueErrorOutput -> a non-200 / unreachable consumer routes to output 1, which fans out to Alert Enqueue Failed (WARN) AND Run Agent Spine (synchronous fallback) so a queued task is never silently dropped. Success (output 0) dead-ends.",
+      "parameters": {
+        "method": "POST",
+        "url": "http://queue-consumer:8080/enqueue",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.job) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "runspine",
+      "name": "Run Agent Spine",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1940,
+        300
+      ],
+      "notes": "Synchronous fallback (queue disabled OR enqueue failed). Calls the Agent Orchestrator inline. Reads task fields from the item ($json.taskId/assigneeId/assigneeUsername) — present on BOTH the queue-off task item and the enqueue-failed Build Enqueue Job item. triggered_by=due_date_daily, invocation_type=autonomous, empty comment id/text (top-level comment).",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "a8XKaijkMFNBpRBa",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $json.taskId }}",
+            "reviewer_user_id": "={{ $json.assigneeId }}",
+            "caller_username": "={{ $json.assigneeUsername }}",
+            "triggered_by": "due_date_daily",
+            "invocation_type": "autonomous",
+            "triggering_comment_id": "",
+            "triggering_comment_text": ""
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "alertenq",
+      "name": "Alert Enqueue Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1940,
+        480
+      ],
+      "notes": "WARN via Post Alert (v1) when /enqueue fails; the run still proceeds via the synchronous Run Agent Spine fallback.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "due-date-producer/enqueue",
+            "message": "Nie udało się dodać zadania due-date do kolejki — fallback do synchronicznego uruchomienia spine.",
+            "details": "=task={{ $json.taskId || $json.task_id }}; assignee={{ $json.assigneeId }}; błąd={{ JSON.stringify($json).slice(0,300) }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "heartbeat",
+      "name": "Stamp Heartbeat",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1500,
+        480
+      ],
+      "notes": "Liveness heartbeat for the dead-man's-switch (Due-Date Producer Freshness Monitor): upsert config.due_date_producer.last_run_at = now(). Runs on the summary path so it stamps EVERY producer execution, including zero-task nights. onError:continueRegularOutput so a DB blip never blocks the summary (a missed stamp self-heals next run; the monitor's 26h grace absorbs it).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into config (key, value) values ('due_date_producer.last_run_at', now()::text) on conflict (key) do update set value = excluded.value;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "buildsummary",
+      "name": "Build Summary Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1720,
+        480
+      ],
+      "notes": "Compose the Polish batch summary (counts) for Post Alert. Severity INFO normally; WARN if ClickUp paginated (last_page=false -> possible missed tasks).",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const c=$json.counts||{};\nconst trunc = c.last_page===false;\nconst lines=[\n `Producent due-date (dzienny): znaleziono ${c.found??0} zadań w oknie czasowym.`,\n `Zakwalifikowano: ${c.candidates??0}; już obsłużone dziś (pominięto): ${c.already_actioned??0}; uruchomiono: ${c.enqueued??0}.`,\n `Pominięto — zły dzień: ${c.wrong_day??0}, brak terminu: ${c.no_due??0}, nie dla AI: ${c.not_tak??0}, przypisani≠1: ${c.assignee_count??0}, zamknięte/gotowe: ${c.closed_done??0}, telemetria: ${c.telemetry??0}.`\n];\nif(trunc) lines.push('UWAGA: wyniki ClickUp obcięte (last_page=false) — możliwe pominięte zadania.');\nreturn { json:{ severity: trunc?'WARN':'INFO', source:'due-date-producer', message: lines.join(' '), details: JSON.stringify(c) } };"
+      }
+    },
+    {
+      "id": "postsummary",
+      "name": "Post Batch Summary",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        2160,
+        480
+      ],
+      "notes": "Batch summary via the centralized Post Alert (v1) seam (INFO/WARN). No dedicated GM Reports task exists; reuse the established alert seam (unification rule). Also doubles as the human-visible liveness signal.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "={{ $json.severity }}",
+            "source": "={{ $json.source }}",
+            "message": "={{ $json.message }}",
+            "details": "={{ $json.details }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Daily 00:00 Warsaw": {
+      "main": [
+        [
+          {
+            "node": "Compute Window",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run now (manual)": {
+      "main": [
+        [
+          {
+            "node": "Compute Window",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Window": {
+      "main": [
+        [
+          {
+            "node": "Read Queue Flag",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Queue Flag": {
+      "main": [
+        [
+          {
+            "node": "Fetch Due Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Due Tasks": {
+      "main": [
+        [
+          {
+            "node": "Gate Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate Tasks": {
+      "main": [
+        [
+          {
+            "node": "Dedup Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedup Query": {
+      "main": [
+        [
+          {
+            "node": "Finalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize": {
+      "main": [
+        [
+          {
+            "node": "Route Kind",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Kind": {
+      "main": [
+        [
+          {
+            "node": "Queue Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Heartbeat",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Summary Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Build Enqueue Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Agent Spine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Enqueue Job": {
+      "main": [
+        [
+          {
+            "node": "Enqueue Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enqueue Job": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Alert Enqueue Failed",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Run Agent Spine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Summary Message": {
+      "main": [
+        [
+          {
+            "node": "Post Batch Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "timezone": "Europe/Warsaw",
+    "executionOrder": "v1"
+  },
+  "staticData": {
+    "node:Daily 00:00 Warsaw": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "170a8ac6-5338-40ce-9d61-7374573bda6c",
+  "activeVersionId": "170a8ac6-5338-40ce-9d61-7374573bda6c",
+  "versionCounter": 9,
+  "triggerCount": 2,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-27T19:09:18.412Z",
+      "createdAt": "2026-06-27T19:09:18.412Z",
+      "role": "workflow:owner",
+      "workflowId": "Ubwr6fRmStFwwJfP",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

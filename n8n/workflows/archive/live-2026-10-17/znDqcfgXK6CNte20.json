@@ -1,0 +1,489 @@
+{
+  "updatedAt": "2026-06-27T11:03:42.086Z",
+  "createdAt": "2026-06-12T18:21:03.778Z",
+  "id": "znDqcfgXK6CNte20",
+  "name": "Image Resolver (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        400
+      ],
+      "notes": "Block 11 (ADR-036) / ADR-063 Block 4. Resolver inputs: output_blocks_json (the agent's STRUCTURED deliver_output block list, captured by Invoke Model from the forced tool call — no longer free-text) + delivered_via_tool + output_message (no-deliver-output text fallback), impact, input_image_refs_json (from Read Input, for embed resolution), clickup_task_id + passthrough. model/cost_pln are the TEXT run attribution (forwarded by the caller to Post Reply; resolver does not use them).",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "output_blocks_json"
+            },
+            {
+              "name": "impact"
+            },
+            {
+              "name": "input_image_refs_json"
+            },
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "model"
+            },
+            {
+              "name": "cost_pln"
+            },
+            {
+              "name": "triggered_by"
+            },
+            {
+              "name": "invocation_type"
+            },
+            {
+              "name": "caller_user_id"
+            },
+            {
+              "name": "process_type"
+            },
+            {
+              "name": "delivered_via_tool"
+            },
+            {
+              "name": "output_message"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "lookup-ceiling",
+      "name": "Lookup Image Config",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        400
+      ],
+      "notes": "Reads both image limits in one row: image-count safety ceiling (config.image_count_ceiling=20, migration 026 — runaway guard, NOT a per-impact cap) and the parallel-batch concurrency cap (config.image_concurrency_cap, migration 031 set 4 -> 033 raised to 5; ADR-051). ceiling -> Resolve & Explode Blocks; concurrency_cap -> Build Batch Request (passed into Generate Images Parallel).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  (max(value) filter (where key = 'image_count_ceiling'))::int as ceiling,\n  (max(value) filter (where key = 'image_concurrency_cap'))::int as concurrency_cap\nfrom config\nwhere key in ('image_count_ceiling', 'image_concurrency_cap');",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "resolve-explode",
+      "name": "Resolve & Explode Blocks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        400
+      ],
+      "notes": "Consumes the agent's STRUCTURED deliver_output blocks (output_blocks_json + delivered_via_tool, ADR-063 Block 4) + input_image_refs_json; builds embed lookup map; explodes to one item per block with a route (text|embed|generate|drop). Generate blocks past the ceiling get route=drop. Assigns placeholder_id gen_N to each generate. ADR-052 Block 2: generate items also carry reference_refs[] (from the block) + lookup_map (the same source_ref/url-keyed input map embed uses) so Build Batch Request can resolve references to URLs. parseBlockArray() (free-text repair) is DELETED — the Anthropic/LiteLLM tool-call returns validated JSON; no parse step left to fail.",
+      "parameters": {
+        "jsCode": "\nconst wc = $('When Called').first().json;\n\n// Global safety ceiling (runaway guard against a malformed/hallucinated block list). NOT a per-impact\n// business cap: impact drives image MODEL + RESOLUTION (inside Invoke Model), never count.\nlet ceiling = 20;\ntry { const c = $('Lookup Image Config').first().json.ceiling; if (c != null && !isNaN(Number(c))) ceiling = Number(c); } catch (e) {}\n\n// --- ADR-063 Block 4 (bare-lane parity): consume the agent's STRUCTURED deliver_output blocks directly.\n// The bare drafting call now FORCES deliver_output (tool_choice in Invoke Model); the provider returns the\n// block array as validated JSON, captured upstream as output_blocks_json (delivered_via_tool=true). There is\n// no parse step left to fail: parseBlockArray() and its fence/preamble/quote-repair + parse-fallback paths are\n// DELETED — the hand-parsed free-text contract WAS the defect (ADR-063 supersedes ADR-053 #4 / multimodal spec\n// §1). KEEP IN SYNC with Render Agent Output (v1) 'Parse Blocks' (same structured block shape, ADR-063). ---\nconst parse_warnings = [];\nlet deliveredViaTool = wc.delivered_via_tool;\nif (typeof deliveredViaTool === 'string') deliveredViaTool = (deliveredViaTool === 'true' || deliveredViaTool === '1');\ndeliveredViaTool = deliveredViaTool === true;\nlet blocks = wc.output_blocks_json;\nif (typeof blocks === 'string') { try { blocks = JSON.parse(blocks || '[]'); } catch (e) { blocks = []; } }\nif (blocks && !Array.isArray(blocks) && Array.isArray(blocks.blocks)) blocks = blocks.blocks;\nif (!Array.isArray(blocks)) blocks = [];\nif (!deliveredViaTool && blocks.length === 0) {\n  // Agent did NOT call deliver_output -> protocol violation. Render the legacy text (output_message) as a single\n  // text block + ONE loud WARN (never a silent drop of images). This is the only remaining fallback.\n  parse_warnings.push('multimodal/no-deliver-output: agent nie wywolal narzedzia deliver_output — odpowiedz dostarczono jako zwykly tekst (mozliwa utrata obrazow); sprawdz kontrakt persony / tool_choice');\n  blocks = [{ type: 'text', md: String(wc.output_message == null ? '' : wc.output_message) }];\n}\n\nlet inputRefs = [];\ntry { inputRefs = JSON.parse(wc.input_image_refs_json || '[]'); } catch (e) { inputRefs = []; }\nif (!Array.isArray(inputRefs)) inputRefs = [];\n\n// Lookup map for embed_input resolution: by source_ref (attachment id) AND by ref (url).\nconst lookup = {};\nfor (const r of inputRefs) {\n  if (!r) continue;\n  if (r.source_ref) lookup[String(r.source_ref)] = r;\n  if (r.ref) lookup[String(r.ref)] = r;\n}\nconst lookup_map = JSON.stringify(lookup);\n\nconst pass = {\n  impact: wc.impact || '',\n  clickup_task_id: wc.clickup_task_id || '',\n  triggered_by: wc.triggered_by || 'image_gen',\n  invocation_type: wc.invocation_type || 'explicit',\n  caller_user_id: wc.caller_user_id || '',\n  process_type: wc.process_type || ''\n};\n\nconst out = [];\nlet genCount = 0;\nfor (let idx = 0; idx < blocks.length; idx++) {\n  const b = blocks[idx] || {};\n  const order = (b.order != null) ? Number(b.order) : (idx + 1);\n  const type = b.type;\n  if (type === 'text') {\n    out.push({ json: Object.assign({ route: 'text', block_type: 'text', block_order: order, md: b.md || '' }, pass) });\n  } else if (type === 'image' && b.mode === 'embed_input') {\n    out.push({ json: Object.assign({ route: 'embed', block_type: 'embed_input', block_order: order,\n      ref: b.ref || '', source_ref: b.source_ref || '', caption: b.caption || '', alt: b.alt || '', lookup_map }, pass) });\n  } else if (type === 'image' && b.mode === 'generate') {\n    genCount++;\n    const active = genCount <= ceiling;\n    out.push({ json: Object.assign({ route: active ? 'generate' : 'drop', block_type: 'generate', block_order: order,\n      is_active: active, prompt: b.prompt || '', aspect: b.aspect || '', size: b.size || '', caption: b.caption || '', alt: b.alt || '',\n      placeholder_id: 'gen_' + (genCount - 1), reference_refs: Array.isArray(b.reference_refs) ? b.reference_refs : [], lookup_map }, pass) });\n  }\n  // unknown block types are skipped\n}\n\n// Surface parse warnings (recovery or total-failure fallback) on a dedicated text carrier (order -1,\n// empty md renders nothing). A 0-item node never executes downstream (CLAUDE.md), so the WARN must ride\n// an item that survives Classify Block -> Assemble Output; the text route passes through unchanged.\nif (parse_warnings.length) {\n  out.unshift({ json: Object.assign({ route: 'text', block_type: 'text', block_order: -1, md: '', parse_warnings: parse_warnings }, pass) });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "classify-block",
+      "name": "Classify Block",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        660,
+        400
+      ],
+      "notes": "Routes each exploded block by $json.route to one of 4 outputs: 0 text, 1 embed, 2 generate, 3 fallback(=drop). Text passes straight to Merge; the others get per-branch handling.",
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r1",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "text",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "text"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r2",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "embed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "embed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r3",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "generate",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "generate"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "resolve-embed",
+      "name": "Resolve Embed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        240
+      ],
+      "notes": "embed_input: resolve ref/source_ref against the input image lookup map -> {type:attachment} (existing CU attachment, no re-upload). Miss -> embed_failed + warning.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst block = $json;\nlet map = {};\ntry { map = JSON.parse(block.lookup_map || '{}'); } catch (e) { map = {}; }\nconst input = map[block.source_ref] || map[block.ref] || null;\nif (!input) {\n  return { json: { block_type: 'embed_failed', block_order: block.block_order,\n    warning: 'multimodal/embed-ref-not-found: ' + (block.ref || block.source_ref || '(empty)') } };\n}\nreturn { json: { block_type: 'embed_resolved', block_order: block.block_order,\n  att_id: input.source_ref || '', att_url: input.ref || '', caption: block.caption || '', alt: block.alt || '' } };\n"
+      }
+    },
+    {
+      "id": "build-batch-request",
+      "name": "Build Batch Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        400
+      ],
+      "notes": "ADR-051 Block 4: collects ALL active generate blocks (Classify generate branch) into ONE batch request for Generate Images Parallel (v1): requests_json = array of {placeholder_id,prompt,size,aspect,caption,alt,block_order,reference_urls[]}; + shared impact + passthrough + concurrency_cap (from Lookup Image Config). runOnceForAllItems, single incoming connection. Replaces the old per-image Call Invoke Model (mode:each, sequential) — the batch fires them concurrently. ADR-052 Block 2: holds the standalone, caller-agnostic resolveReferenceToUrl(ref, lookup) (reused verbatim by the future generate_image tool handler, ADR-053/054); resolves each generate block's reference_refs[] against its lookup_map into reference_urls[], and a miss -> prebatch_warnings[] (placeholder_id + multimodal/reference-ref-not-found). prebatch_warnings rides this node's OUTPUT (not requests_json) because executeWorkflow replaces the item; Handle Gen Result reads it back by node reference. reference_urls[] is the migration seam consumed by Block 3-4.",
+      "parameters": {
+        "jsCode": "\nconst items = $input.all().map(function(i){ return i.json; });\nconst first = items[0] || {};\nlet cap = 5;\ntry { const c = $('Lookup Image Config').first().json.concurrency_cap; if (c != null && !isNaN(Number(c))) cap = Number(c); } catch (e) {}\n\n// ADR-052 Block 2: reusable, caller-agnostic reference resolver. Takes a ref (source_ref or url string, or\n// an object with .source_ref/.ref) + the input-image lookup map (keyed by source_ref AND url, values = the\n// input-ref objects) and returns a usable image URL or null. No n8n/$json/item context inside -- the future\n// generate_image tool handler reuses it verbatim with a file_id-derived lookup (ADR-053/054).\nfunction resolveReferenceToUrl(ref, lookup) {\n  if (!ref || !lookup) return null;\n  const key = (typeof ref === 'string') ? ref : (ref.source_ref || ref.ref || '');\n  const hit = lookup[key] || (typeof ref === 'object' ? (lookup[ref.ref] || lookup[ref.source_ref]) : null) || null;\n  if (!hit) return null;\n  if (typeof hit === 'string') return hit;\n  return hit.ref || null;\n}\n\nconst prebatch_warnings = [];\nconst requests = items.map(function(b){\n  let lookup = {};\n  try { lookup = JSON.parse(b.lookup_map || '{}'); } catch (e) { lookup = {}; }\n  const refs = Array.isArray(b.reference_refs) ? b.reference_refs : [];\n  const reference_urls = [];\n  for (const ref of refs) {\n    const url = resolveReferenceToUrl(ref, lookup);\n    if (url) reference_urls.push(url);\n    else prebatch_warnings.push({ placeholder_id: b.placeholder_id || '',\n      warning: 'multimodal/reference-ref-not-found: ' + (typeof ref === 'string' ? ref : JSON.stringify(ref)) });\n  }\n  return {\n    placeholder_id: b.placeholder_id || '', prompt: b.prompt || '',\n    size: b.size || '', aspect: b.aspect || '',\n    caption: b.caption || '', alt: b.alt || '',\n    block_order: (b.block_order != null) ? b.block_order : 99,\n    reference_urls: reference_urls\n  };\n});\nreturn [{ json: {\n  requests_json: JSON.stringify(requests),\n  prebatch_warnings: prebatch_warnings,\n  impact: first.impact || '',\n  concurrency_cap: cap,\n  clickup_task_id: first.clickup_task_id || '',\n  triggered_by: first.triggered_by || 'image_gen',\n  invocation_type: first.invocation_type || 'explicit',\n  caller_user_id: first.caller_user_id || '',\n  process_type: first.process_type || ''\n} }];\n"
+      }
+    },
+    {
+      "id": "call-generate-batch",
+      "name": "Call Generate Batch",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1120,
+        400
+      ],
+      "notes": "ADR-051 Block 4: calls Generate Images Parallel (v1) ONCE (id 2keb6XVWq5PG0leK) with the aggregated batch request; returns one item per image {placeholder_id,success,b64_json,model,cost_pln,size,degraded,resolution_note,caption,alt,warnings[]}. Default mode (run once) — Build Batch Request emits exactly one item. onError=continueRegularOutput: a batch THROW (only the Vault-key-missing path, already CRITICALed by the batch's own errorWorkflow) passes the request item through; Handle Gen Result detects that shape and degrades to per-placeholder failures so the comment still posts (image non-blocking, ADR-047).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "2keb6XVWq5PG0leK",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "requests_json": "={{ $json.requests_json }}",
+            "impact": "={{ $json.impact }}",
+            "concurrency_cap": "={{ $json.concurrency_cap }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "handle-gen-result",
+      "name": "Handle Gen Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        400
+      ],
+      "notes": "ADR-051 Block 4: maps Generate Images Parallel results back to blocks, joined by placeholder_id carried through the batch (no more task_type meta smuggling). runOnceForAllItems. success -> generate_success (manifest + image_model + cost_pln + resolution_note); failure/no-b64 -> generate_failed. Carries each image's warnings[] (degrade / cost-header-missing / gen-failed) forward for Assemble Output to fold into the resolver warnings[] -> execute-llm-call's Has Warnings? fires the WARN. If the batch THREW (Call Generate Batch passed its request item through), degrades to one generate_failed per placeholder so the comment still posts. ADR-052 Block 2: folds Build Batch Request's prebatch_warnings[] (reference-ref-not-found, read back by node reference since executeWorkflow drops the field) into each placeholder's warnings[] by placeholder_id.",
+      "parameters": {
+        "jsCode": "\nconst results = $input.all().map(function(i){ return i.json; });\n// ADR-052 Block 2: prebatch reference warnings (a ref dropped before the batch -- reference-ref-not-found)\n// ride on Build Batch Request's output, NOT through the batch (executeWorkflow replaces the item with the\n// sub-workflow's results). Read them back by node reference and fold into each placeholder's warnings[].\nlet prebatch = [];\ntry { const pb = $('Build Batch Request').first().json.prebatch_warnings; if (Array.isArray(pb)) prebatch = pb; } catch (e) { prebatch = []; }\nfunction prebatchFor(pid) { const o = []; for (const p of prebatch) { if (p && p.placeholder_id === pid) o.push(p.warning); } return o; }\nconst out = [];\n// Batch THROW path: Call Generate Batch (onError=continueRegularOutput) passed its INPUT request item\n// through instead of per-image results (only the Vault-key-missing throw, already CRITICALed by the\n// batch's errorWorkflow). Detect by the request shape and degrade to per-placeholder failures.\nif (results.length && results[0].requests_json != null && results[0].success === undefined) {\n  let reqs = [];\n  try { reqs = JSON.parse(results[0].requests_json || '[]'); } catch (e) { reqs = []; }\n  for (const r of reqs) {\n    const pid = r.placeholder_id || '';\n    out.push({ json: { block_type: 'generate_failed', block_order: (r.block_order != null) ? r.block_order : 99,\n      placeholder_id: pid, caption: r.caption || '', alt: r.alt || '', cost_pln: 0,\n      warnings: ['multimodal/image-gen-failed: batch unavailable'].concat(prebatchFor(pid)) } });\n  }\n  return out;\n}\nfor (const res of results) {\n  const pid = res.placeholder_id || '';\n  const pbw = prebatchFor(pid);\n  if (!res.success || !res.b64_json) {\n    const base = (Array.isArray(res.warnings) && res.warnings.length) ? res.warnings : ['multimodal/image-gen-failed: no output'];\n    out.push({ json: { block_type: 'generate_failed', block_order: (res.block_order != null) ? res.block_order : 99,\n      placeholder_id: pid, caption: res.caption || '', alt: res.alt || '',\n      cost_pln: Number(res.cost_pln || 0),\n      warnings: base.concat(pbw) } });\n  } else {\n    const base = Array.isArray(res.warnings) ? res.warnings : [];\n    out.push({ json: { block_type: 'generate_success', block_order: res.block_order, placeholder_id: pid,\n      b64_json: res.b64_json, mime: res.mime || 'image/png', caption: res.caption || '', alt: res.alt || '',\n      cost_pln: Number(res.cost_pln || 0), image_model: res.model || '', resolution_note: res.resolution_note || '',\n      warnings: base.concat(pbw) } });\n  }\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "build-dropped",
+      "name": "Build Dropped Block",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        560
+      ],
+      "notes": "Generate block past the global safety ceiling: emits a placeholder text op + multimodal/image-count-ceiling warning (abnormal; should not fire in normal use).",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nreturn { json: { block_type: 'generate_dropped', block_order: $json.block_order,\n  md: '[Obraz pominięty — przekroczono limit bezpieczeństwa]',\n  warning: 'multimodal/image-count-ceiling: safety ceiling reached at order ' + $json.block_order } };\n"
+      }
+    },
+    {
+      "id": "merge-branches",
+      "name": "Merge Branches",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1560,
+        400
+      ],
+      "notes": "Append all four branches (text / resolved-embed / gen-result / dropped) into one stream. Safe with empty branches (Block 3). Single output to Assemble Output (the sole terminal).",
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 4
+      }
+    },
+    {
+      "id": "assemble-output",
+      "name": "Assemble Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        400
+      ],
+      "notes": "SOLE TERMINAL (sub-workflow return determinism): exactly one incoming connection. Sorts by block_order, renders text via the same markdown->{text,...} ops as Build Comment, interleaves embed/generated image ops, and returns {image_manifest, rendered_delta, total_image_cost_pln, image_models, warnings} for Stage C (Post Reply).",
+      "parameters": {
+        "jsCode": "\nconst items = $input.all().map(i => i.json);\nitems.sort((a, b) => ((a.block_order == null ? 99 : a.block_order) - (b.block_order == null ? 99 : b.block_order)));\n\nconst FENCE = String.fromCharCode(96, 96, 96);\nconst LINK = /\\[([^\\]]+)\\]\\(([^)]+)\\)/;\nconst BOLD = /\\*\\*([^*]+)\\*\\*/;\nconst CODE = /\\x60([^\\x60]+)\\x60/;\nconst ITAL = /\\*([^*]+)\\*|_([^_]+)_/;\nfunction inlineOps(t) {\n  const out = [];\n  let rest = String(t);\n  while (rest.length) {\n    let best = null, kind = null;\n    const cands = [[LINK,'link'],[BOLD,'bold'],[CODE,'code'],[ITAL,'ital']];\n    for (const c of cands) { const m = c[0].exec(rest); if (m && (best === null || m.index < best.index)) { best = m; kind = c[1]; } }\n    if (!best) { out.push({ text: rest }); break; }\n    if (best.index > 0) out.push({ text: rest.slice(0, best.index) });\n    if (kind === 'link') out.push({ text: best[1], attributes: { link: best[2] } });\n    else if (kind === 'bold') out.push({ text: best[1], attributes: { bold: true } });\n    else if (kind === 'code') out.push({ text: best[1], attributes: { code: true } });\n    else out.push({ text: best[1] || best[2], attributes: { italic: true } });\n    rest = rest.slice(best.index + best[0].length);\n  }\n  return out.length ? out : [{ text: '' }];\n}\nfunction isRow(s){ const t=s.trim(); return t.length>1 && t.charAt(0)==='|' && t.charAt(t.length-1)==='|'; }\nfunction isSep(s){ const t=s.trim(); return /^[|\\s:-]+$/.test(t) && t.indexOf('-')>=0; }\nfunction cellsOf(s){ return s.trim().replace(/^\\|/,'').replace(/\\|$/,'').split('|').map(function(c){return c.trim();}); }\nfunction mdToOps(md) {\n  const ops = [];\n  function emit(inline, attrs) { for (const o of inline) ops.push(o); ops.push(attrs ? { text: '\\n', attributes: attrs } : { text: '\\n' }); }\n  const L = String(md).replace(/\\r/g,'').split('\\n');\n  let i=0, gRow=0, inCode=false;\n  while (i < L.length) {\n    const s = L[i];\n    if (s.trim().indexOf(FENCE) === 0) { inCode = !inCode; i++; continue; }\n    if (inCode) { ops.push({ text: s }); ops.push({ text: '\\n', attributes: { 'code-block': 'plain' } }); i++; continue; }\n    if (isRow(s) && i+1 < L.length && isSep(L[i+1])) {\n      const rows=[]; let j=i;\n      while (j < L.length && isRow(L[j])) { rows.push(L[j]); j++; }\n      for (let r=0; r<rows.length; r++) {\n        if (r===1) continue;\n        gRow++;\n        const cs = cellsOf(rows[r]);\n        for (const c of cs) { const io = inlineOps(c); for (const o of io) ops.push(o); ops.push({ text: '\\n', attributes: { table: 'row-'+gRow } }); }\n      }\n      i=j; continue;\n    }\n    const t = s.replace(/^\\s+/,'');\n    let m;\n    if (t.charAt(0)==='#') { const h=t.match(/^(#{1,6})\\s+(.*)$/); if (h) { emit(inlineOps(h[2]), { header: Math.min(h[1].length,3) }); i++; continue; } }\n    if ((m = t.match(/^[-*+]\\s+(.*)$/))) { emit(inlineOps(m[1]), { list: 'bullet' }); i++; continue; }\n    if ((m = t.match(/^\\d+\\.\\s+(.*)$/))) { emit(inlineOps(m[1]), { list: 'ordered' }); i++; continue; }\n    if (t.charAt(0)==='>') { emit(inlineOps(t.replace(/^>\\s?/,'')), { blockquote: true }); i++; continue; }\n    if (/^([-*_])\\1{2,}$/.test(s.trim())) { i++; continue; }\n    if (s.trim()==='') { i++; continue; }\n    emit(inlineOps(s), null);\n    i++;\n  }\n  return ops;\n}\n\nconst image_manifest = [];\nconst rendered_delta = [];\nconst warnings = [];\nconst image_models_set = {};\nlet total_image_cost_pln = 0;\n\nfor (const block of items) {\n  if (Array.isArray(block.parse_warnings)) { for (const w of block.parse_warnings) warnings.push(w); }\n  switch (block.block_type) {\n    case 'text':\n      for (const op of mdToOps(block.md || '')) rendered_delta.push(op);\n      break;\n    case 'embed_resolved':\n      rendered_delta.push({ type: 'attachment', attachment: { id: block.att_id, url: block.att_url } });\n      if (block.caption) rendered_delta.push({ text: block.caption + '\\n', attributes: { italic: true } });\n      else rendered_delta.push({ text: '\\n' });\n      break;\n    case 'embed_failed':\n      rendered_delta.push({ text: '[Obraz niedostępny]\\n', attributes: { italic: true } });\n      warnings.push(block.warning);\n      break;\n    case 'generate_success':\n      image_manifest.push({ placeholder_id: block.placeholder_id, b64: block.b64_json, mime: block.mime, caption: block.caption, alt: block.alt });\n      rendered_delta.push({ type: 'image_ref', placeholder_id: block.placeholder_id });\n      if (block.caption) rendered_delta.push({ text: block.caption + '\\n', attributes: { italic: true } });\n      else rendered_delta.push({ text: '\\n' });\n      if (block.resolution_note) { rendered_delta.push({ text: block.resolution_note + '\\n', attributes: { italic: true } }); warnings.push('image-batch/resolution-adjusted: ' + block.resolution_note); }\n      if (Array.isArray(block.warnings)) { for (const w of block.warnings) warnings.push(w); }\n      total_image_cost_pln += Number(block.cost_pln || 0);\n      if (block.image_model) image_models_set[block.image_model] = true;\n      break;\n    case 'generate_failed':\n      rendered_delta.push({ text: '[Generowanie obrazu nieudane]\\n', attributes: { italic: true } });\n      if (Array.isArray(block.warnings)) { for (const w of block.warnings) warnings.push(w); }\n      else if (block.warning) warnings.push(block.warning);\n      total_image_cost_pln += Number(block.cost_pln || 0);\n      break;\n    case 'generate_dropped':\n      rendered_delta.push({ text: (block.md || '') + '\\n', attributes: { italic: true } });\n      warnings.push(block.warning);\n      break;\n  }\n}\n\nreturn [{ json: { image_manifest, rendered_delta, total_image_cost_pln, image_models: Object.keys(image_models_set), warnings } }];\n"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Lookup Image Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Image Config": {
+      "main": [
+        [
+          {
+            "node": "Resolve & Explode Blocks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve & Explode Blocks": {
+      "main": [
+        [
+          {
+            "node": "Classify Block",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Block": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resolve Embed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Batch Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Dropped Block",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Embed": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Build Batch Request": {
+      "main": [
+        [
+          {
+            "node": "Call Generate Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Generate Batch": {
+      "main": [
+        [
+          {
+            "node": "Handle Gen Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Gen Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Build Dropped Block": {
+      "main": [
+        [
+          {
+            "node": "Merge Branches",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Merge Branches": {
+      "main": [
+        [
+          {
+            "node": "Assemble Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "binaryMode": "separate"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "6215f24f-4749-4c7f-a5c6-b21036918218",
+  "activeVersionId": "6215f24f-4749-4c7f-a5c6-b21036918218",
+  "versionCounter": 13,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-12T18:21:03.778Z",
+      "createdAt": "2026-06-12T18:21:03.778Z",
+      "role": "workflow:owner",
+      "workflowId": "znDqcfgXK6CNte20",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

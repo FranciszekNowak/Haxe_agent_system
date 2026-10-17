@@ -1,0 +1,350 @@
+{
+  "updatedAt": "2026-06-24T13:09:46.424Z",
+  "createdAt": "2026-06-23T12:41:59.606Z",
+  "id": "y985MgyA5lCxOFCH",
+  "name": "ClickUp Extract Tool Handler (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "ADR-054 Block 4b — services the agent's extract_clickup_task custom-tool call from Execute Agent Session's retained loop. IN: clickup_task_id (the agent's tool input — what task's attachments to extract), caller_user_id (the triggering user; set by n8n, never the agent), clickup_scope ('scoped'|'degraded', for the token-presence guard). OUT: { status, tool_result_content_json (a user.custom_tool_result content[] — text + image file_id blocks the agent SEES), new_warnings_json, new_images_json:'[]' }. Branch-free terminal (Return re-reads Merge Result). saveDataSuccessExecution=none so U's REST token is NOT persisted in this workflow's execution data.",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "caller_user_id"
+            },
+            {
+              "name": "clickup_scope"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "get-rest-token",
+      "name": "Get REST Token",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        300
+      ],
+      "notes": "Read the caller's CLASSIC ClickUp REST OAuth token from Supabase Vault via SECURITY DEFINER getter public.get_clickup_rest_token(clickup_user_id) (migration 042; caller_user_id IS the clickup_user_id the pipeline carries). This is the identity that lets read-input fetch the task AS U (the as-U mode, Block 4a). onError=continueRegularOutput + alwaysOutputData so an un-onboarded user (null token) or a transient DB miss still flows to Has Token? (-> degrade, never throw into the session). Returns { token } (null when the user has no stored REST token).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_clickup_rest_token($1) as token;",
+        "options": {
+          "queryReplacement": "={{ [ String($('When Called').first().json.caller_user_id || '') ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "has-token",
+      "name": "Has Token?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ],
+      "notes": "TRUE (main[0]): the caller has a stored REST token -> Read Input as-U fetches the task under the caller's permissions. FALSE (main[1]): no token -> Build No Token Result degrades (extraction unavailable). CRITICAL: the FALSE branch must NEVER reach the bot path — there is no bot fallback for extraction, so a tokenless call simply returns 'unavailable' (the boundary holds).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-has-token",
+              "leftValue": "={{ $json.token }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "read-input-asu",
+      "name": "Read Input as-U",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        660,
+        200
+      ],
+      "notes": "Call Read Input (v1) in AS-U mode (Block 4a): pass the caller's REST token as as_user_token so its Get Task (as U) fetches the task with the CALLER's identity. ClickUp denies any task the caller cannot see -> read-input returns a clickup-asU/access-denied warning (Build Extract Result turns that into an access-denied tool result). NEVER the bot token. onError=continueRegularOutput so a read-input failure degrades to a tool result rather than throwing into the session. Returns { blocks, clickup_task_id, warnings }.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "zgGpONulGMohQQqI",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ $('When Called').first().json.clickup_task_id }}",
+            "as_user_token": "={{ $json.token }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "upload-images",
+      "name": "Upload Images",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        880,
+        200
+      ],
+      "notes": "Upload any IMAGE blocks read-input returned to the Files API via Upload Input Images (v1), reusing the exact input-image path (fetch pre-signed URL -> POST /v1/files purpose=agent -> file_id). The spike proved a user.custom_tool_result with an image file_id block is SEEN by the agent. input_images_json = read-input's image-typed blocks (same {type:image,ref,mime,source_ref,alt,order} shape Upload Input Images expects). onError=continueRegularOutput so an upload failure degrades to a text marker per image (Build Extract Result), never throws. Returns { file_map:[{ok,file_id,url,source_ref,order,...}], warnings }.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "2VkZN5UeqVk6MDLW",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "input_images_json": "={{ JSON.stringify((((($('Read Input as-U').first()||{}).json||{}).blocks)||[]).filter(function(b){ return b && b.type === 'image' && ['image/png','image/jpeg','image/jpg','image/gif','image/webp'].indexOf(String(b.mime||'').toLowerCase()) >= 0; })) }}",
+            "clickup_task_id": "={{ $('When Called').first().json.clickup_task_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "build-extract-result",
+      "name": "Build Extract Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        200
+      ],
+      "notes": "Assemble the user.custom_tool_result content[] the agent reads. Access-denied (read-input warning clickup-asU/access-denied) -> a denied tool result, PLUS an audit WARN (managed-agents/extract-access-denied) so a denied/out-of-scope extraction attempt is visible (the denial is the boundary working, but the ATTEMPT is worth surfacing — possible prompt-injection or credential misconfig). The denied tool result itself is unchanged. Otherwise: blocks sorted by order -> text blocks verbatim (incl. [BRAK..] extraction markers), image blocks -> {type:image,source:{type:file,file_id}} matched from the upload file_map by order/source_ref/ref (a failed upload -> a text marker). A header line summarizes counts. Real (non-denied) read-input + upload warnings ride out as new_warnings_json (surfaced once by the session's Classify Alert -> Post Alert). new_images_json='[]' (extracted images are consumed by the agent, not produced output files).",
+      "parameters": {
+        "jsCode": "const ri = (($('Read Input as-U').first() || {}).json) || {};\nconst blocks = Array.isArray(ri.blocks) ? ri.blocks : [];\nconst riWarnings = Array.isArray(ri.warnings) ? ri.warnings : [];\nconst up = (($('Upload Images').first() || {}).json) || {};\nconst fileMap = Array.isArray(up.file_map) ? up.file_map : [];\nconst wc = (($('When Called').first() || {}).json) || {};\nconst taskId = wc.clickup_task_id || ri.clickup_task_id || '';\nconst denied = riWarnings.some(function(w){ return w && w.source === 'clickup-asU/access-denied'; });\nif (denied) {\n  return [{ json: {\n    status: 'denied',\n    tool_result_content_json: JSON.stringify([{ type: 'text', text: 'Brak dostepu: nie masz uprawnien do zadania ' + taskId + ' w ClickUp (albo zadanie nie istnieje). Nie pobrano zadnej tresci.' }]),\n    new_warnings_json: JSON.stringify([{ source: 'managed-agents/extract-access-denied', err: ('Uzytkownik ' + (wc.caller_user_id || '?') + ' probowal wyekstrahowac zadanie ' + taskId + ', ale ClickUp odmowil dostepu (poza zakresem uprawnien lub zadanie nie istnieje) - mozliwa proba wyjscia poza zakres badz bledna konfiguracja poswiadczen.').slice(0, 300), severity: 'WARN' }]),\n    new_images_json: '[]'\n  } }];\n}\nconst fileById = {};\nfor (const f of fileMap) { if (f && f.file_id) { if (f.order != null) fileById['o:' + f.order] = f.file_id; if (f.source_ref != null) fileById['s:' + f.source_ref] = f.file_id; if (f.url) fileById['r:' + f.url] = f.file_id; } }\nconst sorted = blocks.slice().sort(function(a, b){ return ((a && a.order) || 0) - ((b && b.order) || 0); });\nconst body = [];\nlet docCount = 0, imgCount = 0, imgFailed = 0;\nfor (const b of sorted) {\n  if (!b) continue;\n  if (b.type === 'text') {\n    const md = b.md || '';\n    if (md) { body.push({ type: 'text', text: md }); if (md.indexOf('[BRAK') !== 0) docCount++; }\n  } else if (b.type === 'image') {\n    const fid = fileById['o:' + b.order] || (b.source_ref != null ? fileById['s:' + b.source_ref] : null) || (b.ref ? fileById['r:' + b.ref] : null);\n    if (fid) { body.push({ type: 'image', source: { type: 'file', file_id: fid } }); imgCount++; }\n    else { imgFailed++; body.push({ type: 'text', text: '[obraz niedostepny: ' + (b.alt || b.source_ref || '') + ']' }); }\n  }\n}\nconst header = 'Wyekstrahowano zawartosc zalacznikow zadania ' + taskId + ': ' + docCount + ' dok., ' + imgCount + ' obr.' + (imgFailed ? (' (' + imgFailed + ' obr. nie pobrano)') : '') + (body.length === 0 ? ' Brak zalacznikow do ekstrakcji.' : '');\nconst content = [{ type: 'text', text: header }].concat(body);\nconst warnings = [];\nfor (const w of riWarnings) { if (w && w.source !== 'clickup-asU/access-denied') warnings.push({ source: 'managed-agents/extract-readinput', err: ((w.title ? w.title + ': ' : '') + (w.err || w.source || '')).slice(0, 300), severity: 'WARN' }); }\nfor (const w of (Array.isArray(up.warnings) ? up.warnings : [])) warnings.push({ source: 'managed-agents/extract-upload', err: String((w && (w.err || w.warn_source)) || '').slice(0, 300), severity: 'WARN' });\nreturn [{ json: {\n  status: (imgFailed > 0 || warnings.length > 0) ? 'partial' : 'ok',\n  tool_result_content_json: JSON.stringify(content),\n  new_warnings_json: JSON.stringify(warnings),\n  new_images_json: '[]'\n} }];"
+      }
+    },
+    {
+      "id": "build-no-token",
+      "name": "Build No Token Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        420
+      ],
+      "notes": "Token-presence guard + degrade. No REST token for this caller -> extraction is unavailable; answer the agent so it proceeds on existing context (never the bot view). WARN only when clickup_scope==='scoped' (the user IS onboarded for discovery but is MISSING the REST token = a half-onboarded inconsistency the operator must fix). For 'degraded' (un-onboarded) suppress the WARN — Block 2 already fired one consolidated scope-degraded WARN at session create (operator decision 2026-06-23, mirrors Block 3a).",
+      "parameters": {
+        "jsCode": "const wc = (($('When Called').first() || {}).json) || {};\nconst scope = wc.clickup_scope || '';\nconst uid = wc.caller_user_id || '?';\nconst warnings = [];\nif (scope === 'scoped') {\n  warnings.push({ source: 'managed-agents/extract-no-rest-token', err: 'Uzytkownik ' + uid + ' ma poswiadczenie ClickUp do wyszukiwania (discovery), ale BRAK tokenu REST do ekstrakcji zalacznikow - dokoncz onboarding (token REST w Supabase Vault).', severity: 'WARN' });\n}\nreturn [{ json: {\n  status: 'unavailable',\n  tool_result_content_json: JSON.stringify([{ type: 'text', text: 'Narzedzie ekstrakcji zalacznikow jest niedostepne dla Twojego konta (brak poswiadczenia ClickUp). Pracuj na podstawie dostarczonego kontekstu i nie zglaszaj tego jako bledu.' }]),\n  new_warnings_json: JSON.stringify(warnings),\n  new_images_json: '[]'\n} }];"
+      }
+    },
+    {
+      "id": "merge-result",
+      "name": "Merge Result",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1320,
+        300
+      ],
+      "notes": "Converge the extraction result (input 0) and the no-token degrade (input 1) into ONE stream. Append; exactly one branch executes per call. Return re-reads this node so the result is deterministic.",
+      "parameters": {
+        "numberInputs": 2
+      }
+    },
+    {
+      "id": "return",
+      "name": "Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        300
+      ],
+      "notes": "SOLE TERMINAL. Re-reads Merge Result's first item (research-the-web return-determinism idiom) and returns the handler contract { status, tool_result_content_json, new_warnings_json, new_images_json } that Execute Agent Session's Build Extract Result Text consumes.",
+      "parameters": {
+        "jsCode": "return [{ json: (($('Merge Result').first() || {}).json) || {} }];"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Get REST Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get REST Token": {
+      "main": [
+        [
+          {
+            "node": "Has Token?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Token?": {
+      "main": [
+        [
+          {
+            "node": "Read Input as-U",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build No Token Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Input as-U": {
+      "main": [
+        [
+          {
+            "node": "Upload Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Images": {
+      "main": [
+        [
+          {
+            "node": "Build Extract Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Extract Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build No Token Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Result": {
+      "main": [
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "saveDataSuccessExecution": "none",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "d094e710-f8fc-4c23-8e04-a637ddaee7d7",
+  "activeVersionId": "d094e710-f8fc-4c23-8e04-a637ddaee7d7",
+  "versionCounter": 5,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-23T12:41:59.606Z",
+      "createdAt": "2026-06-23T12:41:59.606Z",
+      "role": "workflow:owner",
+      "workflowId": "y985MgyA5lCxOFCH",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

@@ -1,0 +1,296 @@
+{
+  "updatedAt": "2026-06-24T14:00:08.481Z",
+  "createdAt": "2026-06-24T13:59:26.182Z",
+  "id": "0hj3LDSEe1R3JJ5w",
+  "name": "ClickUp Onboarding Coverage Monitor (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Weekly Mon 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        200
+      ],
+      "notes": "ADR-054 Block 6: weekly onboarding-coverage dead-man's-switch. The per-session degrade WARN (Block 2/3a) only fires when an un-onboarded user actually triggers the agent; this proactively catches an ACTIVE, FULL ClickUp member who is missing EITHER per-user ClickUp token, so nobody is silently left un-scoped. Weekly (Mon 08:00 Europe/Warsaw) on purpose - a coverage nag must not spam.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        380
+      ],
+      "notes": "Test entry for Definition-of-Done verification via scripts/test-subworkflow.mjs (a Schedule Trigger cannot be fired over the n8n API). No inputs needed.",
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "get-team",
+      "name": "Get Team",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        280
+      ],
+      "notes": "GET /api/v2/team on the BOT token (clickUpApi cred QRrgf6hteyGWSJyv) -> teams[].members[].user with role_key + last_active. This is the only place last_active is available (the trimmed MCP member view omits it). A failure throws -> the global Error Handler raises CRITICAL (we lose coverage visibility, not the pipeline).",
+      "parameters": {
+        "url": "https://api.clickup.com/api/v2/team",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      }
+    },
+    {
+      "id": "get-state",
+      "name": "Get Onboarding State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        480,
+        280
+      ],
+      "notes": "get_clickup_onboarding_state() (migration 044, SECURITY DEFINER, service_role only) -> {mcp_ids:[...], rest_ids:[...]} - which ClickUp user ids have an active MCP discovery credential and which have a REST extraction token. Returns ids ONLY, never token values, so it is safe to surface in the alert.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_clickup_onboarding_state() as state;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      }
+    },
+    {
+      "id": "compute",
+      "name": "Compute Coverage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        280
+      ],
+      "notes": "WARN rule (ADR-054 Block 6, operator-set): a member is flagged when ALL hold - (1) full member (role_key owner/admin/member; guest + limited_member excluded), (2) active in the last 30 days (last_active), (3) missing EITHER token (MCP discovery and/or REST extraction). Someone with BOTH tokens is clear. The Agent Haxe bot account (99811284) is hard-excluded - it is the agent, never an onboardee, and its last_active is bumped by our own API calls.",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const EXCLUDE_IDS = new Set(['99811284']); // Agent Haxe bot - never an onboardee\nconst FULL_ROLES = new Set(['owner','admin','member']); // exclude guest + limited_member\nconst ACTIVE_DAYS = 30;\nconst now = Date.now();\n\nconst teams = ($('Get Team').first().json.teams) || [];\nlet state = $('Get Onboarding State').first().json.state || {};\nif (typeof state === 'string') { try { state = JSON.parse(state); } catch (e) { state = {}; } }\nconst mcp = new Set((state.mcp_ids || []).map(String));\nconst rest = new Set((state.rest_ids || []).map(String));\n\nconst missing = [];\nconst seen = new Set();\nfor (const t of teams) {\n  for (const m of (t.members || [])) {\n    const u = m.user || {};\n    const id = String(u.id);\n    if (!id || id === 'undefined' || seen.has(id)) continue;\n    seen.add(id);\n    if (EXCLUDE_IDS.has(id)) continue;\n    if (!FULL_ROLES.has(u.role_key)) continue;\n    const la = u.last_active ? Number(u.last_active) : null;\n    if (!la || (now - la) > ACTIVE_DAYS * 86400000) continue;\n    const hasMcp = mcp.has(id);\n    const hasRest = rest.has(id);\n    if (hasMcp && hasRest) continue;\n    const lacks = [];\n    if (!hasMcp) lacks.push('MCP (discovery)');\n    if (!hasRest) lacks.push('REST (extraction)');\n    missing.push({ id, username: u.username || '(?)', email: u.email || '(?)', role: u.role_key, days_since: Math.round((now - la) / 86400000), missing: lacks });\n  }\n}\nmissing.sort((a, b) => String(a.username).localeCompare(String(b.username)));\n\nconst lines = missing.map(x => `- ${x.username} (${x.email}, ${x.role}): brak ${x.missing.join(' + ')}`);\nconst details = missing.length\n  ? `Aktywni (ostatnia aktywnosc <=${ACTIVE_DAYS} dni) pelni czlonkowie ClickUp bez kompletu tokenow ADR-054 (${missing.length}):\\n` + lines.join('\\n') + `\\n\\nDodaj brakujace: MCP (discovery) -> node scripts/onboard-clickup-mcp-user.mjs; REST (extraction) -> node scripts/onboard-clickup-rest-token.mjs. Po onboardingu WARN zniknie przy nastepnym przebiegu.`\n  : `OK - wszyscy aktywni pelni czlonkowie ClickUp maja oba tokeny.`;\n\nreturn [{ json: { count: missing.length, details, missing } }];"
+      }
+    },
+    {
+      "id": "has-missing",
+      "name": "Any Missing?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        960,
+        280
+      ],
+      "notes": "count>0 -> WARN via Post Alert; count==0 -> Healthy (silent; a clean coverage run must NOT post to the Alerts task every week).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "healthy",
+      "name": "Healthy",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        180
+      ],
+      "notes": "Terminal for full coverage. Silent on purpose.",
+      "parameters": {}
+    },
+    {
+      "id": "alert",
+      "name": "Alert Coverage Gap",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1200,
+        380
+      ],
+      "notes": "WARN via Post Alert (v1) seam (ADR-025). Lists each active full member missing a token and which token. Action: run the onboarding script(s) named in details. Not CRITICAL - the run still degrades safely per user (Block 2/3a); this is a reminder, not an outage.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "clickup-onboarding/coverage",
+            "message": "=Aktywni pelni czlonkowie ClickUp bez kompletu tokenow ADR-054: {{ $json.count }}. Szczegoly + komendy onboardingu ponizej.",
+            "details": "={{ $json.details }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Weekly Mon 08:00": {
+      "main": [
+        [
+          {
+            "node": "Get Team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Get Team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Team": {
+      "main": [
+        [
+          {
+            "node": "Get Onboarding State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Onboarding State": {
+      "main": [
+        [
+          {
+            "node": "Compute Coverage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Coverage": {
+      "main": [
+        [
+          {
+            "node": "Any Missing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Missing?": {
+      "main": [
+        [
+          {
+            "node": "Alert Coverage Gap",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Healthy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": {
+    "node:Weekly Mon 08:00": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "3b228276-3b35-40ae-91b1-7098450acb4b",
+  "activeVersionId": "3b228276-3b35-40ae-91b1-7098450acb4b",
+  "versionCounter": 2,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-24T13:59:26.182Z",
+      "createdAt": "2026-06-24T13:59:26.182Z",
+      "role": "workflow:owner",
+      "workflowId": "0hj3LDSEe1R3JJ5w",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

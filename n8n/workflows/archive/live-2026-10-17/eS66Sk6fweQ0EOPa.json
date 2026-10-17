@@ -1,0 +1,908 @@
+{
+  "updatedAt": "2026-06-30T12:39:20.934Z",
+  "createdAt": "2026-06-08T11:34:28.523Z",
+  "id": "eS66Sk6fweQ0EOPa",
+  "name": "CU Webhook Producer (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "CU Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "cu-comment-prod-001",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cu-comment",
+        "responseMode": "onReceived",
+        "options": {
+          "rawBody": true
+        }
+      }
+    },
+    {
+      "id": "ignore-telemetry",
+      "name": "Not Telemetry Task?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        180,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "t1",
+              "leftValue": "={{ $json.body.task_id }}",
+              "rightValue": "869dj2z2c",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "verify-sig",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [
+        400,
+        120
+      ],
+      "parameters": {
+        "action": "hmac",
+        "type": "SHA256",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "dataPropertyName": "computedSig",
+        "encoding": "hex"
+      },
+      "credentials": {
+        "crypto": {
+          "id": "NY5wM3VKKC1jZtQY",
+          "name": "ClickUp Webhook HMAC"
+        }
+      }
+    },
+    {
+      "id": "sig-valid",
+      "name": "Signature Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        620,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "s1",
+              "leftValue": "={{ $json.computedSig }}",
+              "rightValue": "={{ $('CU Webhook').first().json.headers['x-signature'] }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "alert-badsig",
+      "name": "Alert Bad Signature",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        840,
+        280
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "cu-webhook/signature",
+            "message": "Odrzucono webhook ClickUp: nieprawidłowy lub brakujący podpis X-Signature.",
+            "details": "=task={{ $('CU Webhook').first().json.body.task_id }}; got_sig={{ ($('CU Webhook').first().json.headers['x-signature'] || 'BRAK').toString().slice(0,12) }}…; jeśli dotyczy prawdziwych wzmianek — sprawdź, czy poświadczenie 'ClickUp Webhook HMAC' zgadza się z sekretem webhooka w ClickUp."
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "details",
+              "displayName": "details",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "detect",
+      "name": "Detect Mention",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        120
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// CANONICAL ClickUp comment-op serializer (ADR-066 Block 2). KEEP serializeCommentOps IDENTICAL across 3 sites:\n// cu-webhook-producer/Detect Mention, assemble-task-context/Build Output + Collect Replies. Edit all three together.\n// n8n Code nodes share no module; a sub-workflow on the producer webhook hot path would add an exec row per\n// comment + a synchronous failure surface to mention-detection, so we keep 3 inline copies of this pure fn\n// (rationale: ADR-066 Block 2 / current.md). Rich ops (doc_mention/bookmark/link) carry empty/weak .text and are\n// dropped by ClickUp's flat comment_text/text_content; rebuild from ops so the reference survives (2026-06-30 pptx drop).\nfunction serializeCommentOps(ops, flat) {\n  const arr = Array.isArray(ops) ? ops : [];\n  const rich = function (op) { return op && (op.type === 'doc_mention' || op.type === 'bookmark' || op.bookmark || (op.attributes && (op.attributes.bookmark || op.attributes.link))); };\n  if (!arr.some(rich)) return (flat || arr.map(function (op) { return (op && op.text) || ''; }).join(''));\n  return arr.map(function (op) {\n    if (!op) return '';\n    if (op.type === 'doc_mention') {\n      const d = op.doc_mention || {};\n      const team = d.teamId || d.workspaceId || '';\n      const view = d.viewId || '';\n      const page = d.pageId || op.text || '';\n      const url = (team && view && page) ? ('https://app.clickup.com/' + team + '/docs/' + view + '/' + page) : '';\n      const title = d.pageTitle ? (' \"' + d.pageTitle + '\"') : '';\n      const ref = url ? (url + ' (doc ' + view + ', strona ' + page + ')') : ('doc ' + (view || '?') + ', strona ' + (page || '?'));\n      return '[dokument ClickUp' + title + ': ' + ref + ']';\n    }\n    const at = op.attributes || {};\n    const bm = op.bookmark || at.bookmark;\n    if (bm) { const u = (typeof bm === 'string') ? bm : (bm.url || bm.href || ''); return u ? ('[link: ' + u + ']') : (op.text || ''); }\n    if (at.link) { const u = (typeof at.link === 'string') ? at.link : (at.link.url || at.link.href || ''); return op.text ? (op.text + ' (' + u + ')') : ('[link: ' + u + ']'); }\n    return op.text || '';\n  }).join('');\n}\nconst AGENT_ID = 99811284;\nconst body = $('CU Webhook').first().json.body || {};\nconst taskId = body.task_id;\nconst items = (body.history_items || []).filter(h => h && h.field === 'comment' && h.comment);\nconst h = items[items.length - 1];\nlet matched = false, reviewer_user_id = '', caller_username = '';\nlet triggering_comment_id = '', reply_to_comment_id = '', triggering_comment_text = '';\nif (h) {\n  const ops = h.comment.comment || [];\n  const tagged = ops.some(b => b && b.type === 'tag' && b.user && Number(b.user.id) === AGENT_ID);\n  const author = h.comment.user || h.user || {};\n  if (tagged) {\n    matched = true;\n    reviewer_user_id = String(author.id || '');\n    caller_username = author.username || '';\n  }\n  triggering_comment_id = String(h.comment.id || h.id || '');\n  // ClickUp threads are single-level: POSTing /comment/{id}/reply to a comment that is ITSELF a reply\n  // returns 'Unsupported Entity' -> fallback would post a NEW top-level comment (answer lands in a new thread).\n  // For a reply, h.comment.parent is the top-level (repliable) comment id; for a top-level comment it is the task id.\n  // Reply to the thread ROOT to stay in the caller's thread. Keep triggering_comment_id (own id) as the dedup key.\n  const parent = String(h.comment.parent || '');\n  reply_to_comment_id = (parent && parent !== String(taskId)) ? parent : triggering_comment_id;\n  triggering_comment_text = serializeCommentOps(ops, h.comment.text_content) || '';\n}\nreturn [{ json: { matched, taskId, reviewer_user_id, caller_username, triggering_comment_id, reply_to_comment_id, triggering_comment_text } }];"
+      }
+    },
+    {
+      "id": "if-mention",
+      "name": "If Mentioned",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1060,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "m1",
+              "leftValue": "={{ $json.matched }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "recent-runs",
+      "name": "Recent Runs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1280,
+        120
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select count(*)::int as n from agent_runs where clickup_task_id = $1 and created_at > now() - interval '10 minutes';",
+        "options": {
+          "queryReplacement": "={{ [ $('Detect Mention').first().json.taskId ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      }
+    },
+    {
+      "id": "run-or-break",
+      "name": "Under Limit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1500,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "lim",
+              "leftValue": "={{ Number($json.n || 0) }}",
+              "rightValue": 8,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "run-spine",
+      "name": "Run Agent Spine",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1720,
+        40
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "a8XKaijkMFNBpRBa",
+          "mode": "list",
+          "cachedResultName": "Agent Spine (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $('Detect Mention').first().json.taskId }}",
+            "reviewer_user_id": "={{ $('Detect Mention').first().json.reviewer_user_id }}",
+            "caller_username": "={{ $('Detect Mention').first().json.caller_username }}",
+            "triggered_by": "explicit_mention",
+            "invocation_type": "explicit",
+            "triggering_comment_id": "={{ $('Detect Mention').first().json.reply_to_comment_id }}",
+            "triggering_comment_text": "={{ $('Detect Mention').first().json.triggering_comment_text }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "taskId",
+              "displayName": "taskId",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "reviewer_user_id",
+              "displayName": "reviewer_user_id",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "caller_username",
+              "displayName": "caller_username",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "triggered_by",
+              "displayName": "triggered_by",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "invocation_type",
+              "displayName": "invocation_type",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "triggering_comment_id",
+              "displayName": "triggering_comment_id",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "triggering_comment_text",
+              "displayName": "triggering_comment_text",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "alert-loop",
+      "name": "Alert Loop Breaker",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1720,
+        220
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "cu-webhook/loop-breaker",
+            "message": "Przerwano możliwą pętlę agent→agent: zbyt wiele uruchomień na tym zadaniu w 10 min.",
+            "details": "=task={{ $('Detect Mention').first().json.taskId }}; runs_10min={{ $json.n }}; próg=8"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "details",
+              "displayName": "details",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "f94dea23-b883-402a-8cf7-96a787d6cdbb",
+      "name": "Claim Comment",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1180,
+        340
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with ins as (\n  insert into agent_webhook_dedup (triggering_comment_id)\n  values ($1)\n  on conflict (triggering_comment_id) do nothing\n  returning 1\n)\nselect (exists (select 1 from ins) or coalesce($1, '') = '') as is_first;",
+        "options": {
+          "queryReplacement": "={{ [ $('Detect Mention').first().json.triggering_comment_id ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "notes": "Webhook idempotency (ADR-029, migration 018_webhook_dedup, 2026-06-11). Atomic claim on the triggering comment id: INSERT ... ON CONFLICT DO NOTHING; the unique PK serialises the two near-simultaneous deliveries ClickUp sends for one @-mention (~45ms apart) so exactly one wins. Returns is_first (also true when comment id is empty -> never blocks). onError:continueRegularOutput + retry -> a DB blip fails OPEN (is_first undefined downstream)."
+    },
+    {
+      "id": "cfce4a6c-b8e3-4d4b-8084-3f35c387a342",
+      "name": "Not Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1400,
+        340
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "dup1",
+              "leftValue": "={{ $json.is_first !== false }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      },
+      "notes": "is_first !== false -> proceed (true, incl. DB-error fail-open where is_first is undefined); is_first === false -> duplicate delivery, dead-end (drop). Complements the Recent Runs / Under Limit? loop-breaker: THIS kills exact-comment duplicates (at-least-once delivery), THAT caps agent->agent storms."
+    },
+    {
+      "id": "read-queue-flag",
+      "name": "Read Queue Flag",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1720,
+        -140
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select value from config where key = 'queue.enabled' limit 1;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "notes": "ADR-056 Block 3: read config.queue_enabled to choose enqueue vs synchronous fallback. onError:continueRegularOutput + retry -> a DB blip passes the input item through with no `value` field, so Queue Enabled? evaluates false and the run falls back to the synchronous Run Agent Spine (fail-safe to the known-good path).",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "queue-enabled",
+      "name": "Queue Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1900,
+        -140
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "qe1",
+              "leftValue": "={{ String(($json.value ?? '')).trim().toLowerCase() }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fetch-impact",
+      "name": "Fetch Task Impact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2100,
+        -240
+      ],
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('Detect Mention').first().json.taskId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "notes": "ADR-056 Block 3: fetch the task so Build Enqueue Job can read the [AI] Wpływ custom field for queue priority. onError:continueRegularOutput + retry -> a ClickUp blip degrades to the Średni default (Build Job try/catch), never a throw.",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "build-job",
+      "name": "Build Enqueue Job",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2300,
+        -240
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const d = $('Detect Mention').first().json;\nconst taskId = d.taskId;\nconst ownCommentId = String(d.triggering_comment_id || '');   // dedup key (own comment id)\nconst replyTargetId = String(d.reply_to_comment_id || '');     // spine reply target (thread root)\nconst reviewerId = String(d.reviewer_user_id || '');\n\n// Resolve impact from the task's [AI] Wplyw custom field (same field id + option map as Assemble Parent Context).\nconst IMPORTANCE_FIELD_ID = '55c7ff79-1857-41e6-87b4-bd46678e1470';\nconst FALLBACK = {\n  '4c440e3f-94e8-4239-b9ec-54051090e2a4': 'Niski',\n  '1947d7f8-b394-4d7f-b555-9b2ad62fe38e': 'Średni',\n  '8c96537f-8bf8-405f-8a1c-c4fb39d80691': 'Wysoki',\n  '7780679d-6e30-466f-afae-d7728a31cbde': 'Krytycznie ważne'\n};\nconst VALID = ['Niski', 'Średni', 'Wysoki', 'Krytycznie ważne'];\nlet impact = '';\ntry {\n  const task = $('Fetch Task Impact').first().json || {};\n  const cf = (task.custom_fields || []).find(f => f.id === IMPORTANCE_FIELD_ID);\n  const v = cf ? cf.value : undefined;\n  if (v !== undefined && v !== null && v !== '') {\n    const opts = (cf.type_config && cf.type_config.options) || [];\n    const m = opts.find(o => o.id === v) || opts.find(o => String(o.orderindex) === String(v));\n    impact = m ? m.name : (FALLBACK[v] || '');\n  }\n} catch (e) {}\nif (VALID.indexOf(impact) === -1) impact = 'Średni';   // default: absent / 'n/d' / unreadable\n\n// Job contract (ADR-056 Block 2). Top-level invocation_type = queue vocabulary 'explicit_mention'\n// (drives priority + jobId + agent_runs.triggered_by idempotency). payload carries the spine-context\n// fields the consumer maps to the ingress; the consumer derives the spine-vocabulary invocation_type.\nreturn [{ json: {\n  task_id: taskId,\n  caller_user_id: reviewerId,\n  impact: impact,\n  invocation_type: 'explicit_mention',\n  enqueued_at: new Date().toISOString(),\n  payload: {\n    reviewer_user_id: reviewerId,\n    caller_username: d.caller_username || '',\n    triggered_by: 'explicit_mention',\n    triggering_comment_id: replyTargetId,\n    triggering_comment_text: d.triggering_comment_text || '',\n    dedup_comment_id: ownCommentId\n  }\n} }];"
+      },
+      "notes": "ADR-056 Block 3: assemble the /enqueue job. dedup_comment_id = the OWN comment id (distinct per @-mention -> distinct job, so follow-ups are not collapsed); payload.triggering_comment_id = reply_to_comment_id (thread root) for the spine's reply, matching the sync mapping."
+    },
+    {
+      "id": "enqueue-job",
+      "name": "Enqueue Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2500,
+        -240
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://queue-consumer:8080/enqueue",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "notes": "ADR-056 Block 3: POST the job to the queue-consumer over the internal Docker network. onError:continueErrorOutput -> a non-200 or unreachable consumer routes to output 1, which falls back to the synchronous Run Agent Spine AND fires a WARN (ADR-056 §9 failover; never silently drop the mention).",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "alert-enqueue-failed",
+      "name": "Alert Enqueue Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        2500,
+        -60
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "cu-webhook/enqueue",
+            "message": "Nie udało się dodać zadania do kolejki (queue-consumer) — fallback do synchronicznego uruchomienia spine.",
+            "details": "=task={{ $('Detect Mention').first().json.taskId }}; enqueue nieudane — {{ JSON.stringify($json).slice(0,300) }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "CU Webhook": {
+      "main": [
+        [
+          {
+            "node": "Not Telemetry Task?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Not Telemetry Task?": {
+      "main": [
+        [
+          {
+            "node": "Verify Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Signature": {
+      "main": [
+        [
+          {
+            "node": "Signature Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature Valid?": {
+      "main": [
+        [
+          {
+            "node": "Detect Mention",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Bad Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Mention": {
+      "main": [
+        [
+          {
+            "node": "If Mentioned",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recent Runs": {
+      "main": [
+        [
+          {
+            "node": "Under Limit?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Under Limit?": {
+      "main": [
+        [
+          {
+            "node": "Read Queue Flag",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Loop Breaker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Mentioned": {
+      "main": [
+        [
+          {
+            "node": "Claim Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Comment": {
+      "main": [
+        [
+          {
+            "node": "Not Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Not Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Recent Runs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Queue Flag": {
+      "main": [
+        [
+          {
+            "node": "Queue Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Task Impact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Agent Spine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Task Impact": {
+      "main": [
+        [
+          {
+            "node": "Build Enqueue Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Enqueue Job": {
+      "main": [
+        [
+          {
+            "node": "Enqueue Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enqueue Job": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Run Agent Spine",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert Enqueue Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "binaryMode": "separate"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "5023ff69-0815-4ea0-abeb-2fc1481ff8d2",
+  "activeVersionId": "5023ff69-0815-4ea0-abeb-2fc1481ff8d2",
+  "versionCounter": 25,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-08T11:34:28.523Z",
+      "createdAt": "2026-06-08T11:34:28.523Z",
+      "role": "workflow:owner",
+      "workflowId": "eS66Sk6fweQ0EOPa",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

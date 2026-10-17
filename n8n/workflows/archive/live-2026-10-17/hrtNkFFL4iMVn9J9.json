@@ -1,0 +1,413 @@
+{
+  "updatedAt": "2026-07-03T09:08:52.547Z",
+  "createdAt": "2026-06-23T08:11:53.533Z",
+  "id": "hrtNkFFL4iMVn9J9",
+  "name": "ClickUp MCP Health Monitor (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Every 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        200
+      ],
+      "notes": "ADR-054 Block 3 (upgraded 2026-07-02): REAL tool-connectivity dead-man's-switch for the hosted ClickUp MCP (mcp.clickup.com/mcp) that the tier agents use for caller-scoped discovery. Prior version only GET-pinged the PUBLIC OAuth well-known URL — which returns 2xx even when the harness cannot actually connect the MCP + inject a per-user token (exactly the 2026-07-01 silent failure: tools denied, well-known still 200). This now opens a real minimal probe session (cheap Haiku agent + Franciszek's ClickUp vault) and calls clickup_get_workspace_hierarchy in-harness — the same path a real task uses — so a genuine connection failure is caught within ~6h instead of at the next real task.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        380
+      ],
+      "notes": "Test entry for Definition-of-Done verification via scripts/test-subworkflow.mjs (a Schedule Trigger cannot be fired over the n8n API). No inputs needed.",
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "fetch-inputs",
+      "name": "Fetch Probe Inputs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        280
+      ],
+      "notes": "One row of probe prerequisites: the managed Anthropic key (get_anthropic_key(), migration 034), the cheapest tier agent (Haiku — the clickup MCP is registered on every tier agent, so the model is irrelevant to connectivity but Haiku minimises probe cost), the persistent environment id (config.managed_agent_environment_id), and Franciszek's active per-user ClickUp Vault id (a stable, always-onboarded probe identity; user_data_and_config). A missing prerequisite -> Run ClickUp Probe returns verdict prereq_missing -> CRITICAL (we cannot even probe). Read-only.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  public.get_anthropic_key() as anthropic_key,\n  (select agent_id from public.agent_routing where active = true and model_id = 'claude-haiku-4-5' limit 1) as agent_id,\n  (select value from public.config where key = 'managed_agent_environment_id') as environment_id,\n  (select vault_id from public.user_data_and_config where clickup_user_id = '2521617' and status = 'active' and vault_id is not null limit 1) as vault_id;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      }
+    },
+    {
+      "id": "probe",
+      "name": "Run ClickUp Probe",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        280
+      ],
+      "notes": "Opens a REAL managed session (agent + environment + Franciszek's ClickUp vault) and asks the agent to call ONLY clickup_get_workspace_hierarchy, then polls session events up to ~48s. Emits a single {verdict} item (does NOT raw-throw for classified cases) routed by Route Probe Verdict. VERDICTS: healthy = clickup_* ran in-harness (agent.mcp_tool_use) OR inconclusive steering-miss (no alarm). clickup_down = genuine ClickUp connectivity failure — tool denied / routed as client custom tool (the 2026-07-01 shape) / session error -> CRITICAL clickup-mcp/health. session_api_down = the Anthropic Managed-Agents SESSION API (create or send) failed after 3 retries (~3s backoff, mirrors prod Execute Agent Session maxTries:3) -> WARN managed-agents/session-api, NOT a ClickUp CRITICAL (fixes the transient-500 misfire, exec 7757). prereq_missing = a probe prerequisite was absent -> CRITICAL (cannot probe). onError=continueErrorOutput remains as a catch-all for any UNEXPECTED exception -> error output -> CRITICAL. Uses this.helpers.httpRequest (crypto/$env blocked here; not needed — key arrives in item data).",
+      "parameters": {
+        "jsCode": "const inp = $input.first().json || {};\nconst key = (inp.anthropic_key || '').toString().trim();\nconst agent = (inp.agent_id || '').toString().trim();\nconst env = (inp.environment_id || '').toString().trim();\nconst vault = (inp.vault_id || '').toString().trim();\nconst t0 = Date.now();\nconst elapsed = function () { return Math.round((Date.now() - t0) / 1000); };\nif (!key || !agent || !env || !vault) {\n  return [{ json: { verdict: 'prereq_missing', elapsed_s: elapsed(), details: 'Brak wymaganych danych sondy (nie mozna wykonac testu): ' + JSON.stringify({ hasKey: !!key, agent: agent || null, env: env || null, hasVault: !!vault }) } }];\n}\nconst API = 'https://api.anthropic.com';\nconst H = { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'managed-agents-2026-04-01,files-api-2025-04-14', 'content-type': 'application/json' };\nconst self = this;\nconst sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };\n// up to 3 attempts, ~3000ms backoff, mirrors prod Create/Send maxTries:3. Returns {ok:true,body} or {ok:false,status,msg}.\nconst postWithRetry = async function (url, body) {\n  let last = null;\n  for (let attempt = 1; attempt <= 3; attempt++) {\n    try {\n      const res = await self.helpers.httpRequest({ method: 'POST', url: url, headers: H, body: body, json: true, timeout: 30000 });\n      return { ok: true, body: res };\n    } catch (e) {\n      const status = (e && (e.statusCode || (e.response && e.response.status))) || null;\n      last = { ok: false, status: status, msg: (e && e.message) ? String(e.message) : String(e) };\n      if (attempt < 3) await sleep(3000);\n    }\n  }\n  return last;\n};\n// 1) create the probe session with the ClickUp vault attached (retry transient Anthropic 5xx)\nconst created = await postWithRetry(API + '/v1/sessions', { agent: agent, environment_id: env, vault_ids: [vault] });\nif (!created.ok) {\n  return [{ json: { verdict: 'session_api_down', failedCall: 'create', status: created.status, elapsed_s: elapsed(), details: 'POST /v1/sessions nie powiodlo sie po 3 probach. status=' + (created.status || 'brak') + ' msg=' + (created.msg || '').slice(0, 200) } }];\n}\nconst sid = created.body && created.body.id;\nif (!sid) {\n  return [{ json: { verdict: 'session_api_down', failedCall: 'create', status: 200, elapsed_s: elapsed(), details: 'Sonda: brak session id z /v1/sessions: ' + JSON.stringify(created.body).slice(0, 200) } }];\n}\n// 2) ask the agent to call ONLY the hierarchy tool (retry transient Anthropic 5xx)\nconst sent = await postWithRetry(API + '/v1/sessions/' + sid + '/events', { events: [{ type: 'user.message', content: [{ type: 'text', text: 'Test zdrowotny polaczenia z ClickUp. Wywolaj TERAZ narzedzie clickup_get_workspace_hierarchy i nic wiecej. NIE wywoluj zadnych innych narzedzi (ani get_task_details, ani deliver_output). Po wywolaniu odpowiedz jednym zdaniem.' }] }] });\nif (!sent.ok) {\n  try { await self.helpers.httpRequest({ method: 'DELETE', url: API + '/v1/sessions/' + sid, headers: H, timeout: 15000 }); } catch (e) {}\n  return [{ json: { verdict: 'session_api_down', failedCall: 'send', status: sent.status, session_id: sid, elapsed_s: elapsed(), details: 'POST /v1/sessions/{id}/events nie powiodlo sie po 3 probach. status=' + (sent.status || 'brak') + ' msg=' + (sent.msg || '').slice(0, 200) } }];\n}\n// 3) poll for a connectivity verdict\nlet connected = false; const denied = []; let clickupCustom = false; let sessErr = null;\nfor (let i = 0; i < 12; i++) {\n  await sleep(4000);\n  let ev;\n  try { ev = await self.helpers.httpRequest({ method: 'GET', url: API + '/v1/sessions/' + sid + '/events?limit=100', headers: H, json: true, timeout: 30000 }); } catch (e) { continue; }\n  const data = (ev && Array.isArray(ev.data)) ? ev.data : [];\n  for (const e of data) {\n    const nm = (e && typeof e.name === 'string') ? e.name : '';\n    if (e.type === 'agent.mcp_tool_use' && nm.indexOf('clickup_') === 0) connected = true;\n    if (e.type === 'agent.custom_tool_use' && nm.indexOf('clickup_') === 0) clickupCustom = true;\n    if (e.type === 'agent.tool_result') { const t = Array.isArray(e.content) ? e.content.map(function (c) { return (c && c.text) || ''; }).join(' ') : ''; const m = t.match(/Permission to use (clickup_[A-Za-z0-9_]+) has been denied/); if (m) denied.push(m[1]); }\n    if (e.type === 'session.error' || (typeof e.type === 'string' && e.type.indexOf('error') >= 0 && e.error)) { const errObj = e.error || e; if (JSON.stringify(errObj || {}).toLowerCase().indexOf('clickup') >= 0) sessErr = errObj; }\n  }\n  if (connected || denied.length || clickupCustom || sessErr) break;\n}\nconst el = elapsed();\n// best-effort cleanup (idle probe session otherwise lingers; harmless if DELETE is unsupported)\ntry { await self.helpers.httpRequest({ method: 'DELETE', url: API + '/v1/sessions/' + sid, headers: H, timeout: 15000 }); } catch (e) {}\nif (connected) { return [{ json: { verdict: 'healthy', session_id: sid, elapsed_s: el } }]; }\nif (denied.length || clickupCustom || sessErr) {\n  return [{ json: { verdict: 'clickup_down', session_id: sid, elapsed_s: el, details: 'Sonda ClickUp MCP: narzedzie NIE polaczylo sie (' + el + 's). denied=' + JSON.stringify(denied) + ' routedAsCustom=' + clickupCustom + ' sessionError=' + (sessErr ? JSON.stringify(sessErr).slice(0, 200) : 'brak') + ' session=' + sid } }];\n}\n// inconclusive: the agent did not attempt the tool within budget (steering miss, not an outage) -> do not alarm\nreturn [{ json: { verdict: 'healthy', inconclusive: true, session_id: sid, elapsed_s: el, note: 'Agent nie wywolal clickup_get_workspace_hierarchy w oknie sondy - wynik niejednoznaczny, brak alarmu.' } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "route-verdict",
+      "name": "Route Probe Verdict",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        720,
+        280
+      ],
+      "notes": "Fans the probe verdict to the right terminal (normal node, visually inspectable per CLAUDE.md). healthy -> Healthy (silent); clickup_down -> Alert ClickUp MCP Down (CRITICAL); prereq_missing -> Alert ClickUp MCP Down (CRITICAL, cannot probe); session_api_down -> Alert Session API Degraded (WARN, Anthropic session API, not ClickUp). Fallback (unknown verdict) -> Healthy, to avoid a false alarm.",
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-healthy",
+                    "leftValue": "={{ $json.verdict }}",
+                    "rightValue": "healthy",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "healthy"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-clickup",
+                    "leftValue": "={{ $json.verdict }}",
+                    "rightValue": "clickup_down",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "clickup_down"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-prereq",
+                    "leftValue": "={{ $json.verdict }}",
+                    "rightValue": "prereq_missing",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "prereq_missing"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r-sessapi",
+                    "leftValue": "={{ $json.verdict }}",
+                    "rightValue": "session_api_down",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "session_api_down"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "healthy",
+      "name": "Healthy",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        960,
+        120
+      ],
+      "notes": "Terminal for the healthy (or inconclusive-no-alarm, or unknown-verdict fallback) path. Silent on purpose — a healthy probe must NOT post to the Alerts task every 6h.",
+      "parameters": {}
+    },
+    {
+      "id": "alert-down",
+      "name": "Alert ClickUp MCP Down",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        960,
+        300
+      ],
+      "notes": "CRITICAL via Post Alert (v1) seam (ADR-025) for a GENUINE ClickUp connectivity failure (verdict clickup_down: tools denied / routed as client custom tool / session error), a missing probe prerequisite (verdict prereq_missing), or an UNEXPECTED probe exception (Code node error output). While this fails, tier agents lose caller-scoped ClickUp discovery/doc reading -> deliverables silently degrade. Check status.clickup.com, that mcp.clickup.com resolves, and whether Franciszek's ClickUp token is still valid (re-run clickup-oauth-start if revoked). NOTE: a transient Anthropic session-API 500 is NO LONGER routed here — that is session_api_down -> WARN managed-agents/session-api.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "clickup-mcp/health",
+            "message": "Sonda ClickUp MCP nie powiodla sie — hostowany serwer MCP nie polaczyl sie w realnej sesji (narzedzia ClickUp niedostepne dla agentow).",
+            "details": "=Blad: {{ $json.details || (($json.error || {}).message) || $json.error || JSON.stringify($json).slice(0,400) }}. Gdy ClickUp MCP nie laczy sie, wszystkie tiery traca zakresowane wyszukiwanie/odczyt ClickUp (discovery + dokumenty), a wynik cichego biegu jest gorszy lub pusty. Sprawdz status.clickup.com, rozwiazywanie mcp.clickup.com oraz waznosc tokenu ClickUp Franciszka (clickup-oauth-start jesli odwolany)."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "alert-session-api",
+      "name": "Alert Session API Degraded",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        960,
+        500
+      ],
+      "notes": "WARN via Post Alert (v1) seam (ADR-025) when the Anthropic Managed-Agents SESSION API failed to create or send a probe session after 3 retries (verdict session_api_down). This is an Anthropic-side infra error, NOT a ClickUp MCP outage — so it is a WARN on a distinct source (managed-agents/session-api), not a ClickUp CRITICAL. Real tasks retry the same POSTs (Execute Agent Session maxTries:3), so blast radius may be limited to this probe beat. Introduced to stop the transient-500 misfire (exec 7757, 2026-07-02) that repeatedly mislabelled an Anthropic blip as a ClickUp outage.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "managed-agents/session-api",
+            "message": "Sonda ClickUp MCP: nie udalo sie utworzyc/wyslac sesji Anthropic (Managed Agents) po 3 probach — blad po stronie API sesji. To NIE jest awaria ClickUp MCP.",
+            "details": "=Nieudane wywolanie: {{ $json.failedCall }} (status {{ $json.status }}). {{ $json.details }} Realne zadania ponawiaja te same POSTy (Execute Agent Session maxTries:3), wiec zasieg moze ograniczac sie do tego biegu sondy. Sprawdz status Anthropic / bete managed-agents — NIE sprawdzaj ClickUp, to nie jest awaria ClickUp."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 6h": {
+      "main": [
+        [
+          {
+            "node": "Fetch Probe Inputs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Fetch Probe Inputs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Probe Inputs": {
+      "main": [
+        [
+          {
+            "node": "Run ClickUp Probe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run ClickUp Probe": {
+      "main": [
+        [
+          {
+            "node": "Route Probe Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert ClickUp MCP Down",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Probe Verdict": {
+      "main": [
+        [
+          {
+            "node": "Healthy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert ClickUp MCP Down",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert ClickUp MCP Down",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Session API Degraded",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Healthy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "timezone": "Europe/Warsaw",
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
+  },
+  "staticData": {
+    "node:Every 6h": {
+      "recurrenceRules": [
+        18
+      ]
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "08821a8b-a318-40b6-91e2-f46ebdd23ce2",
+  "activeVersionId": "08821a8b-a318-40b6-91e2-f46ebdd23ce2",
+  "versionCounter": 5,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-23T08:11:53.533Z",
+      "createdAt": "2026-06-23T08:11:53.533Z",
+      "role": "workflow:owner",
+      "workflowId": "hrtNkFFL4iMVn9J9",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

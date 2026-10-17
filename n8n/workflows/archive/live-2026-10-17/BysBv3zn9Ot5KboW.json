@@ -1,0 +1,198 @@
+{
+  "updatedAt": "2026-08-21T09:42:37.469Z",
+  "createdAt": "2026-08-18T07:25:38.672Z",
+  "id": "BysBv3zn9Ot5KboW",
+  "name": "Flow: Friday Email",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "sched",
+      "name": "Friday Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -460,
+        0
+      ],
+      "notes": "Friday 10:00 Europe/Warsaw. The mid-week look at the same report the team gets on Monday, for the three principals - a check on where the week actually went while there is still a working day left to act on it. If this schedule stops firing, the flow.sync_jobs row 'friday_email' (migration 030) makes Flow: Sync Freshness Check notice; a thrown failure surfaces immediately through Error Handler (v1) as CRITICAL.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                5
+              ],
+              "triggerAtHour": 10,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "build",
+      "name": "Build Email",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -240,
+        0
+      ],
+      "notes": "One row per principal, all carrying the SAME management view from flow.monday_email(null) that the Monday send uses - so a content change is still one edit to one database function and can never make the Friday mail differ from the Monday one. This is why a second workflow is cheap: the content was already promoted to a shared definition, and only the schedule and the recipient list differ.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select p.email as to_email, m.subject, m.html from flow.v_people p cross join lateral flow.monday_email(null) m where p.role = 'principal' and p.email is not null order by p.review_precedence;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "send",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        -20,
+        0
+      ],
+      "notes": "SMTP via the Flow SMTP (zenbox) credential, agent@haxe.com. Recipients are the 3 principals, per ADR-009 amendment A3 of 2026-08-21. This REVERSES the earlier note here, which kept Franciszek's address hardcoded on the reasoning that a roster query would silently start mailing people the day somebody's role changed. The operator asked for Grzegorz and Michal, and the roster query is now filtered to role = 'principal' rather than to everyone with an address, so the residual risk is narrowed to one rare and deliberate edit: promoting somebody to principal in flow.people also grants them this report. A send failure throws, so Error Handler (v1) raises CRITICAL immediately.",
+      "parameters": {
+        "fromEmail": "Haxe Flow <agent@haxe.com>",
+        "toEmail": "={{ $json.to_email }}",
+        "subject": "={{ $json.subject }}",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "id": "BL2bF1DAZvl9TTIc",
+          "name": "Flow SMTP (zenbox)"
+        }
+      },
+      "webhookId": "eebc15f0-4ef3-443b-94b8-2ffff4924c04"
+    },
+    {
+      "id": "record",
+      "name": "Record Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        200,
+        0
+      ],
+      "notes": "Writes job = 'friday_email', NOT 'monday_email'. That distinction is the point: a shared job name would let a delivered Friday refresh the staleness clock and hide a Monday that never reached the six employees. Runs only after a successful send, so a failed send leaves no ok row for the freshness check to find. Execute Once is set so one send writes ONE row, not one per recipient, and the recipient count is read from Build Email rather than typed - a recipient list that silently shrinks (an email cleared in flow.people) then shows up as a falling number in flow.sync_runs.detail.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=insert into flow.sync_runs (job, started_at, finished_at, ok, detail) values ('friday_email', now(), now(), true, jsonb_build_object('recipients', {{ $('Build Email').all().length }})) returning run_id;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "executeOnce": true
+    }
+  ],
+  "connections": {
+    "Friday Schedule": {
+      "main": [
+        [
+          {
+            "node": "Build Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Email": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email": {
+      "main": [
+        [
+          {
+            "node": "Record Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "timezone": "Europe/Warsaw",
+    "executionOrder": "v1"
+  },
+  "staticData": {
+    "node:Friday Schedule": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "74d3bbef-f086-4597-9678-26917939c777",
+  "activeVersionId": "74d3bbef-f086-4597-9678-26917939c777",
+  "versionCounter": 3,
+  "triggerCount": 1,
+  "tags": [
+    {
+      "updatedAt": "2026-08-07T08:47:56.370Z",
+      "createdAt": "2026-08-07T08:47:56.370Z",
+      "id": "DXFc9QNvYvnQxnPd",
+      "name": "flow"
+    }
+  ],
+  "shared": [
+    {
+      "updatedAt": "2026-08-18T07:25:38.672Z",
+      "createdAt": "2026-08-18T07:25:38.672Z",
+      "role": "workflow:owner",
+      "workflowId": "BysBv3zn9Ot5KboW",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

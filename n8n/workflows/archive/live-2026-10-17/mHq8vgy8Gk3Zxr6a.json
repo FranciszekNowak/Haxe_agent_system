@@ -1,0 +1,362 @@
+{
+  "updatedAt": "2026-08-18T07:27:13.619Z",
+  "createdAt": "2026-08-07T09:43:33.418Z",
+  "id": "mHq8vgy8Gk3Zxr6a",
+  "name": "Flow: Sync Freshness Check",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "sched",
+      "name": "Daily Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -460,
+        0
+      ],
+      "notes": "08:00 Europe/Warsaw. Late enough that the 03:30 reconcile has finished and early enough that Franciszek sees a missed night before the working day is spent.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "stale",
+      "name": "Find Stale Jobs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -240,
+        0
+      ],
+      "notes": "This is the proactive half of the alerting posture, and it is the only half that can catch a cron that simply stopped: Error Handler (v1) is reactive and nothing throws when a schedule never fires. The query is driven entirely by flow.sync_jobs, so registering the Monday email in Block 7 is an INSERT rather than a second freshness workflow and a second cron. It returns ONLY stale jobs, so a healthy morning produces zero rows, the alert node below never runs, and the channel stays quiet. `where r.ok` also catches a run that started and died: an unfinished row has ok null, so it never becomes the baseline and the age keeps growing.\n\ncheck_kind = 'sync_run' is not a filter that can be dropped. Block 4 registered webhook_ingest in the same table so the dead-man's switch stays inside one workflow and one cron, but that job writes no sync_runs row at all — it is measured on event freshness by the branch below. Evaluated as a sync_run job it would report 'nigdy' and alert every single morning forever, which is how a channel stops being read. 2026-08-18: staleness is measured from the LATER of the last ok run and sync_jobs.watch_from, so registering a new job gives it one full max_age_hours window before it can alert. Before this, \"never run\" counted as stale immediately, so inserting a row for a weekly job that had not had its first Friday yet raised a WARN every morning until it did — a false alarm created by the act of registering the check.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select j.job,\n       j.description,\n       j.max_age_hours,\n       coalesce(to_char(max(r.started_at) filter (where r.ok), 'YYYY-MM-DD HH24:MI'), 'nigdy') as last_ok,\n       coalesce(round(extract(epoch from (now() - max(r.started_at) filter (where r.ok))) / 3600)::text, 'brak') as age_hours\n  from flow.sync_jobs j\n  left join flow.sync_runs r on r.job = j.job\n where j.enabled and j.check_kind = 'sync_run'\n group by j.job, j.description, j.max_age_hours, j.watch_from\nhaving now() - greatest(coalesce(max(r.started_at) filter (where r.ok), '-infinity'::timestamptz), j.watch_from)\n         > make_interval(hours => j.max_age_hours)\n order by j.job;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "alert",
+      "name": "Alert Stale Job",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -20,
+        0
+      ],
+      "notes": "One alert per stale job, because two jobs failing for different reasons should not be collapsed into one line nobody can act on. Routed through the Post Alert (v1) seam by pinned id; source carries the flow/ prefix; Polish; details is a STRING because the seam declares it as one.\n\nRouted through Flow: Post Alert (gated) rather than calling Post Alert (v1) directly, and onError is continueRegularOutput. Both are fixes for the 2026-08-07 cascade: Post Alert writes a ClickUp comment, so it is rate-limited by the same bucket an alert storm saturates, and without onError its 429 propagated back through this node and failed the whole run — which made n8n call Error Handler (v1), which called Post Alert again. 96 events became 192 failed alert executions and nothing delivered. CLAUDE.md already required this: a degradation alert must not break the main path.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "v1xd2oTRlIvCim4M",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "flow/sync-freshness",
+            "message": "=Zadanie cykliczne \"{{ $json.job }}\" nie zakonczylo sie sukcesem od {{ $json.age_hours }} godzin (limit {{ $json.max_age_hours }}). Dane w schemacie flow sa nieaktualne.",
+            "details": "=job={{ $json.job }} ({{ $json.description }}) | ostatni udany przebieg: {{ $json.last_ok }} | wiek: {{ $json.age_hours }}h | limit: {{ $json.max_age_hours }}h. Sprawdz w n8n, czy workflow jest aktywny i czy ostatnie wykonanie nie zakonczylo sie bledem; potem: select * from flow.sync_runs where job = '{{ $json.job }}' order by started_at desc limit 5; Jesli przerwa byla zamierzona, wylacz kontrole przez: update flow.sync_jobs set enabled = false where job = '{{ $json.job }}';",
+            "alert_key": "=flow/freshness:stale-job:{{ $json.job }}",
+            "list_id": ""
+          }
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "webhookhealth",
+      "name": "Check Webhook Health",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -240,
+        220
+      ],
+      "notes": "The webhook dead-man's switch — master plan Block 4 calls it the most important alert in the system, and it is. ClickUp ties a webhook to the account that CREATED it and stops firing silently when that account is disabled, and it deletes an endpoint after roughly a hundred consecutive failures. Nothing throws in either case. Worse, Block 0 finding 6c means we cannot even poll for the webhook's existence: GET /team/{id}/webhook only returns webhooks created by the calling account, so the agent system's own webhook is invisible to this token and ours would be invisible to any other. The only observable is whether events are still arriving.\n\nAll the logic is in flow.webhook_health() (migration 008), which returns exactly one row and answers two different questions — see the two IF nodes.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from flow.webhook_health();",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "missedif",
+      "name": "Webhook Missed Transitions?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -20,
+        140
+      ],
+      "notes": "The DEFINITIVE half, and the reason a plain silence threshold is not enough on its own. Last night's reconcile wrote repair events — meaning statuses demonstrably changed — while the webhook delivered nothing at all over the same window. That is not a quiet workspace, it is a broken ingest path, and it says so within one night instead of after two working days. In a workspace with only tens of active tasks, a silence threshold tuned to avoid false alarms would be far too slow to catch this.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "m1",
+              "leftValue": "={{ $json.missed_transitions }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "alertdead",
+      "name": "Alert Webhook Dead",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        140
+      ],
+      "notes": "CRITICAL, unlike every other alert this system raises. Everything downstream of ingest degrades quietly while this is broken: cycle time, aging work in progress, work in progress per person and the whole of the decision-queue output stop being observations and become nightly estimates, and every chart keeps rendering as though nothing happened.\n\nRouted through Flow: Post Alert (gated) rather than calling Post Alert (v1) directly, and onError is continueRegularOutput. Both are fixes for the 2026-08-07 cascade: Post Alert writes a ClickUp comment, so it is rate-limited by the same bucket an alert storm saturates, and without onError its 429 propagated back through this node and failed the whole run — which made n8n call Error Handler (v1), which called Post Alert again. 96 events became 192 failed alert executions and nothing delivered. CLAUDE.md already required this: a degradation alert must not break the main path.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "v1xd2oTRlIvCim4M",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "flow/webhook",
+            "message": "=Webhook ClickUp nie dziala. Nocna rekoncyliacja naprawila {{ $json.reconcile_events_26h }} zmian statusu, a webhook nie dostarczyl ANI JEDNEJ w tym samym oknie. Metryki przechodza na szacunki.",
+            "details": "=ostatnie zdarzenie z webhooka: {{ $json.last_webhook_at }} | zdarzen z webhooka w 26h: {{ $json.webhook_events_26h }} | zdarzen z rekoncyliacji w 26h: {{ $json.reconcile_events_26h }} | cisza (godziny robocze): {{ $json.working_hours_silent }}. ClickUp wiaze webhook z kontem, ktore go utworzylo (tutaj: Franciszek, 2521617) i kasuje endpoint po okolo stu bledach z rzedu; nie da sie tego sprawdzic przez API z innego konta. Sprawdz w n8n, czy workflow 'Flow: CU Status Producer' jest aktywny, potem odtworz webhook (poprzedni: 0b040039-0b4a-478e-8df1-55d85310ad5a) i wpisz nowy sekret do poswiadczenia 'ClickUp Flow Webhook HMAC'. Po naprawie zeruj zegar: update flow.sync_jobs set watch_from = now() where job = 'webhook_ingest';",
+            "alert_key": "flow/freshness:webhook-dead",
+            "list_id": ""
+          }
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "silentif",
+      "name": "Webhook Silent Too Long?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -20,
+        320
+      ],
+      "notes": "The BACKSTOP, for the one case the definitive check above cannot see: nobody changed anything for two working days, so reconcile has nothing to compare against either. It genuinely cannot distinguish a quiet fortnight from a dead webhook, and the message says so rather than asserting a failure. Working hours, not calendar hours: a threshold long enough to survive a weekend would be useless on a Tuesday.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "s1",
+              "leftValue": "={{ $json.silent_too_long }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "alertsilent",
+      "name": "Alert Webhook Silent",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        320
+      ],
+      "notes": "\n\nRouted through Flow: Post Alert (gated) rather than calling Post Alert (v1) directly, and onError is continueRegularOutput. Both are fixes for the 2026-08-07 cascade: Post Alert writes a ClickUp comment, so it is rate-limited by the same bucket an alert storm saturates, and without onError its 429 propagated back through this node and failed the whole run — which made n8n call Error Handler (v1), which called Post Alert again. 96 events became 192 failed alert executions and nothing delivered. CLAUDE.md already required this: a degradation alert must not break the main path.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "v1xd2oTRlIvCim4M",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "flow/webhook",
+            "message": "=Webhook ClickUp nie dostarczyl zadnego zdarzenia od {{ $json.working_hours_silent }} godzin roboczych (limit {{ $json.max_working_hours }}). Albo nikt nie zmienil statusu, albo ingest jest martwy — z tej strony nie da sie tego odroznic.",
+            "details": "=ostatnie zdarzenie z webhooka: {{ $json.last_webhook_at }} | cisza: {{ $json.working_hours_silent }}h roboczych | limit: {{ $json.max_working_hours }}h. Najpierw sprawdz w ClickUp, czy ktokolwiek rzeczywiscie ruszal statusy — jesli tak, webhook jest martwy i trzeba go odtworzyc (poprzedni: 0b040039-0b4a-478e-8df1-55d85310ad5a) razem z nowym sekretem w poswiadczeniu 'ClickUp Flow Webhook HMAC'. Test na zywo: przestaw status zadania 869ef7epa (probka w wykluczonej liscie) i sprawdz: select * from flow.status_events where source = 'webhook' order by event_id desc limit 5; Prog zmienisz przez: update flow.sync_jobs set max_age_hours = <n> where job = 'webhook_ingest';",
+            "alert_key": "flow/freshness:webhook-silent",
+            "list_id": ""
+          }
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Daily Schedule": {
+      "main": [
+        [
+          {
+            "node": "Find Stale Jobs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Webhook Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Stale Jobs": {
+      "main": [
+        [
+          {
+            "node": "Alert Stale Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Webhook Health": {
+      "main": [
+        [
+          {
+            "node": "Webhook Missed Transitions?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Webhook Silent Too Long?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Missed Transitions?": {
+      "main": [
+        [
+          {
+            "node": "Alert Webhook Dead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Silent Too Long?": {
+      "main": [
+        [
+          {
+            "node": "Alert Webhook Silent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "timezone": "Europe/Warsaw",
+    "executionOrder": "v1"
+  },
+  "staticData": {
+    "node:Daily Schedule": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "21b4880e-6090-404c-90f6-1dd6a014f1a9",
+  "activeVersionId": "21b4880e-6090-404c-90f6-1dd6a014f1a9",
+  "versionCounter": 6,
+  "triggerCount": 1,
+  "tags": [
+    {
+      "updatedAt": "2026-08-07T08:47:56.370Z",
+      "createdAt": "2026-08-07T08:47:56.370Z",
+      "id": "DXFc9QNvYvnQxnPd",
+      "name": "flow"
+    }
+  ],
+  "shared": [
+    {
+      "updatedAt": "2026-08-07T09:43:33.418Z",
+      "createdAt": "2026-08-07T09:43:33.418Z",
+      "role": "workflow:owner",
+      "workflowId": "mHq8vgy8Gk3Zxr6a",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

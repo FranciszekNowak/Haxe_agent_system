@@ -1,0 +1,121 @@
+{
+  "updatedAt": "2026-06-03T06:24:38.302Z",
+  "createdAt": "2026-06-03T06:12:55.158Z",
+  "id": "Qp9VZOLQERDtGMpW",
+  "name": "Doc Access Test (agent token)",
+  "description": null,
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "form-trigger",
+      "name": "Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "formTitle": "Doc Access Test",
+        "formDescription": "Fire to test agent-token read of ClickUp Docs v3 API.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "go",
+              "requiredField": false
+            }
+          ]
+        },
+        "responseMode": "lastNode"
+      },
+      "webhookId": "97fe9e81-4f8e-4faa-bc76-e74eff6d3398"
+    },
+    {
+      "id": "fetch-doc-pages",
+      "name": "Fetch Doc Pages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.clickup.com/api/v3/workspaces/761759/docs/q7wz-1219/pages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "content_format",
+              "value": "text/md"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Form Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Doc Pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "b07bc5e7-eadc-4ef6-a28e-72aec34c3b90",
+  "activeVersionId": null,
+  "versionCounter": 3,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-03T06:12:55.158Z",
+      "createdAt": "2026-06-03T06:12:55.158Z",
+      "role": "workflow:owner",
+      "workflowId": "Qp9VZOLQERDtGMpW",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

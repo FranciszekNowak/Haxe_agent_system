@@ -1,0 +1,492 @@
+{
+  "updatedAt": "2026-06-30T12:40:06.031Z",
+  "createdAt": "2026-06-08T18:09:10.897Z",
+  "id": "eL3fJuRMpzVRuVUT",
+  "name": "Assemble Task Context (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "s-trigger",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "ADR-054 Block 3b: open-ended search-as-bot discovery RETIRED. This now only fetches the TRIGGERING task's own comments + threaded replies (bot token; U already has access — no leak). Open-ended related-context discovery moved in-harness to the per-user-scoped ClickUp MCP (Block 3a). Only clickup_task_id is consumed now; current_task/triggering_comment_text/caller_user_id are still declared for caller compatibility but unused. Returns the unchanged contract: {task_comments, additional_context (always ''), sources_used ([]), sources_filtered_out (0)}.",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "current_task",
+              "type": "object"
+            },
+            {
+              "name": "triggering_comment_text"
+            },
+            {
+              "name": "caller_user_id"
+            },
+            {
+              "name": "clickup_task_id"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "s-fetch-comments",
+      "name": "Fetch Task Comments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        224,
+        0
+      ],
+      "notes": "Step 0 (always): fetch last 30 comments of the triggering task. onError=continueRegularOutput.",
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v2/task/{{ $json.clickup_task_id }}/comment?order_by=date&reverse=true",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "s-build-output",
+      "name": "Build Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        480
+      ],
+      "notes": "Terminal (sole leaf): assemble the triggering task's comments + interleaved thread replies. ADR-054 Block 3b retired open-ended search + the Layer B (Check Space Member) software filter (R3 violation): additional_context is intentionally empty and sources_used/sources_filtered_out are zeroed, but the {task_comments, additional_context, sources_used, sources_filtered_out} contract is preserved so assemble-context callers don't break.",
+      "parameters": {
+        "jsCode": "// CANONICAL ClickUp comment-op serializer (ADR-066 Block 2). KEEP serializeCommentOps IDENTICAL across 3 sites:\n// cu-webhook-producer/Detect Mention, assemble-task-context/Build Output + Collect Replies. Edit all three together.\n// n8n Code nodes share no module; a sub-workflow on the producer webhook hot path would add an exec row per\n// comment + a synchronous failure surface to mention-detection, so we keep 3 inline copies of this pure fn\n// (rationale: ADR-066 Block 2 / current.md). Rich ops (doc_mention/bookmark/link) carry empty/weak .text and are\n// dropped by ClickUp's flat comment_text/text_content; rebuild from ops so the reference survives (2026-06-30 pptx drop).\nfunction serializeCommentOps(ops, flat) {\n  const arr = Array.isArray(ops) ? ops : [];\n  const rich = function (op) { return op && (op.type === 'doc_mention' || op.type === 'bookmark' || op.bookmark || (op.attributes && (op.attributes.bookmark || op.attributes.link))); };\n  if (!arr.some(rich)) return (flat || arr.map(function (op) { return (op && op.text) || ''; }).join(''));\n  return arr.map(function (op) {\n    if (!op) return '';\n    if (op.type === 'doc_mention') {\n      const d = op.doc_mention || {};\n      const team = d.teamId || d.workspaceId || '';\n      const view = d.viewId || '';\n      const page = d.pageId || op.text || '';\n      const url = (team && view && page) ? ('https://app.clickup.com/' + team + '/docs/' + view + '/' + page) : '';\n      const title = d.pageTitle ? (' \"' + d.pageTitle + '\"') : '';\n      const ref = url ? (url + ' (doc ' + view + ', strona ' + page + ')') : ('doc ' + (view || '?') + ', strona ' + (page || '?'));\n      return '[dokument ClickUp' + title + ': ' + ref + ']';\n    }\n    const at = op.attributes || {};\n    const bm = op.bookmark || at.bookmark;\n    if (bm) { const u = (typeof bm === 'string') ? bm : (bm.url || bm.href || ''); return u ? ('[link: ' + u + ']') : (op.text || ''); }\n    if (at.link) { const u = (typeof at.link === 'string') ? at.link : (at.link.url || at.link.href || ''); return op.text ? (op.text + ' (' + u + ')') : ('[link: ' + u + ']'); }\n    return op.text || '';\n  }).join('');\n}\nfunction truncateKeepingLinks(s, n) {\n  s = s || '';\n  if (s.length <= n) return s;\n  let head = s.slice(0, n), cut = [], from = 0;\n  for (;;) {\n    let o = s.indexOf('[dokument ClickUp', from);\n    const o2 = s.indexOf('[link:', from);\n    if (o === -1 || (o2 !== -1 && o2 < o)) o = o2;\n    if (o === -1) break;\n    const c = s.indexOf(']', o);\n    if (c === -1) break;\n    const m = s.slice(o, c + 1);\n    if (head.indexOf(m) === -1) cut.push(m);\n    from = c + 1;\n  }\n  if (cut.length) head = head + ' … ' + cut.join(' ');\n  return head;\n}\nlet top = [];\ntry {\n  const r = $('Fetch Task Comments').first().json;\n  top = (r.comments || []).slice(0, 30).map(c => ({\n    id: c.id,\n    author: (c.user && (c.user.username || c.user.email)) || '',\n    text: truncateKeepingLinks(serializeCommentOps(c.comment, c.comment_text), 600),\n    date: c.date\n  }));\n} catch(e) {}\n\nlet repliesByParent = {};\ntry { repliesByParent = $('Collect Replies').first().json.replies_by_parent || {}; } catch(e) {}\n\nconst task_comments = [];\nfor (const c of top) {\n  task_comments.push(c);\n  const reps = (repliesByParent[c.id] || []).slice().sort((a, b) => Number(a.date || 0) - Number(b.date || 0));\n  for (const rep of reps) {\n    task_comments.push({ id: rep.id, author: '\\u21b3 ' + rep.author, text: rep.text, date: rep.date, parent_id: c.id, is_reply: true });\n  }\n}\n\n// ADR-054 Block 3b: open-ended search-as-bot discovery + the Layer B (Check Space Member)\n// post-hoc membership filter are RETIRED. Open-ended related-context discovery now runs\n// in-harness via the per-user-scoped ClickUp MCP (Block 3a), enforced by the credential, not\n// by a post-hoc filter (ADR-054 R3). This sub-workflow now returns only the triggering task's\n// own comments (U already has access). additional_context is intentionally empty; the\n// {task_comments, additional_context, sources_used, sources_filtered_out} contract is kept.\nreturn [{ json: { task_comments, additional_context: '', sources_used: [], sources_filtered_out: 0 } }];"
+      }
+    },
+    {
+      "id": "b2f6d888-8201-483e-b2c0-3115d61f0f06",
+      "name": "Pick Threads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        480
+      ],
+      "notes": "Issue-2 reply reading: from the top 30 comments, pick those with reply_count>0 to fetch their thread replies. Emits one item {thread_ids:[...]}. Empty -> Has Threads? routes around the fetch.",
+      "parameters": {
+        "jsCode": "let thread_ids = [];\ntry {\n  const r = $('Fetch Task Comments').first().json;\n  thread_ids = (r.comments || [])\n    .slice(0, 30)\n    .filter(c => Number(c.reply_count || 0) > 0)\n    .map(c => String(c.id));\n} catch(e) {}\nreturn [{ json: { thread_ids } }];"
+      }
+    },
+    {
+      "id": "3c5f73e4-846c-4218-a1be-2ac8a5932753",
+      "name": "Has Threads?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        448,
+        480
+      ],
+      "notes": "True -> fetch replies. False (no threaded comments) -> straight to Build Output (avoids a 0-item stall in the per-item Fetch Replies).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "th1",
+              "leftValue": "={{ $json.thread_ids.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "9665a916-984f-4bba-8bc8-18398f51db05",
+      "name": "Expand Threads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        608
+      ],
+      "notes": "Expand thread_ids to one item per comment id so Fetch Replies runs once per thread.",
+      "parameters": {
+        "jsCode": "return ($json.thread_ids || []).map(id => ({ json: { comment_id: id } }));"
+      }
+    },
+    {
+      "id": "f026f9fd-dd4a-4135-8e1d-4a7fc816a834",
+      "name": "Fetch Replies",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        896,
+        496
+      ],
+      "notes": "GET /comment/{id}/reply per threaded comment. onError=continueRegularOutput: a failed thread fetch yields an error item (kept in order) so Collect Replies can skip it without breaking alignment. Best-effort enrichment (matches Fetch Task Comments).",
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v2/comment/{{ $json.comment_id }}/reply",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "f35c3e26-b620-4acb-a30d-663863cc1aba",
+      "name": "Collect Replies",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        480
+      ],
+      "notes": "Aligns Expand Threads inputs to Fetch Replies outputs by index (onError keeps 1 item per input). Returns replies_by_parent map keyed by top-level comment id. Build Output interleaves them.",
+      "parameters": {
+        "jsCode": "// CANONICAL ClickUp comment-op serializer (ADR-066 Block 2). KEEP serializeCommentOps IDENTICAL across 3 sites:\n// cu-webhook-producer/Detect Mention, assemble-task-context/Build Output + Collect Replies. Edit all three together.\n// n8n Code nodes share no module; a sub-workflow on the producer webhook hot path would add an exec row per\n// comment + a synchronous failure surface to mention-detection, so we keep 3 inline copies of this pure fn\n// (rationale: ADR-066 Block 2 / current.md). Rich ops (doc_mention/bookmark/link) carry empty/weak .text and are\n// dropped by ClickUp's flat comment_text/text_content; rebuild from ops so the reference survives (2026-06-30 pptx drop).\nfunction serializeCommentOps(ops, flat) {\n  const arr = Array.isArray(ops) ? ops : [];\n  const rich = function (op) { return op && (op.type === 'doc_mention' || op.type === 'bookmark' || op.bookmark || (op.attributes && (op.attributes.bookmark || op.attributes.link))); };\n  if (!arr.some(rich)) return (flat || arr.map(function (op) { return (op && op.text) || ''; }).join(''));\n  return arr.map(function (op) {\n    if (!op) return '';\n    if (op.type === 'doc_mention') {\n      const d = op.doc_mention || {};\n      const team = d.teamId || d.workspaceId || '';\n      const view = d.viewId || '';\n      const page = d.pageId || op.text || '';\n      const url = (team && view && page) ? ('https://app.clickup.com/' + team + '/docs/' + view + '/' + page) : '';\n      const title = d.pageTitle ? (' \"' + d.pageTitle + '\"') : '';\n      const ref = url ? (url + ' (doc ' + view + ', strona ' + page + ')') : ('doc ' + (view || '?') + ', strona ' + (page || '?'));\n      return '[dokument ClickUp' + title + ': ' + ref + ']';\n    }\n    const at = op.attributes || {};\n    const bm = op.bookmark || at.bookmark;\n    if (bm) { const u = (typeof bm === 'string') ? bm : (bm.url || bm.href || ''); return u ? ('[link: ' + u + ']') : (op.text || ''); }\n    if (at.link) { const u = (typeof at.link === 'string') ? at.link : (at.link.url || at.link.href || ''); return op.text ? (op.text + ' (' + u + ')') : ('[link: ' + u + ']'); }\n    return op.text || '';\n  }).join('');\n}\nfunction truncateKeepingLinks(s, n) {\n  s = s || '';\n  if (s.length <= n) return s;\n  let head = s.slice(0, n), cut = [], from = 0;\n  for (;;) {\n    let o = s.indexOf('[dokument ClickUp', from);\n    const o2 = s.indexOf('[link:', from);\n    if (o === -1 || (o2 !== -1 && o2 < o)) o = o2;\n    if (o === -1) break;\n    const c = s.indexOf(']', o);\n    if (c === -1) break;\n    const m = s.slice(o, c + 1);\n    if (head.indexOf(m) === -1) cut.push(m);\n    from = c + 1;\n  }\n  if (cut.length) head = head + ' … ' + cut.join(' ');\n  return head;\n}\nconst ins = $('Expand Threads').all();\nconst outs = $('Fetch Replies').all();\nconst replies_by_parent = {};\nlet reply_fetch_errors = 0;\nfor (let i = 0; i < ins.length; i++) {\n  const pid = String((ins[i] && ins[i].json.comment_id) || '');\n  if (!pid) continue;\n  const out = outs[i] && outs[i].json;\n  if (!out || out.error) { reply_fetch_errors++; continue; }\n  const comments = out.comments || [];\n  replies_by_parent[pid] = comments.map(c => ({\n    id: c.id,\n    author: (c.user && (c.user.username || c.user.email)) || '',\n    text: truncateKeepingLinks(serializeCommentOps(c.comment, c.comment_text), 600),\n    date: c.date\n  }));\n}\nreturn [{ json: { replies_by_parent, reply_fetch_errors } }];"
+      }
+    },
+    {
+      "id": "4ba250fe-8658-49f1-8011-751ebe6acb28",
+      "name": "Comments Fetch Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        448,
+        80
+      ],
+      "notes": "Side branch off Fetch Task Comments: true when the response has no comments array (HTTP failed under onError=continueRegularOutput). True -> WARN. Main path (Pick Threads) is independent and continues regardless.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "cf1",
+              "leftValue": "={{ Array.isArray($json.comments) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "94b14da6-2f72-42a9-9f33-fd0905820eee",
+      "name": "Alert Comments Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        672,
+        80
+      ],
+      "notes": "WARN via Post Alert (v1) when Fetch Task Comments returns no comments. onError=continueRegularOutput so an alert failure never breaks the run; then converges to Pick Threads so the main path continues.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "search/fetch-comments",
+            "message": "Search (v1): pobranie komentarzy zadania nie powiodło się — kontekst budowany bez komentarzy i odpowiedzi w wątkach.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "cd0c12c1-7908-40f2-8db7-78e7e779fe80",
+      "name": "Reply Fetch Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        896,
+        640
+      ],
+      "notes": "Side branch off Collect Replies: true when one or more thread reply-fetches failed (reply_fetch_errors>0). True -> WARN. Main path (Build Output) is independent and continues regardless.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "rf1",
+              "leftValue": "={{ $json.reply_fetch_errors }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f25e09c8-e283-46ac-866c-a9b55e6296a9",
+      "name": "Alert Replies Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1120,
+        640
+      ],
+      "notes": "WARN via Post Alert (v1) when one or more /comment/{id}/reply fetches fail. onError=continueRegularOutput so an alert failure never breaks the run; then converges to Build Output so the main path continues.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "search/fetch-replies",
+            "message": "Search (v1): pobranie odpowiedzi w wątkach nie powiodło się dla części komentarzy — kontekst bez tych odpowiedzi.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; nieudane_wątki={{ $json.reply_fetch_errors }} z {{ $('Expand Threads').all().length }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Fetch Task Comments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Task Comments": {
+      "main": [
+        [
+          {
+            "node": "Comments Fetch Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Comments Fetch Failed?": {
+      "main": [
+        [
+          {
+            "node": "Alert Comments Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pick Threads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Comments Failed": {
+      "main": [
+        [
+          {
+            "node": "Pick Threads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Threads": {
+      "main": [
+        [
+          {
+            "node": "Has Threads?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Threads?": {
+      "main": [
+        [
+          {
+            "node": "Expand Threads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Threads": {
+      "main": [
+        [
+          {
+            "node": "Fetch Replies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Replies": {
+      "main": [
+        [
+          {
+            "node": "Collect Replies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Replies": {
+      "main": [
+        [
+          {
+            "node": "Reply Fetch Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Fetch Failed?": {
+      "main": [
+        [
+          {
+            "node": "Alert Replies Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Replies Failed": {
+      "main": [
+        [
+          {
+            "node": "Build Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "binaryMode": "separate"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "0c707f7e-78ad-430a-8137-d2c6b536eb2b",
+  "activeVersionId": "0c707f7e-78ad-430a-8137-d2c6b536eb2b",
+  "versionCounter": 21,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-08T18:09:10.897Z",
+      "createdAt": "2026-06-08T18:09:10.897Z",
+      "role": "workflow:owner",
+      "workflowId": "eL3fJuRMpzVRuVUT",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

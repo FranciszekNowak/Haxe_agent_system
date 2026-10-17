@@ -1,0 +1,1510 @@
+{
+  "updatedAt": "2026-07-01T12:26:55.355Z",
+  "createdAt": "2026-06-03T07:25:49.147Z",
+  "id": "a8XKaijkMFNBpRBa",
+  "name": "Agent Orchestrator (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "form-trigger",
+      "name": "Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        -352,
+        32
+      ],
+      "webhookId": "agent-spine-v1-webhook-001",
+      "parameters": {
+        "formTitle": "Agent Orchestrator",
+        "formDescription": "Enter a ClickUp task ID. Optionally a reviewer ClickUp user ID to @-direct the draft (blank = operator).",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "taskId",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "reviewer_user_id"
+            },
+            {
+              "fieldLabel": "triggering_comment_id"
+            },
+            {
+              "fieldLabel": "triggering_comment_text"
+            }
+          ]
+        },
+        "responseMode": "lastNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "exec-trigger",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -464,
+        416
+      ],
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "taskId"
+            },
+            {
+              "name": "reviewer_user_id"
+            },
+            {
+              "name": "caller_username"
+            },
+            {
+              "name": "triggered_by"
+            },
+            {
+              "name": "invocation_type"
+            },
+            {
+              "name": "triggering_comment_id"
+            },
+            {
+              "name": "triggering_comment_text"
+            },
+            {
+              "name": "surface"
+            },
+            {
+              "name": "surface_ref"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "call-assemble-context",
+      "name": "Call Assemble Task Context",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        16,
+        320
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "GGTBvFBgGSNbtUR6",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $json.taskId }}",
+            "reviewer_user_id": "={{ $json.reviewer_user_id || '' }}",
+            "caller_username": "={{ $json.caller_username || '' }}",
+            "triggered_by": "={{ $json.triggered_by || '' }}",
+            "invocation_type": "={{ $json.invocation_type || '' }}",
+            "triggering_comment_id": "={{ $json.triggering_comment_id || '' }}",
+            "triggering_comment_text": "={{ $json.triggering_comment_text || '' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "status-inprogress",
+      "name": "Set Status W trakcie",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        464,
+        -64
+      ],
+      "notes": "Fires immediately off BOTH triggers (parallel side-branch) so the requester sees '[AI] Status agenta = W trakcie' within ~1s of webhook receipt, not after the ~30s context build (repositioned 2026-06-11; was downstream of Assemble). Fire-and-forget: success output dead-ends, error -> Alert Status Failed (onError:continueErrorOutput) so a status-write failure never blocks the answer. Reads taskId from the trigger item. Post Reply (Stage C) flips the field to 'Zakończono' at the end.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $json.taskId || $json.clickup_task_id }}/field/30130652-01c2-451b-954a-c36a455790fe",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ value: '10290b3f-e47d-4157-a3d4-1bbd770918e8' }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "alert-status-fail",
+      "name": "Alert Status Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        736,
+        -144
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-orchestrator/status",
+            "message": "Nie udało się zaktualizować pola CU '[AI] Status agenta' na W trakcie.",
+            "details": "=task={{ $json.taskId || $json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || $json.error || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "call-execute-llm",
+      "name": "Call Execute LLM",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1232,
+        560
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "9qdJA4xnAGbxqkt9",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "prompt": "={{ $json.prompt }}",
+            "impact": "={{ $json.impact }}",
+            "modality": "={{ $json.modality || 'text' }}",
+            "task_type": "={{ $json.task_type }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}",
+            "reviewer_user_id": "={{ $json.reviewer_user_id }}",
+            "triggering_comment_id": "={{ $json.triggering_comment_id }}",
+            "web_sources": "={{ $json.web_sources }}",
+            "image_blocks_json": "={{ $json.image_blocks_json || '[]' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "if-llm-succeeded",
+      "name": "If LLM Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1456,
+        512
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "s1",
+              "leftValue": "={{ $json.completion }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "s2",
+              "leftValue": "={{ Array.isArray($json.rendered_delta) ? $json.rendered_delta.length : 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "call-post-reply",
+      "name": "Call Post Reply",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1728,
+        496
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "t17moGs7Vxo5ZcFv",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "completion": "={{ $json.completion }}",
+            "model": "={{ $json.model }}",
+            "cost_pln": "={{ $json.cost_pln }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "reviewer_user_id": "={{ $json.reviewer_user_id }}",
+            "triggering_comment_id": "={{ $json.triggering_comment_id }}",
+            "web_sources": "={{ $json.web_sources }}",
+            "image_manifest": "={{ $json.image_manifest }}",
+            "rendered_delta": "={{ $json.rendered_delta }}",
+            "image_models": "={{ $json.image_models }}",
+            "total_image_cost_pln": "={{ $json.total_image_cost_pln }}",
+            "surface": "={{ $('Call Assemble Context').first().json.surface || 'task' }}",
+            "surface_ref": "={{ $('Call Assemble Context').first().json.surface_ref || '' }}",
+            "output_blocks_json": "={{ '[]' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "9dbf3086-cae6-4c7c-85e4-e305574ff872",
+      "name": "Context OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        400,
+        208
+      ],
+      "notes": "Layer-B reliability guard (silent-failure mandate, 2026-06-11). Call Assemble Context has alwaysOutputData=true so an empty context build still emits an item; this IF gates on a non-empty `prompt`. true -> Call Execute LLM; false -> Alert Context Empty (CRITICAL). Without it, a 0-item Assemble return silently skipped Execute LLM + Post Reply and the run still reported success (the exact failure on task 869dm1z8y).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "ctx1",
+              "leftValue": "={{ $json.prompt }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "fb1c0f33-af6a-4128-b24f-b18eba2e06e0",
+      "name": "Alert Context Empty",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        336,
+        432
+      ],
+      "notes": "CRITICAL via Post Alert (v1): context assembly returned empty -> pipeline aborted, no reply posted. Task id read from whichever trigger fired ($('When Called').isExecuted ? mention : form). onError:continueRegularOutput so the alert itself can't throw.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "agent-orchestrator/context",
+            "message": "Złożenie kontekstu zwróciło pusty wynik — pipeline przerwany, nie opublikowano odpowiedzi.",
+            "details": "=task={{ $('When Called').isExecuted ? $('When Called').first().json.taskId : $('Form Trigger').first().json.taskId }}; trigger={{ $('When Called').isExecuted ? 'mention' : 'form' }}; sprawdź Assemble Context / Read Input dla tego zadania."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "80baf910-eff7-4e63-8990-783e1110bfd9",
+      "name": "Alert LLM Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1744,
+        672
+      ],
+      "notes": "CRITICAL via Post Alert (v1): model returned an empty completion -> no reply posted. Wired to the If LLM Succeeded? FALSE branch, which previously dead-ended silently (2026-06-11). onError:continueRegularOutput.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "agent-orchestrator/llm",
+            "message": "Model nie zwrócił treści (completion puste) — odpowiedź nie została opublikowana.",
+            "details": "=task={{ $json.clickup_task_id }}; model={{ $json.model || 'brak' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "9e324557-5611-4445-a5ef-3e2de90e37df",
+      "name": "Read Agent Lane",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        544,
+        192
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select value as agent_lane from public.config where key = 'agent_lane' limit 1;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "f99d9a36-d54b-4b0c-8bf7-898792b61d78",
+      "name": "Resolve Lane",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        752,
+        192
+      ],
+      "parameters": {
+        "jsCode": "// Block 8: resolve the managed|bare lane flag, fail-safe to bare. Preserves the full Stage A\n// context (spread from Call Assemble Context) so the bare lane's Call Execute LLM mapping ($json.prompt etc.)\n// still resolves downstream. On a DB error (onError=continueRegularOutput passes the input item through) or\n// a missing/malformed flag, agent_lane is absent -> lane_unreadable=true -> bare + a WARN (Lane Unreadable?).\nconst ctx = $('Call Assemble Context').first().json || {};\nconst row = ($input.first() && $input.first().json) || {};\nlet lane = String(row.agent_lane || '').trim().toLowerCase();\nlet lane_unreadable = false;\nif (lane !== 'managed' && lane !== 'bare') { lane_unreadable = true; lane = 'bare'; }\n// ADR-060: capture a lower-bound timestamp BEFORE the session runs so the managed footer can sum\n// only THIS execution's image-gen cost rows (triggered_by='image_mcp', clickup_task_id, created_at>=since_ts).\n// 5s buffer absorbs any n8n<->DB clock skew; prior runs' image rows are minutes+ older so the window excludes them.\nconst since_ts = new Date(Date.now() - 5000).toISOString();\nreturn [{ json: Object.assign({}, ctx, { agent_lane: lane, lane_unreadable: lane_unreadable, since_ts: since_ts }) }];"
+      }
+    },
+    {
+      "id": "ddd4e598-45da-405b-8715-26f64b7959b5",
+      "name": "Lane = managed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        928,
+        320
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "lane1",
+              "leftValue": "={{ $json.agent_lane }}",
+              "rightValue": "managed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "8c421f0f-1877-448d-9ab5-1cfd2fa827e2",
+      "name": "Lane Unreadable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        992,
+        64
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "unr1",
+              "leftValue": "={{ $json.lane_unreadable }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "20780eed-a237-4767-aee8-79eb6f1ce640",
+      "name": "Alert Lane Unreadable",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1584,
+        48
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-orchestrator/lane-flag",
+            "message": "Nie udało się odczytać flagi config.agent_lane — przełączono awaryjnie na tryb 'bare'.",
+            "details": "=task={{ $('Call Assemble Context').first().json.clickup_task_id }}; ustaw config.agent_lane = 'managed' lub 'bare'"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "019c0d77-ec35-4fe1-ada9-bd1455c065e1",
+      "name": "Call Execute Agent Session",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1264,
+        224
+      ],
+      "notes": "ADR-066 Block 5: 'mode' selects the sub-workflow tail. config.session_waiter.enabled=true -> mode='handoff' (front half only: create session + send first message, then return carry-state for the session-waiter) ; false (today) -> mode='sync' (synchronous poll loop, unchanged). The returned outcome drives Handoff? -> either Post Handoff to Waiter or Session OK?.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "Rtb1cZbmUqmfGD98",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "user_message": "={{ '# Identyfikator zadania ClickUp (clickup_task_id): ' + ($('Call Assemble Context').first().json.clickup_task_id || '') + '\\nPrzekaż tę wartość DOKŁADNIE jako parametr clickup_task_id przy każdym wywołaniu narzędzia generate_image (do rozliczenia kosztu obrazu).\\n\\n' + $('Call Assemble Context').first().json.prompt }}",
+            "impact": "={{ $('Call Assemble Context').first().json.impact }}",
+            "input_images_json": "={{ '[]' }}",
+            "clickup_task_id": "={{ $('Call Assemble Context').first().json.clickup_task_id }}",
+            "caller_user_id": "={{ $('Call Assemble Context').first().json.caller_user_id }}",
+            "process_type": "={{ $('Call Assemble Context').first().json.process_type }}",
+            "triggered_by": "={{ $('Call Assemble Context').first().json.triggered_by }}",
+            "invocation_type": "={{ $('Call Assemble Context').first().json.invocation_type }}",
+            "mode": "={{ ($('Read Waiter Flag').first().json.waiter_enabled === 'true') ? 'handoff' : 'sync' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b1f0a6e2-0001-4a55-9a01-waiterflagread",
+      "name": "Read Waiter Flag",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1056,
+        96
+      ],
+      "notes": "ADR-066 Block 5: reads config.session_waiter.enabled (the async-handoff cutover flag, seeded false) + session_waiter.absolute_budget_ms in one row. Call Execute Agent Session reads waiter_enabled to pick mode (handoff|sync); Post Handoff to Waiter reads absolute_budget_ms. onError=continueRegularOutput + alwaysOutputData so a config-read failure degrades SAFELY to the synchronous path (waiter_enabled !== 'true' -> mode='sync').",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  max(value) filter (where key = 'session_waiter.enabled') as waiter_enabled,\n  max(value) filter (where key = 'session_waiter.absolute_budget_ms') as absolute_budget_ms\nfrom public.config\nwhere key in ('session_waiter.enabled','session_waiter.absolute_budget_ms');",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "b1f0a6e2-0002-4a55-9a02-handoffifgate0",
+      "name": "Handoff?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1472,
+        80
+      ],
+      "notes": "ADR-066 Block 5: routes on the sub-workflow's outcome. outcome==='handed_off' (mode='handoff' ran the front half only) -> TRUE -> Post Handoff to Waiter (no synchronous hold; status stays 'W trakcie'; Block 7's finish callback posts the real answer later). Any other outcome (sync path) -> FALSE -> Session OK? (today's publish/incomplete gate, unchanged).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "hoff1",
+              "leftValue": "={{ $json.outcome }}",
+              "rightValue": "handed_off",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "b1f0a6e2-0003-4a55-9a03-posthandoffhttp",
+      "name": "Post Handoff to Waiter",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        80
+      ],
+      "notes": "ADR-066 Block 5: hands the just-created session off to the always-on session-waiter (internal http://session-waiter:8080/handoff, n8n-internal network). Carry-state = session_id + agent/model/clickup_scope/file_map_json (from the sub-workflow) + task/comment/caller/surface/impact (orchestrator context) + finish_callback_url (Block 7 webhook) + absolute_budget_ms (config). The managed key is DELIBERATELY NOT sent (A6): the waiter re-derives it from get_anthropic_key(). On failure -> Alert Handoff Failed (CRITICAL); the row never persists, so the freshness monitor cannot mask the orphan — the alert is the signal.",
+      "parameters": {
+        "method": "POST",
+        "url": "http://session-waiter:8080/handoff",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ session_id: $('Call Execute Agent Session').first().json.session_id, clickup_task_id: $('Call Assemble Context').first().json.clickup_task_id, triggering_comment_id: $('When Called').first().json.triggering_comment_id, caller_user_id: $('Call Assemble Context').first().json.caller_user_id, reviewer_user_id: $('When Called').first().json.reviewer_user_id, agent_id: $('Call Execute Agent Session').first().json.agent_id, model_id: $('Call Execute Agent Session').first().json.model_id, clickup_scope: $('Call Execute Agent Session').first().json.clickup_scope, surface: $('When Called').first().json.surface, surface_ref: $('When Called').first().json.surface_ref, impact: $('Call Assemble Context').first().json.impact, file_map_json: $('Call Execute Agent Session').first().json.file_map_json, finish_callback_url: 'http://n8n-main:5678/webhook/session-waiter-finish', absolute_budget_ms: Number($('Read Waiter Flag').first().json.absolute_budget_ms || 2700000) }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "b1f0a6e2-0004-4a55-9a04-alerthandofffl",
+      "name": "Alert Handoff Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1880,
+        0
+      ],
+      "notes": "ADR-066 Block 5: CRITICAL when POST /handoff to the session-waiter fails. The session is running on Anthropic's side but no waiter picked it up -> it would deliver into the void. Operator action: check the waiter (docker logs session-waiter) and the session; may need a manual finish. onError=continueRegularOutput so the alert can't itself break the run.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "session-waiter/handoff-post",
+            "message": "Przekazanie sesji do session-waiter nie powiodło się — sesja agenta działa, ale żaden waiter jej nie obsługuje (ryzyko utraty wyniku).",
+            "details": "=task={{ $('Call Assemble Context').first().json.clickup_task_id }}; session={{ $('Call Execute Agent Session').first().json.session_id }}; http_error={{ ($json.error && ($json.error.message || $json.error)) || $json.message || 'unknown' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "orch-build-floor-file-map",
+      "name": "Build Floor File Map",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1088,
+        288
+      ],
+      "notes": "ADR-061 Block 2b (Option E): the managed floor dropped the eager Files-API upload (input_images_json='[]' below), so the agent_input_file_map that generate_image reference_refs resolves against is no longer populated by Upload Input Images. Rebuild it here from Stage A's image_blocks_json: each top-level image -> a row keyed by source_ref (the attachment id the agent passes as a reference_ref) with url = the ClickUp attachment URL the external generator fetches. file_id is synthetic ('att_'+source_ref) — only the PK; the resolver matches source_ref OR file_id and returns url. Mirrors the {file_id,url,mime,source_ref} shape Upload Input Images persisted (url=ref). Empty (no images) -> empty file_map -> upsert no-op.",
+      "parameters": {
+        "jsCode": "const ctx = $('Call Assemble Context').first().json || {};\nlet blocks = [];\ntry { blocks = JSON.parse(ctx.image_blocks_json || '[]'); } catch (e) { blocks = []; }\nconst file_map = [];\nfor (const b of (Array.isArray(blocks) ? blocks : [])) {\n  const source_ref = String((b && b.source_ref) || '').trim();\n  const url = String((b && b.ref) || '').trim();\n  if (!source_ref || !url) continue;\n  file_map.push({ file_id: 'att_' + source_ref, url, mime: String((b && b.mime) || 'image/*'), source_ref });\n}\nreturn [{ json: { file_map } }];"
+      }
+    },
+    {
+      "id": "orch-upsert-file-map-managed",
+      "name": "Upsert File Map (Managed)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1264,
+        416
+      ],
+      "notes": "ADR-061 Block 2b: persist the floor's source_ref->{url,mime} rows to agent_input_file_map so the image MCP handler resolves generate_image reference_refs WITHOUT session context (same role Upload Input Images' Upsert File Map played eagerly). Reuses that exact insert+on-conflict SQL. onError=continueErrorOutput + alwaysOutputData so a DB write failure routes to Alert File Map Failed (WARN) on the error output while the success output still feeds the session — a failed map write only degrades later reference resolution, it must NOT block the run. alwaysOutputData guarantees the success output emits an item even when 0 rows were upserted (no input images) so the session never gets skipped.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into public.agent_input_file_map (file_id, url, mime, source_ref)\nselect file_id, url, mime, source_ref\nfrom jsonb_to_recordset($1::jsonb) as x(file_id text, url text, mime text, source_ref text)\nwhere file_id is not null\non conflict (file_id) do update set url = excluded.url, mime = excluded.mime, source_ref = excluded.source_ref;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.file_map || []) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "orch-alert-file-map-failed",
+      "name": "Alert File Map Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1504,
+        688
+      ],
+      "notes": "ADR-061 Block 2b: a failed agent_input_file_map write silently degrades later generate_image reference_refs resolution (the agent can still answer text/embed, just can't reference-generate from input images) — fire a WARN on this side branch and reconverge to Call Execute Agent Session so the session still runs (degrade, don't break).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "agent-orchestrator/floor-file-map-write-failed",
+            "message": "Nie udało się zapisać agent_input_file_map dla obrazów floora (managed) — generate_image z reference_refs może nie rozwiązać załączonych obrazów.",
+            "details": "=task={{ $('Call Assemble Context').first().json.clickup_task_id }}; obrazy={{ ( () => { try { return JSON.parse($('Call Assemble Context').first().json.image_blocks_json || '[]').length } catch(e) { return '?' } } )() }}; embed_input nadal działa, dotyczy tylko reference_refs."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "5f77a0d5-e01d-4302-879a-efb8d1da4391",
+      "name": "Check Spend Limit",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -416,
+        560
+      ],
+      "notes": "ADR-064 spend gate (single chokepoint). Runs get_spend_status(reviewer_user_id) before any spend-bearing work. Output 0 -> Spend Blocked?; error output 1 -> Alert Spend Check Failed -> Resume (FAIL-OPEN: a DB error must never freeze all agent work). Only the production When Called path is gated; the Form Trigger test path is left ungated.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select * from get_spend_status($1);",
+        "options": {
+          "queryReplacement": "={{ [ $('When Called').first().json.reviewer_user_id || '' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "0645a85c-64f0-4e96-9c42-91c44edcd3a4",
+      "name": "Spend Blocked?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        64,
+        544
+      ],
+      "notes": "ADR-064: $json.blocked from get_spend_status. true -> post block notice + WARN, spine does NOT run (no model spend). false -> Resume After Gate -> normal spine. The spend.enabled=false kill-switch already forces blocked=false inside the function.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "blk1",
+              "leftValue": "={{ $json.blocked }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "8fed886f-8e0b-44bf-a6b7-7d7889a5285b",
+      "name": "Resume After Gate",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        512,
+        560
+      ],
+      "notes": "ADR-064: the Postgres gate replaces the item with the spend row, dropping the When Called fields Call Assemble Context reads ($json.taskId etc.). Restore the 7 trigger inputs here so the normal spine continues unchanged. Runs only on the When Called path (When Called is executed); the Form Trigger path stays ungated and untouched.",
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "taskId",
+              "value": "={{ $('When Called').first().json.taskId }}",
+              "type": "string"
+            },
+            {
+              "id": "r2",
+              "name": "reviewer_user_id",
+              "value": "={{ $('When Called').first().json.reviewer_user_id }}",
+              "type": "string"
+            },
+            {
+              "id": "r3",
+              "name": "caller_username",
+              "value": "={{ $('When Called').first().json.caller_username }}",
+              "type": "string"
+            },
+            {
+              "id": "r4",
+              "name": "triggered_by",
+              "value": "={{ $('When Called').first().json.triggered_by }}",
+              "type": "string"
+            },
+            {
+              "id": "r5",
+              "name": "invocation_type",
+              "value": "={{ $('When Called').first().json.invocation_type }}",
+              "type": "string"
+            },
+            {
+              "id": "r6",
+              "name": "triggering_comment_id",
+              "value": "={{ $('When Called').first().json.triggering_comment_id }}",
+              "type": "string"
+            },
+            {
+              "id": "r7",
+              "name": "triggering_comment_text",
+              "value": "={{ $('When Called').first().json.triggering_comment_text }}",
+              "type": "string"
+            },
+            {
+              "id": "r8",
+              "name": "surface",
+              "value": "={{ $('When Called').first().json.surface }}",
+              "type": "string"
+            },
+            {
+              "id": "r9",
+              "name": "surface_ref",
+              "value": "={{ $('When Called').first().json.surface_ref }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "dedf0a57-055c-4e29-8bde-7c045248aa74",
+      "name": "Post Block Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        192,
+        768
+      ],
+      "notes": "ADR-064: tell the user (Polish) which cap was hit + that it resets at midnight Warsaw. Reply in-thread to triggering_comment_id; for an autonomous run with no comment, post a top-level task comment. The notice never @-tags the agent, so it can't re-trigger the producer webhook (no loop). onError continueRegularOutput so a post failure can't throw.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('When Called').first().json.triggering_comment_id ? ('https://api.clickup.com/api/v2/comment/' + $('When Called').first().json.triggering_comment_id + '/reply') : ('https://api.clickup.com/api/v2/task/' + $('When Called').first().json.taskId + '/comment') }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ comment_text: (() => { const s = $('Check Spend Limit').first().json; const r = s.block_reason; const u = Number(s.user_spend).toFixed(2), ul = Number(s.user_limit).toFixed(2), c = Number(s.company_spend).toFixed(2), cl = Number(s.company_limit).toFixed(2); if (r === 'company') return '⛔ Firmowy dzienny limit wydatków na agenta został wyczerpany (' + c + ' / ' + cl + ' PLN). Uruchomienia są wstrzymane dla wszystkich do północy (czas warszawski).'; if (r === 'both') return '⛔ Limit wydatków wyczerpany — Twój dzienny (' + u + ' / ' + ul + ' PLN) oraz firmowy (' + c + ' / ' + cl + ' PLN). Uruchomienia wstrzymane do północy (czas warszawski).'; return '⛔ Osiągnięto Twój dzienny limit wydatków na agenta (' + u + ' / ' + ul + ' PLN). Nowe uruchomienia będą blokowane do północy (czas warszawski), gdy limit się zresetuje.'; })(), notify_all: false }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "223ed083-31ea-46b3-beff-9e46631ebe25",
+      "name": "Alert Spend Blocked",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        400,
+        768
+      ],
+      "notes": "ADR-064: WARN via Post Alert (v1) whenever a run is blocked, so the operator sees who hit which cap.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "spend-limit/blocked",
+            "message": "Zablokowano uruchomienie agenta — przekroczono dzienny limit wydatków.",
+            "details": "=task={{ $('When Called').first().json.taskId }}; user={{ $('When Called').first().json.reviewer_user_id }}; reason={{ $('Check Spend Limit').first().json.block_reason }}; user_spend={{ $('Check Spend Limit').first().json.user_spend }}/{{ $('Check Spend Limit').first().json.user_limit }} PLN; firma={{ $('Check Spend Limit').first().json.company_spend }}/{{ $('Check Spend Limit').first().json.company_limit }} PLN"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "3be40526-ecbf-47b4-b4c6-ec99326b4695",
+      "name": "Alert Spend Check Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        -32,
+        768
+      ],
+      "notes": "ADR-064 fail-open notice: the gate query errored, the run was let through. Covers the silent-degrade mode where a DB hiccup would otherwise either freeze all work (if fail-closed) or pass silently.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "spend-limit/check-failed",
+            "message": "Nie udało się sprawdzić limitu wydatków (get_spend_status) — uruchomienie przepuszczone (fail-open).",
+            "details": "=task={{ $('When Called').first().json.taskId }}; user={{ $('When Called').first().json.reviewer_user_id }}; sprawdź połączenie z bazą / funkcję get_spend_status."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "merge-assemble-ctx",
+      "name": "Call Assemble Context",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        240,
+        208
+      ],
+      "notes": "ADR-068 surface convergence: task Stage A (input 0) XOR chat Stage A (input 1). Keeps the name 'Call Assemble Context' so every downstream $('Call Assemble Context') ref stays surface-agnostic. Mirrors the Merge Input Source pass-through pattern.",
+      "parameters": {}
+    },
+    {
+      "id": "call-assemble-chat-context",
+      "name": "Call Assemble Chat Context",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        64
+      ],
+      "notes": "ADR-068 chat Stage A reader. Returns the SAME contract as the task reader. surface_ref arrives as a JSON string (ingress convertFieldsToString); the reader parses it.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "BppZsqTi46Bz5dsG",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $json.taskId || '' }}",
+            "reviewer_user_id": "={{ $json.reviewer_user_id || '' }}",
+            "caller_username": "={{ $json.caller_username || '' }}",
+            "triggered_by": "={{ $json.triggered_by || '' }}",
+            "invocation_type": "={{ $json.invocation_type || '' }}",
+            "triggering_comment_id": "={{ $json.triggering_comment_id || '' }}",
+            "triggering_comment_text": "={{ $json.triggering_comment_text || '' }}",
+            "surface": "={{ $json.surface || '' }}",
+            "surface_ref": "={{ $json.surface_ref || '' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "surface-is-chat",
+      "name": "Surface = chat?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -192,
+        224
+      ],
+      "notes": "ADR-068 Stage A surface router. surface=='chat' -> Call Assemble Chat Context; else (task/blank/Form path) -> Call Assemble Task Context + Set Status W trakcie (task-field write is task-surface only).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "sc1",
+              "leftValue": "={{ $json.surface }}",
+              "rightValue": "chat",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "orch-call-publish-managed",
+      "name": "Call Publish Managed Result",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1680,
+        224
+      ],
+      "notes": "ADR-066 Block 7: the SYNC path's publish step, now the shared Publish Managed Result (v1) sub-workflow (5T8WKueobwZZQWgB) — the SAME workflow the async Session Waiter Finish webhook calls, so the gate/render/cost/post/status logic lives in ONE place (decision B). Builds the normalized session-result contract from Call Execute Agent Session (outcome/blocks/cost/docs/usage) + Call Assemble Context (task/comment/reviewer/surface/image refs) + Resolve Lane (since_ts for the per-execution image-cost window). Cost was already logged inside Execute Agent Session (Log Session Cost) BEFORE this, so Publish's Write Cost Field sum includes it. Fire-and-forget leaf (Publish posts the comment + flips status); the orchestrator does not consume its return.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "5T8WKueobwZZQWgB",
+          "mode": "list",
+          "cachedResultName": "Publish Managed Result (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "outcome": "={{ $('Call Execute Agent Session').first().json.outcome }}",
+            "delivered_via_tool": "={{ $('Call Execute Agent Session').first().json.delivered_via_tool }}",
+            "output_message": "={{ $('Call Execute Agent Session').first().json.output_message }}",
+            "output_blocks_json": "={{ JSON.stringify($('Call Execute Agent Session').first().json.output_blocks || []) }}",
+            "input_image_refs_json": "={{ $('Call Assemble Context').first().json.image_blocks_json || '[]' }}",
+            "model_used": "={{ $('Call Execute Agent Session').first().json.model_used }}",
+            "cost_pln": "={{ $('Call Execute Agent Session').first().json.cost_pln }}",
+            "doc_files_json": "={{ JSON.stringify($('Call Execute Agent Session').first().json.doc_files || []) }}",
+            "session_id": "={{ $('Call Execute Agent Session').first().json.session_id }}",
+            "status": "={{ $('Call Execute Agent Session').first().json.status }}",
+            "duration_seconds": "={{ $('Call Execute Agent Session').first().json.duration_seconds }}",
+            "clickup_task_id": "={{ $('Call Assemble Context').first().json.clickup_task_id }}",
+            "reviewer_user_id": "={{ $('Call Assemble Context').first().json.reviewer_user_id }}",
+            "triggering_comment_id": "={{ $('Call Assemble Context').first().json.triggering_comment_id }}",
+            "surface": "={{ $('Call Assemble Context').first().json.surface || 'task' }}",
+            "surface_ref": "={{ $('Call Assemble Context').first().json.surface_ref || '' }}",
+            "since_ts": "={{ $('Resolve Lane').first().json.since_ts }}",
+            "web_sources": "={{ '[]' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Set Status W trakcie": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Alert Status Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Execute LLM": {
+      "main": [
+        [
+          {
+            "node": "If LLM Succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If LLM Succeeded?": {
+      "main": [
+        [
+          {
+            "node": "Call Post Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert LLM Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Context OK?": {
+      "main": [
+        [
+          {
+            "node": "Read Agent Lane",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Context Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Agent Lane": {
+      "main": [
+        [
+          {
+            "node": "Resolve Lane",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Lane": {
+      "main": [
+        [
+          {
+            "node": "Lane = managed?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Lane Unreadable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lane = managed?": {
+      "main": [
+        [
+          {
+            "node": "Build Floor File Map",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Execute LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lane Unreadable?": {
+      "main": [
+        [
+          {
+            "node": "Alert Lane Unreadable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Execute Agent Session": {
+      "main": [
+        [
+          {
+            "node": "Handoff?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Waiter Flag": {
+      "main": [
+        [
+          {
+            "node": "Call Execute Agent Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handoff?": {
+      "main": [
+        [
+          {
+            "node": "Post Handoff to Waiter",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Publish Managed Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Handoff to Waiter": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Alert Handoff Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Floor File Map": {
+      "main": [
+        [
+          {
+            "node": "Upsert File Map (Managed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert File Map (Managed)": {
+      "main": [
+        [
+          {
+            "node": "Read Waiter Flag",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert File Map Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert File Map Failed": {
+      "main": [
+        [
+          {
+            "node": "Read Waiter Flag",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Check Spend Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Spend Limit": {
+      "main": [
+        [
+          {
+            "node": "Spend Blocked?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Spend Check Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Spend Blocked?": {
+      "main": [
+        [
+          {
+            "node": "Post Block Reply",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert Spend Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resume After Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Spend Check Failed": {
+      "main": [
+        [
+          {
+            "node": "Resume After Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Form Trigger": {
+      "main": [
+        [
+          {
+            "node": "Surface = chat?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resume After Gate": {
+      "main": [
+        [
+          {
+            "node": "Surface = chat?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Surface = chat?": {
+      "main": [
+        [
+          {
+            "node": "Call Assemble Chat Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Assemble Task Context",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Set Status W trakcie",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Assemble Task Context": {
+      "main": [
+        [
+          {
+            "node": "Call Assemble Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Assemble Chat Context": {
+      "main": [
+        [
+          {
+            "node": "Call Assemble Context",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Call Assemble Context": {
+      "main": [
+        [
+          {
+            "node": "Context OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "3011567c-696b-4abd-bdf8-7194d9122674",
+  "activeVersionId": "3011567c-696b-4abd-bdf8-7194d9122674",
+  "versionCounter": 192,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-03T07:25:49.147Z",
+      "createdAt": "2026-06-03T07:25:49.147Z",
+      "role": "workflow:owner",
+      "workflowId": "a8XKaijkMFNBpRBa",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

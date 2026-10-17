@@ -1,0 +1,913 @@
+{
+  "updatedAt": "2026-07-17T12:40:17.585Z",
+  "createdAt": "2026-06-03T07:04:36.583Z",
+  "id": "XcOIVdZnVCCWNPeb",
+  "name": "Invoke Model (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "exec-trigger",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -288,
+        304
+      ],
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "prompt"
+            },
+            {
+              "name": "impact"
+            },
+            {
+              "name": "modality"
+            },
+            {
+              "name": "task_type"
+            },
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "triggered_by"
+            },
+            {
+              "name": "invocation_type"
+            },
+            {
+              "name": "caller_user_id"
+            },
+            {
+              "name": "process_type"
+            },
+            {
+              "name": "model_override"
+            },
+            {
+              "name": "image_blocks_json"
+            },
+            {
+              "name": "requested_modality_of_output"
+            },
+            {
+              "name": "requested_size"
+            },
+            {
+              "name": "aspect"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "lookup-routing",
+      "name": "Lookup Routing",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -96,
+        304
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select r.litellm_model, r.temperature, r.max_tokens, r.nudge,\n       r.price_in_usd_per_1k, r.price_out_usd_per_1k, r.fallback_price_per_unit, r.impact,\n       p.resolution\nfrom model_routing r\nleft join image_gen_params p on p.impact = r.impact\nwhere r.impact in ($1, '__default__') and r.modality = $2 and r.active = true\norder by (r.impact = $1) desc\nlimit 1;",
+        "options": {
+          "queryReplacement": "={{ [ $json.impact || '__default__', ($json.requested_modality_of_output === 'image' ? 'image' : ($json.modality || 'text')) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "resolve-routing",
+      "name": "Resolve Routing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        144,
+        304
+      ],
+      "parameters": {
+        "jsCode": "const orig = $('When Called').first().json;\nconst impact = (orig.impact || '').trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\nconst override = (orig.model_override != null && String(orig.model_override).trim() !== '') ? String(orig.model_override).trim() : null;\n\nlet row = null;\ntry { const r = $input.first().json; if (r && r.litellm_model) row = r; } catch (e) {}\n\nlet routing_default_used = false;\nlet routing_row_missing = false;\nif (override) {\n  row = { litellm_model: override, temperature: null, max_tokens: 4000, nudge: null, price_in_usd_per_1k: 0, price_out_usd_per_1k: 0, fallback_price_per_unit: null, impact: '__override__' };\n} else if (!row) {\n  row = { litellm_model: 'haxe-sonnet-4-6-direct', temperature: 0.7, max_tokens: 4000, nudge: null,\n          price_in_usd_per_1k: 0.003, price_out_usd_per_1k: 0.015, fallback_price_per_unit: null, impact: '__fallback__' };\n  if (REAL_TIERS.includes(impact)) routing_default_used = true;\n  routing_row_missing = true;\n} else if (row.impact === '__default__' && REAL_TIERS.includes(impact)) {\n  routing_default_used = true;\n}\n\nconst nudge = row.nudge ? (row.nudge + '\\n\\n---\\n\\n') : '';\nconst prompt = nudge + (orig.prompt || '');\nconst temperature = (row.temperature != null && row.temperature !== '') ? Number(row.temperature) : null;\n\n// Multimodal (ADR-036 Block 5): content is ALWAYS an array. Image refs (ClickUp URLs from read-input)\n// become image_url parts; LiteLLM fetches them. ADR-051 Block 5: image OUTPUT generation now lives only\n// in Generate Images Parallel (v1); Invoke Model is text + multimodal-INPUT only.\nlet imgs = [];\ntry { imgs = JSON.parse(orig.image_blocks_json || '[]'); } catch (e) { imgs = []; }\nif (!Array.isArray(imgs)) imgs = [];\nconst content = [{ type: 'text', text: prompt }].concat(\n  imgs.filter(b => b && b.ref).map(b => ({ type: 'image_url', image_url: { url: b.ref } }))\n);\nconst messages = [{ role: 'user', content }];\nconst brak = imgs.length > 0 ? '\\n\\n[BRAK: obraz nieczytelny na bieżącym providerze]' : '';\nconst messages_text_only = [{ role: 'user', content: [{ type: 'text', text: prompt + brak }] }];\n\n// ADR-063 Block 4 (bare-lane parity): FORCE the drafting model to DELIVER its final answer by CALLING\n// deliver_output, instead of emitting a free-text JSON block-array we hand-parse. LiteLLM /v1/chat/completions\n// is OpenAI-shaped, so the tool is declared in OpenAI function format and forced via tool_choice; the provider\n// returns the block array as message.tool_calls[].function.arguments (machine-serialized JSON), captured in\n// Parse Response. KEEP IN SYNC with the managed deliver_output tool in sync-agent-definitions.json -> Build\n// System (ONE schema, both lanes — ADR-063); function.parameters is the canonical ADR-063 input_schema verbatim.\nconst deliver_output_tool = { type: 'function', function: { name: 'deliver_output', description: \"Dostarczenie FINALNEJ odpowiedzi. Wywołaj DOKŁADNIE RAZ na końcu. Parametr markdown to CAŁA odpowiedź jako zwykły tekst markdown po polsku; obrazy wstawiaj INLINE składnią ![opis](ref). NIE przekazuj tablicy JSON ani obiektów-bloków — tylko prozę markdown.\", parameters: {\"type\":\"object\",\"properties\":{\"markdown\":{\"type\":\"string\",\"description\":\"CAŁA finalna odpowiedź jako zwykły markdown po polsku (nagłówki, listy, tabele, pogrubienia, linki). Obrazy wstawiaj INLINE składnią ![opis](ref). NIE umieszczaj tu tablicy JSON ani obiektów-bloków.\"}},\"required\":[\"markdown\"]} } };\nconst tool_choice = { type: 'function', function: { name: 'deliver_output' } };\n\nreturn [{ json: {\n  litellm_model: row.litellm_model,\n  temperature,\n  max_tokens: Number(row.max_tokens),\n  price_in_usd_per_1k: Number(row.price_in_usd_per_1k || 0),\n  price_out_usd_per_1k: Number(row.price_out_usd_per_1k || 0),\n  prompt,\n  messages,\n  messages_text_only,\n  had_images: imgs.length > 0,\n  image_count: imgs.length,\n  impact,\n  task_type: orig.task_type || '',\n  clickup_task_id: orig.clickup_task_id || '',\n  triggered_by: orig.triggered_by || 'explicit_command',\n  invocation_type: orig.invocation_type || 'explicit',\n  caller_user_id: orig.caller_user_id || '',\n  process_type: orig.process_type || '',\n  routing_default_used,\n  routing_row_missing,\n  deliver_output_tool,\n  tool_choice\n} }];\n"
+      }
+    },
+    {
+      "id": "parse-response",
+      "name": "Parse Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        352
+      ],
+      "notes": "ADR-047 Block B: reads the text seam (Call Model Text). out0 item = seam contract {fell_back, model_used, body, headers} (primary or one-tier-below fallback). out1 routes to Retry Text-Only (Opus text-only); that item carries statusCode, used to distinguish the branch. fell_back replaces fell_back_to_opus (renamed). image_unprocessable set only when images were present on the Retry branch.",
+      "parameters": {
+        "jsCode": "// ADR-072 (amended): parse deliver_output(markdown) -> renderer's ordered text/image blocks by ![...](...).\n// KEEP IN SYNC with services/session-waiter/lib/deliver-blocks.mjs (markdownToBlocks). Code spans / fences\n// are masked so an ![](...) written inside backticks (agent documenting the contract) is not a spurious image.\nfunction md2blocks(md){\n  md = (md == null ? '' : String(md));\n  var out = md.split(''), m;\n  function blank(a,b){ for (var i=a; i<b && i<out.length; i++){ if (out[i] !== '\\n') out[i]=' '; } }\n  var fence = /(`{3,}|~{3,})[\\s\\S]*?\\1/g; while ((m = fence.exec(md)) !== null) blank(m.index, m.index + m[0].length);\n  var s2 = out.join(''), inl = /`[^`\\n]*`/g; while ((m = inl.exec(s2)) !== null) blank(m.index, m.index + m[0].length);\n  var masked = out.join(''), blocks = [], last = 0, order = 1, img = /!\\[([^\\]]*)\\]\\(\\s*([^)\\s]+)[^)]*\\)/g;\n  while ((m = img.exec(masked)) !== null){\n    var before = md.slice(last, m.index);\n    if (before.trim() !== '') blocks.push({ type: 'text', md: before.replace(/\\s+$/, ''), order: order++ });\n    var alt = (m[1] || '').trim(), ref = (m[2] || '').trim(), b = { type: 'image', ref: ref, order: order++ };\n    if (alt !== '') { b.caption = alt; b.alt = alt; }\n    blocks.push(b); last = m.index + m[0].length;\n  }\n  var tail = md.slice(last);\n  if (tail.trim() !== '') blocks.push({ type: 'text', md: tail.replace(/^\\s+/, ''), order: order++ });\n  return blocks;\n}\n\n// ADR-047 Block B: read the text fallback seam (out0) OR the Retry Text-Only safety net (out1).\n// $input.first() is the branch that fired (exactly one per run -> multi-input determinism).\nconst routing = $('Resolve Routing').first().json;\nconst it = $input.first() ? $input.first().json : {};\n\nlet body = {}, headers = {}, model_used = '', fell_back = false, image_unprocessable = false;\nif (it && it.statusCode !== undefined) {\n  // Retry Text-Only branch: routed + one-tier fallback BOTH failed -> recovered on Opus text-only.\n  body = it.body || {};\n  headers = it.headers || {};\n  model_used = (body.model && String(body.model).trim()) ? String(body.model).trim() : 'haxe-opus-4-8-direct';\n  // One WARN per sub-case: image present -> image-unprocessable WARN; no image -> degradation WARN.\n  image_unprocessable = !!routing.had_images;\n  fell_back = !routing.had_images;\n} else {\n  // Seam branch: primary OR one-tier-below fallback served.\n  body = (it && it.body) ? it.body : {};\n  headers = (it && it.headers) ? it.headers : {};\n  model_used = (it && it.model_used) ? it.model_used : ((body.model && String(body.model).trim()) ? String(body.model).trim() : (routing.litellm_model || ''));\n  fell_back = !!(it && it.fell_back);\n  image_unprocessable = false;\n}\n\nconst usage = body.usage || {};\nconst input_tokens = (usage.prompt_tokens != null) ? usage.prompt_tokens : null;\nconst output_tokens = (usage.completion_tokens != null) ? usage.completion_tokens : null;\n// ADR-063 Block 4: the drafting model is FORCED (tool_choice) to call deliver_output; its block array arrives\n// as message.tool_calls[].function.arguments — machine-serialized JSON (NOT model-hand-written prose), so a\n// single JSON.parse replaces the deleted free-text parseBlockArray (the entire defect class is gone). Falls\n// back to message.content as a text block only if the model somehow returned no deliver_output call.\nlet completion = '';\nlet output_blocks = [];\nlet delivered_via_tool = false;\ntry {\n  const msg = (body.choices && body.choices[0] && body.choices[0].message) || {};\n  const calls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];\n  const tc = calls.find(function (c) { return c && c.function && c.function.name === 'deliver_output'; }) || calls[0] || null;\n  if (tc && tc.function && tc.function.arguments != null) {\n    let args = tc.function.arguments;\n    if (typeof args === 'string') args = JSON.parse(args);\n    // ADR-072 (amended): deliver_output carries scalar markdown; split it into the renderer's block array.\n    if (args && args.markdown != null) { output_blocks = md2blocks(args.markdown); delivered_via_tool = true; }\n  }\n  if (!delivered_via_tool) completion = msg.content || '';\n} catch (e) { try { completion = body.choices[0].message.content || ''; } catch (e2) {} }\nconst ch = headers['x-litellm-response-cost'];\nconst usd_cost = (ch != null && ch !== '') ? Number(ch) : null;\n\n// Header (usd_cost) is authoritative; price columns are a dormant backup. On a fallback the served\n// model may differ from the routed row, but for text the header is reliably present, so keep the\n// routed (primary) prices as the rough backup rather than hardcoding a model-specific price.\nconst provider = String(model_used).includes('gemini') ? 'litellm/vertex' : 'litellm/anthropic-direct';\n\nreturn [{ json: {\n  completion,\n  output_blocks_json: JSON.stringify(output_blocks),\n  delivered_via_tool,\n  model_used,\n  provider,\n  input_tokens, output_tokens, usd_cost,\n  price_in_usd_per_1k: routing.price_in_usd_per_1k,\n  price_out_usd_per_1k: routing.price_out_usd_per_1k,\n  routing_default_used: !!routing.routing_default_used,\n  routing_row_missing: !!routing.routing_row_missing,\n  fell_back: fell_back,\n  image_unprocessable,\n  images_dropped: image_unprocessable ? (routing.image_count || 0) : 0,\n  impact: routing.impact,\n  task_type: routing.task_type,\n  clickup_task_id: routing.clickup_task_id,\n  triggered_by: routing.triggered_by,\n  invocation_type: routing.invocation_type,\n  caller_user_id: routing.caller_user_id,\n  process_type: routing.process_type\n} }];"
+      }
+    },
+    {
+      "id": "call-log-model-run",
+      "name": "Call Log Model Run",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1056,
+        80
+      ],
+      "notes": "ADR-035: the shared agent_runs writer also owns cost math (FX, PLN, token-price fallback). Returns cost_pln_total + cost_missing.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "ztSIUkp9ytbG1xpE",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "model_used": "={{ $json.model_used }}",
+            "impact": "={{ $json.impact }}",
+            "input_tokens": "={{ $json.input_tokens }}",
+            "output_tokens": "={{ $json.output_tokens }}",
+            "usd_cost": "={{ $json.usd_cost }}",
+            "price_in_usd_per_1k": "={{ $json.price_in_usd_per_1k }}",
+            "price_out_usd_per_1k": "={{ $json.price_out_usd_per_1k }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "check-degradation",
+      "name": "Check Degradation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1344,
+        304
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "d1",
+              "leftValue": "={{ $('Normalize Model Result').first().json.routing_default_used }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "d2",
+              "leftValue": "={{ $('Call Log Model Run').first().json.cost_missing }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "d3",
+              "leftValue": "={{ $('Normalize Model Result').first().json.fell_back }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "d4",
+              "leftValue": "={{ $('Normalize Model Result').first().json.routing_row_missing }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "alert-degradation",
+      "name": "Alert Degradation",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1520,
+        240
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "invoke-model",
+            "message": "Degradacja w Invoke Model: fallback na model o jeden poziom niżej (model podstawowy zawiódł), routing fail-safe, i/lub brak danych o koszcie.",
+            "details": "=fell_back={{ $('Normalize Model Result').first().json.fell_back }}; routing_default_used={{ $('Normalize Model Result').first().json.routing_default_used }}; routing_row_missing={{ $('Normalize Model Result').first().json.routing_row_missing }}; cost_missing={{ $('Call Log Model Run').first().json.cost_missing }}; impact={{ $('Normalize Model Result').first().json.impact }}; model={{ $('Normalize Model Result').first().json.model_used }}; task={{ $('Normalize Model Result').first().json.clickup_task_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "shape-output",
+      "name": "Shape Output",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1792,
+        304
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b1",
+              "name": "completion",
+              "value": "={{ $('Normalize Model Result').first().json.completion }}",
+              "type": "string"
+            },
+            {
+              "id": "b2",
+              "name": "model",
+              "value": "={{ $('Normalize Model Result').first().json.model_used }}",
+              "type": "string"
+            },
+            {
+              "id": "b3",
+              "name": "provider",
+              "value": "={{ $('Normalize Model Result').first().json.provider }}",
+              "type": "string"
+            },
+            {
+              "id": "b4",
+              "name": "input_tokens",
+              "value": "={{ $('Normalize Model Result').first().json.input_tokens }}",
+              "type": "number"
+            },
+            {
+              "id": "b5",
+              "name": "output_tokens",
+              "value": "={{ $('Normalize Model Result').first().json.output_tokens }}",
+              "type": "number"
+            },
+            {
+              "id": "b6",
+              "name": "cost_pln",
+              "value": "={{ $('Call Log Model Run').first().json.cost_pln_total }}",
+              "type": "number"
+            },
+            {
+              "id": "b7",
+              "name": "usd_cost",
+              "value": "={{ $('Normalize Model Result').first().json.usd_cost }}",
+              "type": "number"
+            },
+            {
+              "id": "b8",
+              "name": "output_modality",
+              "value": "={{ $('Normalize Model Result').first().json.output_modality }}",
+              "type": "string"
+            },
+            {
+              "id": "b9",
+              "name": "b64_json",
+              "value": "={{ $('Normalize Model Result').first().json.b64_json }}",
+              "type": "string"
+            },
+            {
+              "id": "b10",
+              "name": "mime",
+              "value": "={{ $('Normalize Model Result').first().json.mime }}",
+              "type": "string"
+            },
+            {
+              "id": "b11",
+              "name": "size",
+              "value": "={{ $('Normalize Model Result').first().json.size }}",
+              "type": "string"
+            },
+            {
+              "id": "b12",
+              "name": "degraded",
+              "value": "={{ $('Normalize Model Result').first().json.image_degraded }}",
+              "type": "boolean"
+            },
+            {
+              "id": "b13",
+              "name": "success",
+              "value": "={{ $('Normalize Model Result').first().json.success }}",
+              "type": "boolean"
+            },
+            {
+              "id": "b14",
+              "name": "task_type",
+              "value": "={{ $('Normalize Model Result').first().json.task_type }}",
+              "type": "string"
+            },
+            {
+              "id": "b15",
+              "name": "resolution_note",
+              "value": "={{ $('Normalize Model Result').first().json.resolution_note }}",
+              "type": "string"
+            },
+            {
+              "id": "b16",
+              "name": "output_blocks_json",
+              "value": "={{ $('Normalize Model Result').first().json.output_blocks_json }}",
+              "type": "string"
+            },
+            {
+              "id": "b17",
+              "name": "delivered_via_tool",
+              "value": "={{ $('Normalize Model Result').first().json.delivered_via_tool }}",
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "bedrock-model",
+      "name": "AWS Bedrock Chat Model (fallback)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAwsBedrock",
+      "typeVersion": 1.1,
+      "position": [
+        160,
+        880
+      ],
+      "disabled": true,
+      "parameters": {
+        "modelSource": "inferenceProfile",
+        "model": "eu.anthropic.claude-sonnet-4-6",
+        "options": {}
+      },
+      "credentials": {
+        "aws": {
+          "id": "8TDwsQAJFkSWUEJF",
+          "name": "AWS (IAM) account"
+        }
+      }
+    },
+    {
+      "id": "llm-chain",
+      "name": "Basic LLM Chain (fallback)",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        160,
+        720
+      ],
+      "disabled": true,
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "batching": {}
+      }
+    },
+    {
+      "id": "f0a48bdb-0be1-4611-9603-7e201c2fc2ea",
+      "name": "Routing Missing?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1232,
+        528
+      ],
+      "notes": "0-row routing guard: true when Lookup Routing matched nothing and Resolve Routing fell back to its safety-net model (routing_row_missing). True -> CRITICAL alert. Both branches reconverge to Check Degradation so Shape Output stays the sole leaf (sub-workflow return determinism).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "rm1",
+              "leftValue": "={{ $('Resolve Routing').first().json.routing_row_missing }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "8c1b87a1-7d33-482b-af67-2a50b2a2357f",
+      "name": "Alert Routing Missing",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1232,
+        704
+      ],
+      "notes": "CRITICAL via Post Alert (v1): the model_routing table has no row for this impact/modality/PD combo. The run still replies via Resolve Routing's safety-net model, so this is loud-but-non-blocking. Reconverges to Check Degradation (not a leaf).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "invoke-model/routing",
+            "message": "Brak trasy w model_routing dla tej kombinacji (impact × modalność) — użyto modelu zapasowego. Uzupełnij model_routing.",
+            "details": "=task={{ $('Normalize Model Result').first().json.clickup_task_id }}; impact={{ $('Normalize Model Result').first().json.impact }}; modalność={{ $('When Called').first().json.modality }}; model_zapasowy={{ $('Normalize Model Result').first().json.model_used }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "57b75e27-c53c-4436-bddb-45f388bd8657",
+      "name": "Retry Text-Only",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        688,
+        928
+      ],
+      "notes": "Block 6 (ADR-036): final safety net. Reached only when BOTH the routed model AND the Opus fallback failed AND images were present (a corrupt/1x1/unprocessable image 4xxs every image-bearing call). Retries text-only on Opus with images stripped + a [BRAK] marker (messages_text_only from Resolve Routing) -> Parse Response sets image_unprocessable -> WARN multimodal/image-unprocessable. No onError here: if THIS also fails it throws -> Execute LLM Call CRITICAL, so a genuine non-image failure is NOT masked.",
+      "parameters": {
+        "method": "POST",
+        "url": "http://litellm:4000/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'haxe-opus-4-8-direct', messages: $('Resolve Routing').first().json.messages_text_only, max_tokens: $('Resolve Routing').first().json.max_tokens, tools: [ $('Resolve Routing').first().json.deliver_output_tool ], tool_choice: $('Resolve Routing').first().json.tool_choice }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "396fqTZqWdFosVpT",
+          "name": "LiteLLM master key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "86dc2f02-ec8c-4889-bf05-f779dc57fff6",
+      "name": "Image Unprocessable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1232,
+        80
+      ],
+      "notes": "Block 6: true when the routed model could not consume the input image and the run degraded to a text-only retry. True -> WARN multimodal/image-unprocessable. Both branches reconverge into Call Log Model Run so Shape Output stays the sole branch-free leaf (sub-workflow return determinism), mirroring Routing Missing? -> Check Degradation.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "iu1",
+              "leftValue": "={{ $('Normalize Model Result').first().json.image_unprocessable }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "cceb469b-eb94-4cc3-9f38-d45df2c91f10",
+      "name": "Alert Image Unprocessable",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1440,
+        64
+      ],
+      "notes": "Block 6 WARN via Post Alert (v1): a corrupt/non-vision input image was dropped and the answer was produced text-only. Loud-but-non-blocking; reconverges to Call Log Model Run (not a leaf).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "multimodal/image-unprocessable",
+            "message": "Obraz nieczytelny na bieżącym providerze — odpowiedź wygenerowana tylko z tekstu.",
+            "details": "=task={{ $('Normalize Model Result').first().json.clickup_task_id }}; images_dropped={{ $('Normalize Model Result').first().json.images_dropped }}; impact={{ $('Normalize Model Result').first().json.impact }}; model={{ $('Normalize Model Result').first().json.model_used }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "normalize-result",
+      "name": "Normalize Model Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        560
+      ],
+      "notes": "Block 9: single convergence of the text + image branches into one uniform schema. Keeps Shape Output the sole branch-free leaf (return determinism).",
+      "parameters": {
+        "jsCode": "// ADR-051 Block 5: text + multimodal-INPUT only (image-gen branch deleted; Generate Images Parallel (v1)\n// owns image OUTPUT). Reads Parse Response and emits the uniform schema for Log Model Run + the\n// degradation chain + Shape Output. Keeps Shape Output the sole branch-free leaf (return determinism).\nconst t = ($('Parse Response').first() ? $('Parse Response').first().json : {}) || {};\nlet rrm = false;\ntry { rrm = !!$('Resolve Routing').first().json.routing_row_missing; } catch (e) {}\n\nreturn [{ json: {\n  output_modality: 'text',\n  success: true,\n  completion: t.completion || '',\n  output_blocks_json: t.output_blocks_json || '[]',\n  delivered_via_tool: !!t.delivered_via_tool,\n  b64_json: null,\n  mime: null,\n  size: null,\n  size_overridden: false,\n  resolution_note: '',\n  image_degraded: false,\n  cost_header_missing: false,\n  model_used: t.model_used,\n  provider: t.provider,\n  input_tokens: (t.input_tokens != null) ? t.input_tokens : null,\n  output_tokens: (t.output_tokens != null) ? t.output_tokens : null,\n  usd_cost: (t.usd_cost != null) ? t.usd_cost : null,\n  price_in_usd_per_1k: t.price_in_usd_per_1k,\n  price_out_usd_per_1k: t.price_out_usd_per_1k,\n  impact: t.impact,\n  task_type: t.task_type || '',\n  clickup_task_id: t.clickup_task_id || '',\n  triggered_by: t.triggered_by || 'explicit_command',\n  invocation_type: t.invocation_type || 'explicit',\n  caller_user_id: t.caller_user_id || '',\n  process_type: t.process_type || '',\n  routing_default_used: !!t.routing_default_used,\n  routing_row_missing: !!(t.routing_row_missing || rrm),\n  fell_back: !!t.fell_back,\n  image_unprocessable: !!t.image_unprocessable,\n  images_dropped: t.images_dropped || 0\n} }];\n"
+      }
+    },
+    {
+      "id": "8b6e9b5a-1961-4d12-a5d9-d86ae406a0bc",
+      "name": "Resolve Lower Tier Text",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        520,
+        200
+      ],
+      "notes": "ADR-047 Block B: resolve the one-tier-below TEXT model for the fallback seam (ResolveLowerTier, GNO6ZsIcSpvYUJDq). Returns {floor:true} at Niski -> empty litellm_model -> seam re-sends primary -> both-down -> Retry Text-Only Opus safety net keeps the text floor degrading rather than CRITICALing.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "GNO6ZsIcSpvYUJDq",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "impact": "={{ $('Resolve Routing').first().json.impact }}",
+            "modality": "text"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "9745a292-536d-4306-83ae-90a93f31d786",
+      "name": "Call Model Text",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        760,
+        320
+      ],
+      "notes": "ADR-047 Block B: text path via the shared fallback seam (Call Model with Fallback v1) on /v1/chat/completions. Primary = routed model; fallback = one-tier-below text model. success_path empty (2xx+body; text tiers are all Claude, no empty-content risk). onError=continueErrorOutput: out0 -> Parse Response (primary OR one-tier fallback served); out1 (both-down throw) -> Retry Text-Only (Opus text-only safety net, ADR-036 Block 6). Replaces the old Call LiteLLM + Fallback to Opus; ADR-037 Opus fallback is now the top-tier case of one-tier-below (Krytycznie/Fable -> Opus).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "jBqu7znBIOMBF9HI",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "endpoint_url": "http://litellm:4000/v1/chat/completions",
+            "request_body": "={{ JSON.stringify(Object.assign({ model: $('Resolve Routing').first().json.litellm_model, messages: $('Resolve Routing').first().json.messages, max_tokens: $('Resolve Routing').first().json.max_tokens, tools: [ $('Resolve Routing').first().json.deliver_output_tool ], tool_choice: $('Resolve Routing').first().json.tool_choice }, $('Resolve Routing').first().json.temperature != null ? { temperature: $('Resolve Routing').first().json.temperature } : {})) }}",
+            "fallback_model": "={{ $('Resolve Lower Tier Text').first().json.litellm_model || '' }}",
+            "extra_headers": "{}",
+            "success_path": ""
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Lookup Routing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Routing": {
+      "main": [
+        [
+          {
+            "node": "Resolve Routing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resolve Routing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Routing": {
+      "main": [
+        [
+          {
+            "node": "Resolve Lower Tier Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Text-Only": {
+      "main": [
+        [
+          {
+            "node": "Parse Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Response": {
+      "main": [
+        [
+          {
+            "node": "Normalize Model Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Model Result": {
+      "main": [
+        [
+          {
+            "node": "Call Log Model Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Log Model Run": {
+      "main": [
+        [
+          {
+            "node": "Image Unprocessable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image Unprocessable?": {
+      "main": [
+        [
+          {
+            "node": "Alert Image Unprocessable",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Routing Missing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Image Unprocessable": {
+      "main": [
+        [
+          {
+            "node": "Routing Missing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Routing Missing?": {
+      "main": [
+        [
+          {
+            "node": "Alert Routing Missing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check Degradation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Routing Missing": {
+      "main": [
+        [
+          {
+            "node": "Check Degradation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Degradation": {
+      "main": [
+        [
+          {
+            "node": "Alert Degradation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Shape Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Degradation": {
+      "main": [
+        [
+          {
+            "node": "Shape Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AWS Bedrock Chat Model (fallback)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain (fallback)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Lower Tier Text": {
+      "main": [
+        [
+          {
+            "node": "Call Model Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Model Text": {
+      "main": [
+        [
+          {
+            "node": "Parse Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry Text-Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "8aba6397-80f3-443e-b6fe-a82c8b7052af",
+  "activeVersionId": "8aba6397-80f3-443e-b6fe-a82c8b7052af",
+  "versionCounter": 105,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-03T07:04:36.583Z",
+      "createdAt": "2026-06-03T07:04:36.583Z",
+      "role": "workflow:owner",
+      "workflowId": "XcOIVdZnVCCWNPeb",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

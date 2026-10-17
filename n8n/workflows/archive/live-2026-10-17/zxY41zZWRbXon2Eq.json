@@ -1,0 +1,475 @@
+{
+  "updatedAt": "2026-06-30T12:59:12.142Z",
+  "createdAt": "2026-06-18T13:41:41.695Z",
+  "id": "zxY41zZWRbXon2Eq",
+  "name": "Image MCP Tool Handler (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "ADR-055 Block 5.2 — image MCP tool handler (the intermediate between the n8n MCP Server Trigger's generate_image tool and the shared Image Tool Handler (v1)). Inputs come from the toolWorkflow node's $fromAI mapping in 'Haxe Image MCP (v1)': prompt (string), reference_file_ids_json (JSON-array string of input-image file_ids), count (number), aspect_ratio (string), size (string), clickup_task_id (string — the triggering task id the agent copies from its message, for cost attribution; ADR-057 follow-up). This handler resolves reference_file_ids -> signed URLs via the agent_input_file_map table (NO session context — Block 5.1), then delegates to Image Tool Handler (v1) UNCHANGED so the image-gen+upload+cost-logging core is shared (one path, ADR-055). Returns {status, file_ids[], message, count_*, warnings[]} to the harness. NB the harness calls this directly, so this workflow FIRES its own Post Alert (no Stage B caller to fire the returned warnings).",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "prompt"
+            },
+            {
+              "name": "reference_file_ids_json"
+            },
+            {
+              "name": "count",
+              "type": "number"
+            },
+            {
+              "name": "aspect_ratio"
+            },
+            {
+              "name": "size"
+            },
+            {
+              "name": "clickup_task_id"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "parse-tool-input",
+      "name": "Parse Tool Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "notes": "Normalize the tool args into the Image Tool Handler tool_input contract. reference_file_ids_json -> array of file_id strings (ref_ids); tool_input_json = {prompt, reference_file_ids, count, aspect_ratio?, size?}. count defaults 1 (Image Tool Handler clamps 1..4). Always emits exactly 1 item.",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json;\nfunction pStr(v){ return (v == null) ? '' : String(v); }\nlet refIds = [];\ntry { const raw = wc.reference_file_ids_json; const p = (typeof raw === 'string') ? JSON.parse(raw || '[]') : (Array.isArray(raw) ? raw : []); if (Array.isArray(p)) refIds = p.map(function(x){ return String(x); }).filter(Boolean); } catch (e) { refIds = []; }\nconst prompt = pStr(wc.prompt).trim();\nlet count = Number(wc.count); if (!count || isNaN(count) || count < 1) count = 1;\nconst aspect = pStr(wc.aspect_ratio).trim();\nconst size = pStr(wc.size).trim();\nconst tool_input = { prompt: prompt, reference_file_ids: refIds, count: count };\nif (aspect) tool_input.aspect_ratio = aspect;\nif (size) tool_input.size = size;\n// clickup_task_id: agent-copied from its message (the ONLY task-attribution channel on the MCP path — Block 5.1). Trim; permissive length cap to drop obvious junk; empty/implausible -> '' (handled + WARNed downstream).\nlet taskId = pStr(wc.clickup_task_id).trim();\nif (taskId.length > 64) taskId = '';\nreturn [{ json: {\n  tool_input_json: JSON.stringify(tool_input),\n  ref_ids: refIds,\n  ref_ids_json: JSON.stringify(refIds),\n  has_refs: refIds.length > 0,\n  clickup_task_id: taskId\n} }];"
+      }
+    },
+    {
+      "id": "resolve-references",
+      "name": "Resolve References",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        440,
+        300
+      ],
+      "notes": "Resolve the requested reference_file_ids -> their original signed URLs via agent_input_file_map (ADR-055 §4; written by Upload Input Images (v1)). Returns 0..N rows {file_id,url,mime,source_ref}. alwaysOutputData so the common no-refs / not-found case still emits an item and the chain runs. onError=continueRegularOutput + retry so a DB hiccup degrades fail-soft (generate without references + WARN) instead of throwing into the harness. Reference NOT-found warnings are emitted downstream by Image Tool Handler itself (it gets only the resolved rows as its file_map).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select file_id, url, mime, source_ref from public.agent_input_file_map where file_id in (select jsonb_array_elements_text($1::jsonb)) or source_ref in (select jsonb_array_elements_text($1::jsonb));",
+        "options": {
+          "queryReplacement": "={{ [ $json.ref_ids_json ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "build-handler-inputs",
+      "name": "Build Handler Inputs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ],
+      "notes": "Build the Image Tool Handler (v1) call inputs: file_map_json = the resolved rows (the unresolved ids stay in tool_input_json so Image Tool Handler emits its own reference-not-found WARN — reuse, no duplicate logic). triggered_by='image_mcp' (migration 036; the MCP path has no real trigger context). impact='Średni' (the lane __default__ tier; '__default__' itself is INVALID for agent_runs.impact_check, and the harness passes no task impact, so MCP image gens are tier-fixed to 'Średni'). clickup_task_id = the agent-copied task id from Parse Tool Input (ADR-057 follow-up): the n8n MCP Server Trigger exposes no inbound headers/body to the handler (Block 5.1), so the agent-supplied tool arg is the only task-attribution channel. When present it lands on the per-image agent_runs row -> included in Write Cost Field (v1)'s per-task SUM. When empty (model omitted it) it falls back to a NULL task id (un-attributed, the old behaviour) AND fires a WARN so the degradation is visible. A DB lookup error -> a pre_warning (fail-soft). Single item.",
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst rows = items.map(function(i){ return i.json; }).filter(function(r){ return r && r.file_id; });\nconst dbError = items.some(function(i){ return i.json && i.json.error; });\nconst p = $('Parse Tool Input').first().json;\nconst file_map = rows.map(function(r){ return { file_id: r.file_id, url: r.url, source_ref: r.source_ref, mime: r.mime }; });\nconst pre_warnings = [];\nif (dbError) pre_warnings.push({ source: 'image-mcp/reference-lookup-failed', err: 'agent_input_file_map lookup failed; generating without reference images', severity: 'WARN' });\n// ADR-057 follow-up: attribute the per-image cost row to the triggering task using the id the agent copied into clickup_task_id (the only channel — Block 5.1). Empty => the model omitted it; the image cost falls back to a NULL task_id (un-attributed, as before) and we WARN so the silent degradation is visible (CLAUDE.md reliability mandate).\nconst clickup_task_id = (p.clickup_task_id || '').toString();\nif (!clickup_task_id) pre_warnings.push({ source: 'image-mcp/missing-task-id', err: 'generate_image called without clickup_task_id; image cost logged with NULL task id (not attributed to the task field/footer). The agent did not copy the task id from its message.', severity: 'WARN' });\nreturn [{ json: {\n  tool_input_json: p.tool_input_json,\n  file_map_json: JSON.stringify(file_map),\n  impact: 'Średni',\n  concurrency_cap: 5,\n  clickup_task_id: clickup_task_id,\n  triggered_by: 'image_mcp',\n  invocation_type: 'explicit',\n  caller_user_id: '',\n  process_type: '',\n  pre_warnings_json: JSON.stringify(pre_warnings),\n  requested_refs: (Array.isArray(p.ref_ids) ? p.ref_ids.length : 0),\n  resolved_refs: file_map.length\n} }];"
+      }
+    },
+    {
+      "id": "call-image-handler",
+      "name": "Call Image Tool Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        880,
+        300
+      ],
+      "notes": "Delegate to Image Tool Handler (v1) (vpGswBj2kR2D85hl) UNCHANGED — the shared image-gen core (build requests -> Generate Images Parallel (v1) -> Files-API upload -> aggregate), which writes the per-image agent_runs cost rows via the batch's own Log Model Run (no second cost writer). Returns {status, file_ids[], images[], message, warnings[], count_*}. It is fail-soft/branch-free and never throws; onError=continueErrorOutput is a belt-and-braces guard routing a hard executeWorkflow failure to Build Handler Failed.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "vpGswBj2kR2D85hl",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "tool_input_json": "={{ $json.tool_input_json }}",
+            "file_map_json": "={{ $json.file_map_json }}",
+            "impact": "={{ $json.impact }}",
+            "concurrency_cap": "={{ $json.concurrency_cap }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "build-mcp-output",
+      "name": "Build MCP Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        220
+      ],
+      "notes": "Shape the MCP tool result the harness/agent reads: {status, file_ids[], images[{file_id,download_url}], message, count_*, warnings[]}. ADR-067 Block 3: surfaces a per-image download_url (short-TTL signed carrier url) so the agent can DOWNLOAD bytes into the sandbox and embed them inside an office doc; still DROPS images[].b64_json (no base64 in the tool result — context pollution; inline rendering is by file_id). Merges this handler's pre_warnings (DB lookup) with Image Tool Handler's warnings.",
+      "parameters": {
+        "jsCode": "const h = $json || {};\nlet pre = []; try { pre = JSON.parse(($('Build Handler Inputs').first().json.pre_warnings_json) || '[]'); } catch (e) {}\nconst hw = Array.isArray(h.warnings) ? h.warnings : [];\nconst warnings = pre.concat(hw);\nconst images = (Array.isArray(h.images) ? h.images : []).map(function(i){ return { file_id: i.file_id, download_url: i.download_url || null }; });\nreturn [{ json: {\n  status: h.status || 'failed',\n  file_ids: Array.isArray(h.file_ids) ? h.file_ids : [],\n  images: images,\n  message: h.message || 'Image tool returned no message.',\n  count_uploaded: (h.count_uploaded != null) ? h.count_uploaded : 0,\n  count_failed: (h.count_failed != null) ? h.count_failed : 0,\n  warnings: warnings\n} }];"
+      }
+    },
+    {
+      "id": "build-handler-failed",
+      "name": "Build Handler Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        400
+      ],
+      "notes": "Defensive: Image Tool Handler (v1) threw (executeWorkflow error output). It is designed never to throw, so this is rare; returns a failed tool result + a CRITICAL warning so the harness gets a clean answer and the channel is alerted.",
+      "parameters": {
+        "jsCode": "const e = $json || {};\nconst err = (e.error && (e.error.message || e.error)) || e.message || 'image tool handler threw';\nlet pre = []; try { pre = JSON.parse(($('Build Handler Inputs').first().json.pre_warnings_json) || '[]'); } catch (ex) {}\nconst warnings = pre.concat([{ source: 'image-mcp/handler-threw', err: String(err).slice(0, 400), severity: 'CRITICAL' }]);\nreturn [{ json: {\n  status: 'failed',\n  file_ids: [],\n  images: [],\n  message: 'Image generation failed (internal error). Proceed without the image and tell the user it could not be generated.',\n  count_uploaded: 0,\n  count_failed: 0,\n  warnings: warnings\n} }];"
+      }
+    },
+    {
+      "id": "merge-final",
+      "name": "Merge Final",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1320,
+        300
+      ],
+      "notes": "Converge the normal output (Build MCP Output, 0) and the defensive handler-threw output (1) into the ONE canonical result. Final Return re-reads this node so the alert side-trip can't corrupt the return (return-determinism idiom).",
+      "parameters": {
+        "numberInputs": 2
+      }
+    },
+    {
+      "id": "classify-alert",
+      "name": "Classify Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        300
+      ],
+      "notes": "One consolidated alert decision: any CRITICAL warning -> CRITICAL; else any warnings -> WARN; else none. The harness calls this endpoint directly, so warnings MUST be fired here (no Stage B caller).",
+      "parameters": {
+        "jsCode": "const o = $json;\nconst warnings = Array.isArray(o.warnings) ? o.warnings : [];\nlet do_alert = false, sev = 'WARN', msg = '', det = '';\nif (warnings.length > 0){\n  do_alert = true;\n  const hasCrit = warnings.some(function(w){ return w.severity === 'CRITICAL'; });\n  sev = hasCrit ? 'CRITICAL' : 'WARN';\n  msg = 'Image MCP generate_image zakonczone z ostrzezeniami (' + warnings.length + ') [status: ' + (o.status || '?') + ']';\n  det = warnings.map(function(w){ return (w.source || '') + ': ' + (w.err || ''); }).join(' | ').slice(0, 1500);\n}\nreturn [{ json: Object.assign({}, o, { do_alert: do_alert, _sev: sev, _msg: msg, _details: det }) }];"
+      }
+    },
+    {
+      "id": "should-alert",
+      "name": "Should Alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1760,
+        300
+      ],
+      "notes": "TRUE -> Post Alert (one consolidated WARN/CRITICAL). FALSE -> Merge Tail. Both rejoin at Merge Tail -> Final Return (single terminal).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-alert",
+              "leftValue": "={{ $json.do_alert }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "post-alert",
+      "name": "Post Alert",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1980,
+        220
+      ],
+      "notes": "Centralized Post Alert (v1) seam (ADR-025, YSCdHlmdf3p9XEUx) — never post to ClickUp directly. onError=continueRegularOutput so an alert-channel hiccup never breaks the tool return. No loop risk: trigger is executeWorkflow/MCP, not a webhook watching the Alerts task.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "={{ $json._sev }}",
+            "source": "image-mcp/generate",
+            "message": "={{ $json._msg }}",
+            "details": "={{ $json._details }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "merge-tail",
+      "name": "Merge Tail",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2200,
+        300
+      ],
+      "notes": "Rejoin the alerted (0) and not-alerted (1) paths into the single terminal input. Append; exactly one executes.",
+      "parameters": {
+        "numberInputs": 2
+      }
+    },
+    {
+      "id": "final-return",
+      "name": "Final Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        300
+      ],
+      "notes": "SOLE TERMINAL. Re-reads the canonical result from Merge Final (NOT its direct input, which Post Alert would have replaced) — return-determinism idiom (CLAUDE.md). Returns {status, file_ids[], message, count_*, warnings[]} to the toolWorkflow node -> the MCP tool result.",
+      "parameters": {
+        "jsCode": "return [{ json: $('Merge Final').first().json }];"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Parse Tool Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Tool Input": {
+      "main": [
+        [
+          {
+            "node": "Resolve References",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve References": {
+      "main": [
+        [
+          {
+            "node": "Build Handler Inputs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Handler Inputs": {
+      "main": [
+        [
+          {
+            "node": "Call Image Tool Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Image Tool Handler": {
+      "main": [
+        [
+          {
+            "node": "Build MCP Output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Handler Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build MCP Output": {
+      "main": [
+        [
+          {
+            "node": "Merge Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Handler Failed": {
+      "main": [
+        [
+          {
+            "node": "Merge Final",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Final": {
+      "main": [
+        [
+          {
+            "node": "Classify Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Alert": {
+      "main": [
+        [
+          {
+            "node": "Should Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Alert?": {
+      "main": [
+        [
+          {
+            "node": "Post Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Tail",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Post Alert": {
+      "main": [
+        [
+          {
+            "node": "Merge Tail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Tail": {
+      "main": [
+        [
+          {
+            "node": "Final Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "1a43b8d2-99a8-447a-8bae-d852df58da78",
+  "activeVersionId": "1a43b8d2-99a8-447a-8bae-d852df58da78",
+  "versionCounter": 6,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-18T13:41:41.695Z",
+      "createdAt": "2026-06-18T13:41:41.695Z",
+      "role": "workflow:owner",
+      "workflowId": "zxY41zZWRbXon2Eq",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

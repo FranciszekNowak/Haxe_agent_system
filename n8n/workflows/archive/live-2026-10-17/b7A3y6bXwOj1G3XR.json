@@ -1,0 +1,187 @@
+{
+  "updatedAt": "2026-06-08T06:36:12.996Z",
+  "createdAt": "2026-06-08T06:35:18.621Z",
+  "id": "b7A3y6bXwOj1G3XR",
+  "name": "FX Rates Daily (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Daily 06:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "Daily FX import (ADR-024). NBP publishes table A on business days ~late morning; 06:00 picks up the previous publication, freshness monitor (separate wf) alarms if it goes stale.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 6,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fetch-nbp",
+      "name": "Fetch NBP USD/PLN",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        300
+      ],
+      "notes": "NBP Web API table A average rate (official Polish accounting rate, free/no key). rates[0]: {no, effectiveDate, mid}.",
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.nbp.pl/api/exchangerates/rates/a/usd/?format=json",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "maxTries": 3
+    },
+    {
+      "id": "upsert-fx",
+      "name": "Upsert fx_rates",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        480,
+        300
+      ],
+      "notes": "Append-only daily row. ON CONFLICT updates rate/table_no/fetched_at so re-runs are idempotent. Parameterized ($1=date,$2=mid,$3=table_no) to avoid quoting issues.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into fx_rates (rate_date, base, quote, rate, source, table_no)\nvalues ($1, 'USD', 'PLN', $2, 'NBP-A', $3)\non conflict (rate_date, base, quote)\ndo update set rate = excluded.rate, table_no = excluded.table_no, fetched_at = now()\nreturning rate_date, rate, table_no;",
+        "options": {
+          "queryReplacement": "={{ [$json.rates[0].effectiveDate, $json.rates[0].mid, $json.rates[0].no] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "maxTries": 3
+    },
+    {
+      "id": "form-seed",
+      "name": "Run now (manual)",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        0,
+        480
+      ],
+      "parameters": {
+        "formTitle": "FX import (manual run)",
+        "formDescription": "Press submit to fetch today's NBP USD/PLN rate and upsert fx_rates.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "confirm",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "run"
+                  }
+                ]
+              },
+              "requiredField": true
+            }
+          ]
+        },
+        "responseMode": "lastNode"
+      },
+      "notes": "Manual harness to seed / re-run the FX import on demand (the Schedule Trigger can't be fired via API). Same downstream path.",
+      "webhookId": "63750675-c259-4518-9a03-12d67357f0c3"
+    }
+  ],
+  "connections": {
+    "Daily 06:00": {
+      "main": [
+        [
+          {
+            "node": "Fetch NBP USD/PLN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch NBP USD/PLN": {
+      "main": [
+        [
+          {
+            "node": "Upsert fx_rates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run now (manual)": {
+      "main": [
+        [
+          {
+            "node": "Fetch NBP USD/PLN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": {
+    "node:Daily 06:00": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "c5cafddd-1af3-4941-beb7-178e84018251",
+  "activeVersionId": "c5cafddd-1af3-4941-beb7-178e84018251",
+  "versionCounter": 2,
+  "triggerCount": 2,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-08T06:35:18.621Z",
+      "createdAt": "2026-06-08T06:35:18.621Z",
+      "role": "workflow:owner",
+      "workflowId": "b7A3y6bXwOj1G3XR",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

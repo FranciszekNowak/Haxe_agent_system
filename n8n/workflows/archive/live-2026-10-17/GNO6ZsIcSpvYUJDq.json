@@ -1,0 +1,132 @@
+{
+  "updatedAt": "2026-06-13T14:56:51.027Z",
+  "createdAt": "2026-06-13T14:51:59.388Z",
+  "id": "GNO6ZsIcSpvYUJDq",
+  "name": "Resolve Lower Tier (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "impact"
+            },
+            {
+              "name": "modality"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "lookup-modality-rows",
+      "name": "Lookup Modality Rows",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        300
+      ],
+      "notes": "Fetch all active real-tier rows for the requested modality. The step-down (one tier below per REAL_TIERS) is computed in Resolve Below, the sole owner of the ordering.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select impact, litellm_model, max_tokens, temperature\nfrom model_routing\nwhere modality = $1 and active = true\n  and impact in ('Niski','Średni','Wysoki','Krytycznie ważne');",
+        "options": {
+          "queryReplacement": "={{ [ $json.modality || 'text' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "resolve-below",
+      "name": "Resolve Below",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "notes": "Sole owner of the step-down rule. REAL_TIERS is capability ascending. Returns the row one tier below the given impact, or { floor: true } at Niski/unknown (no lower tier).",
+      "parameters": {
+        "jsCode": "const trig = $('When Called').first().json;\nconst impact = (trig.impact || '').toString().trim();\nconst REAL_TIERS = ['Niski','Średni','Wysoki','Krytycznie ważne'];\nconst idx = REAL_TIERS.indexOf(impact);\nif (idx <= 0) {\n  return [{ json: { floor: true, impact_in: impact } }];\n}\nconst belowImpact = REAL_TIERS[idx - 1];\nconst rows = $input.all().map(function (i) { return i.json; });\nconst row = rows.find(function (r) { return r.impact === belowImpact; });\nif (!row || !row.litellm_model) {\n  return [{ json: { floor: true, impact_in: impact, missing_below: belowImpact } }];\n}\nreturn [{ json: {\n  floor: false,\n  impact: row.impact,\n  litellm_model: row.litellm_model,\n  max_tokens: (row.max_tokens != null) ? Number(row.max_tokens) : null,\n  temperature: (row.temperature != null && row.temperature !== '') ? Number(row.temperature) : null\n} }];"
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Lookup Modality Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Modality Rows": {
+      "main": [
+        [
+          {
+            "node": "Resolve Below",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "eb97a65a-46ff-4495-90cd-6cca99f048d4",
+  "activeVersionId": "eb97a65a-46ff-4495-90cd-6cca99f048d4",
+  "versionCounter": 1,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-13T14:51:59.388Z",
+      "createdAt": "2026-06-13T14:51:59.388Z",
+      "role": "workflow:owner",
+      "workflowId": "GNO6ZsIcSpvYUJDq",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

@@ -1,0 +1,823 @@
+{
+  "updatedAt": "2026-06-29T12:39:37.210Z",
+  "createdAt": "2026-06-29T12:28:13.834Z",
+  "id": "euFWZ1fKGcRFPrv3",
+  "name": "CU Chat Poll Producer (v1)",
+  "description": null,
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "sched",
+      "name": "Every 1 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -400,
+        200
+      ],
+      "notes": "ADR-066 Chat poll. Fires every 60s (config.chat.poll_interval_s documents intent; n8n cron can't read it dynamically). Lists the channels the bot is a member of, scans for new @-mentions of the bot, enqueues one job per mention. Chat is poll-only (no webhook), so latency ~= 1 interval. ACTIVATE only after the end-to-end DoD passes.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "disabled": false
+    },
+    {
+      "id": "formseed",
+      "name": "Run now (manual)",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        -400,
+        380
+      ],
+      "webhookId": "cu-chat-poll-manual-seed",
+      "notes": "Manual harness (the Schedule Trigger can't be fired via API). Same downstream path.",
+      "parameters": {
+        "formTitle": "CU Chat Poll (manual run)",
+        "formDescription": "Press submit to poll bot chat channels for new @-mentions and enqueue.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "confirm",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "run"
+                  }
+                ]
+              },
+              "requiredField": true
+            }
+          ]
+        },
+        "responseMode": "lastNode"
+      }
+    },
+    {
+      "id": "heartbeat",
+      "name": "Stamp Heartbeat",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -200,
+        280
+      ],
+      "notes": "Liveness heartbeat for the dead-man's switch (CU Chat Poll Freshness Monitor): upsert config.chat_poll_producer.last_run_at=now(). First in the chain so it stamps that the CRON FIRED, regardless of downstream API success. onError continueRegularOutput so a DB blip never blocks the poll (a missed stamp self-heals next minute).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into config (key, value) values ('chat_poll_producer.last_run_at', now()::text) on conflict (key) do update set value = excluded.value;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "queueflag",
+      "name": "Read Queue Flag",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -20,
+        280
+      ],
+      "notes": "ADR-056: read config.queue.enabled once to choose enqueue vs synchronous fallback. onError continueRegularOutput + retry -> a DB blip passes through with no value -> Queue Enabled? false -> synchronous Run Agent Spine (fail-safe to the known-good path).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select value from config where key = 'queue.enabled' limit 1;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "listchan",
+      "name": "List Bot Channels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        160,
+        280
+      ],
+      "notes": "GET v3 chat channels as the bot (its token only sees channels it is a member of = membership scope). Returns {data:[...], next_cursor}. onError continueRegularOutput + retry -> a ClickUp blip degrades to an empty channel set (no candidates), never throws.",
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.clickup.com/api/v3/workspaces/761759/chat/channels",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "readcursors",
+      "name": "Read Cursors",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        340,
+        280
+      ],
+      "notes": "Read all per-channel last-seen cursors. alwaysOutputData so 0 rows still emits an item to drive Plan Per Channel; onError continueRegularOutput -> a DB blip degrades to no cursors (every channel treated cold-start -> seeds without replay, no spurious enqueues).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select channel_id, last_seen_ms, last_message_id from chat_poll_cursor;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "planchan",
+      "name": "Plan Per Channel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        280
+      ],
+      "notes": "Emit one item per bot channel {channel_id, last_seen_ms (number or null=cold-start)}, joining List Bot Channels (body.data) with the cursor rows. Drives the per-channel message fetch.",
+      "parameters": {
+        "jsCode": "const resp = $('List Bot Channels').first().json;\nconst body = (resp && resp.body !== undefined) ? resp.body : resp;\nlet channels = (body && body.data) || [];\nif (!Array.isArray(channels)) channels = [];\nconst cursors = {};\nfor (const row of $('Read Cursors').all().map(i => i.json)) { if (row && row.channel_id) cursors[String(row.channel_id)] = row.last_seen_ms; }\nconst out = [];\nfor (const c of channels) {\n  const id = String((c && c.id) || '');\n  if (!id) continue;\n  const cur = (id in cursors) ? Number(cursors[id]) : null;\n  out.push({ json: { channel_id: id, last_seen_ms: cur } });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "fetchmsgs",
+      "name": "Fetch Channel Messages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        280
+      ],
+      "notes": "Per channel: GET recent messages (newest-first) as the bot. Returns {data:[{id,content,user_id,date,type,replies_count}], next_cursor}. onError continueRegularOutput + retry -> a per-channel blip yields no messages for that channel this poll (cursor unchanged, retried next minute), never throws. Item order is preserved 1:1 with Plan Per Channel for the index join in Process Channels.",
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.clickup.com/api/v3/workspaces/761759/chat/channels/{{ $json.channel_id }}/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "50"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "procchan",
+      "name": "Process Channels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        280
+      ],
+      "notes": "Index-join Plan Per Channel <-> Fetch Channel Messages (1:1, executionOrder v1). Per channel: candidates = messages with date > cursor AND not bot-authored; advance cursor to the newest message date seen. COLD START (no cursor row): seed cursor to newest WITHOUT enqueuing (don't replay history). Emits _kind=candidate items (-> mention gate) and one _kind=cursor item per channel (-> Upsert Cursor).",
+      "parameters": {
+        "jsCode": "const AGENT_ID = '99811284';\nconst plans = $('Plan Per Channel').all().map(i => i.json);\nconst resp = $('Fetch Channel Messages').all().map(i => i.json);\nconst out = [];\nfor (let i = 0; i < plans.length; i++) {\n  const ch = plans[i] || {};\n  const channel_id = String(ch.channel_id || '');\n  if (!channel_id) continue;\n  const prevCursor = (ch.last_seen_ms === null || ch.last_seen_ms === undefined) ? null : Number(ch.last_seen_ms);\n  const r = resp[i] || {};\n  const body = (r && r.body !== undefined) ? r.body : r;\n  let msgs = (body && body.data) || [];\n  if (!Array.isArray(msgs)) msgs = [];\n  let maxDate = prevCursor || 0;\n  let newestId = '';\n  for (const m of msgs) { const d = Number((m && m.date) || 0); if (d > maxDate) { maxDate = d; newestId = String((m && m.id) || ''); } }\n  if (prevCursor === null) {\n    out.push({ json: { _kind: 'cursor', channel_id, last_seen_ms: maxDate, last_message_id: newestId } });\n    continue;\n  }\n  for (const m of msgs) {\n    const d = Number((m && m.date) || 0);\n    if (d <= prevCursor) continue;\n    if (String((m && m.user_id) || '') === AGENT_ID) continue;\n    out.push({ json: { _kind: 'candidate', channel_id, message_id: String((m && m.id) || ''), user_id: String((m && m.user_id) || ''), content: String((m && m.content) || ''), date: d } });\n  }\n  out.push({ json: { _kind: 'cursor', channel_id, last_seen_ms: Math.max(prevCursor, maxDate), last_message_id: newestId || ch.last_message_id || '' } });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "routekind",
+      "name": "Route Kind",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        280
+      ],
+      "notes": "_kind=candidate (true) -> mention gate; _kind=cursor (false) -> Upsert Cursor.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "rk1",
+              "leftValue": "={{ $json._kind }}",
+              "rightValue": "candidate",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fetchtags",
+      "name": "Fetch Tagged Users",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        180
+      ],
+      "notes": "Per candidate: GET the message's tagged users (the authoritative mention signal — message text @Name is unreliable). Returns {data:[...], next_cursor}. onError continueRegularOutput + retry -> a failed fetch yields no tags -> treated as not-mentioned (rare miss, recovered nowhere this poll; retry reduces it). Item order preserved 1:1 with the candidate stream for the index join in Detect Bot Mention.",
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.clickup.com/api/v3/workspaces/761759/chat/messages/{{ $json.message_id }}/tagged_users",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "detectmention",
+      "name": "Detect Bot Mention",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        180
+      ],
+      "notes": "Index-join the candidate stream (Process Channels candidates, same order) <-> Fetch Tagged Users. Keep candidates whose tagged_users include the bot (99811284). Defensive id read: object {id|user_id|user.id} or a bare id. Emits one item per real bot mention.",
+      "parameters": {
+        "jsCode": "const AGENT_ID = '99811284';\nconst cands = $('Process Channels').all().map(i => i.json).filter(j => j && j._kind === 'candidate');\nconst tags = $('Fetch Tagged Users').all().map(i => i.json);\nconst out = [];\nfor (let i = 0; i < cands.length; i++) {\n  const t = tags[i] || {};\n  const body = (t && t.body !== undefined) ? t.body : t;\n  let arr = (body && body.data) || [];\n  if (!Array.isArray(arr)) arr = [];\n  let mentioned = false;\n  for (const u of arr) {\n    if (u == null) continue;\n    let id;\n    if (typeof u === 'object') { id = (u.id != null) ? u.id : ((u.user_id != null) ? u.user_id : (u.user && u.user.id)); }\n    else { id = u; }\n    if (String(id) === AGENT_ID) { mentioned = true; break; }\n  }\n  if (mentioned) out.push({ json: cands[i] });\n}\nreturn out;"
+      }
+    },
+    {
+      "id": "claim",
+      "name": "Claim Message",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1720,
+        180
+      ],
+      "notes": "Idempotency claim on the message id (ADR-066). INSERT ... ON CONFLICT DO NOTHING; returns is_first. Exactly-once even across overlapping polls. onError continueRegularOutput + retry -> a DB blip fails OPEN (is_first undefined -> proceeds; the per-channel cursor still bounds re-scan).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with ins as (\n  insert into agent_chat_dedup (message_id, channel_id)\n  values ($1, $2)\n  on conflict (message_id) do nothing\n  returning 1\n)\nselect (exists (select 1 from ins) or coalesce($1, '') = '') as is_first, $1 as message_id, $2 as channel_id, $3 as user_id, $4 as content;",
+        "options": {
+          "queryReplacement": "={{ [ $json.message_id, $json.channel_id, $json.user_id, $json.content ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "notdup",
+      "name": "Not Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1920,
+        180
+      ],
+      "notes": "is_first !== false -> proceed (true, incl. DB-error fail-open). is_first === false -> already claimed (overlapping poll) -> dead-end.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "nd1",
+              "leftValue": "={{ $json.is_first !== false }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "qenabled",
+      "name": "Queue Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2120,
+        180
+      ],
+      "notes": "ADR-056: queue.enabled=true -> enqueue (true); else/unreadable -> synchronous Run Agent Spine (false).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "qe1",
+              "leftValue": "={{ String(($('Read Queue Flag').first().json.value ?? '')).trim().toLowerCase() }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "buildjob",
+      "name": "Build Enqueue Job",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2320,
+        80
+      ],
+      "notes": "ADR-066 chat enqueue job. task_id null (chat keys on channel+message); top-level invocation_type=explicit_mention (consumer -> high-priority band, spine invocation 'explicit'); payload carries surface=chat + surface_ref{channel_id,message_id} + triggering_comment_text=message content + caller=author user_id (ADR-054 scope + ADR-064 spend gate). Keeps candidate fields at top level so the enqueue-failed branch reaches Run Agent Spine with the same shape.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const c = $json;\nconst job = {\n  task_id: null,\n  caller_user_id: String(c.user_id || ''),\n  impact: 'Średni',\n  invocation_type: 'explicit_mention',\n  enqueued_at: new Date().toISOString(),\n  payload: {\n    reviewer_user_id: String(c.user_id || ''),\n    caller_username: '',\n    triggered_by: 'explicit_mention',\n    triggering_comment_id: '',\n    triggering_comment_text: String(c.content || ''),\n    surface: 'chat',\n    surface_ref: { channel_id: String(c.channel_id || ''), message_id: String(c.message_id || '') }\n  }\n};\nreturn { json: Object.assign({}, c, { job }) };"
+      }
+    },
+    {
+      "id": "enqueue",
+      "name": "Enqueue Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2520,
+        80
+      ],
+      "notes": "POST the job to the queue-consumer over the internal Docker network. onError continueErrorOutput -> a non-200/unreachable consumer routes to output 1 -> Alert Enqueue Failed (WARN) AND Run Agent Spine (synchronous fallback) so a claimed mention is never silently dropped.",
+      "parameters": {
+        "method": "POST",
+        "url": "http://queue-consumer:8080/enqueue",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.job) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "runspine",
+      "name": "Run Agent Spine",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        2520,
+        300
+      ],
+      "notes": "Synchronous fallback (queue disabled OR enqueue failed). Calls the Agent Orchestrator inline with chat inputs. surface_ref passed as a JSON string (convertFieldsToString) — the chat reader parses it. Reads candidate fields from the item (present on both the queue-off Not Duplicate? item and the enqueue-failed Build Enqueue Job item).",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "a8XKaijkMFNBpRBa",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "",
+            "reviewer_user_id": "={{ $json.user_id }}",
+            "caller_username": "",
+            "triggered_by": "explicit_mention",
+            "invocation_type": "explicit",
+            "triggering_comment_id": "",
+            "triggering_comment_text": "={{ $json.content }}",
+            "surface": "chat",
+            "surface_ref": "={{ JSON.stringify({ channel_id: $json.channel_id, message_id: $json.message_id }) }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "alertenq",
+      "name": "Alert Enqueue Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        2520,
+        500
+      ],
+      "notes": "WARN via Post Alert (v1) when /enqueue fails; the run still proceeds via the synchronous Run Agent Spine fallback.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "cu-chat-poll/enqueue",
+            "message": "Nie udało się dodać wzmianki z czatu do kolejki — fallback do synchronicznego uruchomienia spine.",
+            "details": "=channel={{ $json.channel_id }}; message={{ $json.message_id }}; błąd={{ JSON.stringify($json).slice(0,300) }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "upsertcursor",
+      "name": "Upsert Cursor",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1320,
+        420
+      ],
+      "notes": "Advance the per-channel last-seen cursor (one item per channel). GREATEST guards against a stale lower value from an out-of-order/partial poll. Runs every poll for every channel (incl. cold-start seed + zero-mention channels) so the scan window never re-fetches old messages. onError continueRegularOutput so a write blip self-heals next poll.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into chat_poll_cursor (channel_id, last_seen_ms, last_message_id, updated_at)\nvalues ($1, $2, $3, now())\non conflict (channel_id) do update set last_seen_ms = greatest(chat_poll_cursor.last_seen_ms, excluded.last_seen_ms), last_message_id = excluded.last_message_id, updated_at = now();",
+        "options": {
+          "queryReplacement": "={{ [ $json.channel_id, $json.last_seen_ms, $json.last_message_id ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Every 1 min": {
+      "main": [
+        [
+          {
+            "node": "Stamp Heartbeat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run now (manual)": {
+      "main": [
+        [
+          {
+            "node": "Stamp Heartbeat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Heartbeat": {
+      "main": [
+        [
+          {
+            "node": "Read Queue Flag",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Queue Flag": {
+      "main": [
+        [
+          {
+            "node": "List Bot Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Bot Channels": {
+      "main": [
+        [
+          {
+            "node": "Read Cursors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Cursors": {
+      "main": [
+        [
+          {
+            "node": "Plan Per Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Per Channel": {
+      "main": [
+        [
+          {
+            "node": "Fetch Channel Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Channel Messages": {
+      "main": [
+        [
+          {
+            "node": "Process Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Channels": {
+      "main": [
+        [
+          {
+            "node": "Route Kind",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Kind": {
+      "main": [
+        [
+          {
+            "node": "Fetch Tagged Users",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Upsert Cursor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Tagged Users": {
+      "main": [
+        [
+          {
+            "node": "Detect Bot Mention",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Bot Mention": {
+      "main": [
+        [
+          {
+            "node": "Claim Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Message": {
+      "main": [
+        [
+          {
+            "node": "Not Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Not Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Queue Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Build Enqueue Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Agent Spine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Enqueue Job": {
+      "main": [
+        [
+          {
+            "node": "Enqueue Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enqueue Job": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Alert Enqueue Failed",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Run Agent Spine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": {
+    "node:Every 1 min": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "771b3a7d-b25b-4ddb-a18f-2f9f010dbec4",
+  "activeVersionId": null,
+  "versionCounter": 8,
+  "triggerCount": 2,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-29T12:28:13.834Z",
+      "createdAt": "2026-06-29T12:28:13.834Z",
+      "role": "workflow:owner",
+      "workflowId": "euFWZ1fKGcRFPrv3",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

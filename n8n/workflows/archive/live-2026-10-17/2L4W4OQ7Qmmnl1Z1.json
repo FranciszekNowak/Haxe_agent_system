@@ -1,0 +1,282 @@
+{
+  "updatedAt": "2026-06-15T13:48:42.887Z",
+  "createdAt": "2026-06-15T13:12:17.059Z",
+  "id": "2L4W4OQ7Qmmnl1Z1",
+  "name": "Zip Image Purge Watchdog (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Every 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "ADR-048 Block 4 dead-man's-switch for the zip-inner-images daily-05:00 pg_cron purge ('purge-zip-inner-images', migration 030: once daily 05:00 Warsaw, deletes >12h objects). INDEPENDENT of pg_cron on purpose: if the pg_cron daemon stops entirely, a pg_cron-based watchdog would also be dead and never alert. This n8n schedule is a separate scheduler, so it still fires and catches 'cron silently stopped', 'function errored', 'Vault key missing/invalid' — every failure mode collapses into the same observable symptom: objects older than retention still present. Runs every 6h so a failed purge is caught within ~6h of an object crossing the 40h threshold (healthy ceiling ~36h).",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "form-check",
+      "name": "Check now (manual)",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        0,
+        480
+      ],
+      "webhookId": "zip-purge-watchdog-manual-check",
+      "notes": "Manual harness to run the staleness check on demand (a Schedule Trigger cannot be fired via the n8n API). Used for Definition-of-Done verification.",
+      "parameters": {
+        "formTitle": "Zip purge watchdog check",
+        "formDescription": "Press submit to evaluate zip-inner-images staleness now.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "confirm",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "run"
+                  }
+                ]
+              },
+              "requiredField": true
+            }
+          ]
+        },
+        "responseMode": "lastNode"
+      }
+    },
+    {
+      "id": "check-stale",
+      "name": "Check Stale Zip Images",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        300
+      ],
+      "notes": "stale = any object in zip-inner-images older than 40h. The purge runs ONCE DAILY at 05:00 Europe/Warsaw deleting >12h objects (migration 030), so a file created in the evening/overnight is <12h old at one 05:00 run and is deleted at the NEXT run — a legitimate lifetime up to ~36h. 40h adds margin so a healthy system never trips; >40h => the daily purge isn't running (cron stopped, function errored, or the Vault key missing/invalid) => WARN.",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "maxTries": 3,
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  count(*) as stale_count,\n  coalesce(round(max(extract(epoch from (now() - created_at)) / 3600)::numeric, 1), 0) as oldest_age_hours,\n  (count(*) > 0) as stale\nfrom storage.objects\nwhere bucket_id = 'zip-inner-images'\n  and created_at < now() - interval '40 hours';",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      }
+    },
+    {
+      "id": "if-stale",
+      "name": "If Stale",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        480,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-stale",
+              "leftValue": "={{ $json.stale }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "alert",
+      "name": "Alert Stale Purge",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        720,
+        200
+      ],
+      "notes": "Routes a WARN through the centralized Post Alert (v1) seam (ADR-025) — never post to ClickUp directly. Side branch only: the watchdog has no main result to protect, but the seam keeps the channel swappable.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "zip-purge-freshness",
+            "message": "Bucket zip-inner-images ma obiekty starsze niż ~36h (dzienna purga 05:00 Warsaw) — purga pg_cron prawdopodobnie nie działa (ryzyko naruszenia zobowiązania retencyjnego GDPR).",
+            "details": "=Przeterminowane obiekty: {{ $json.stale_count }}, najstarszy: {{ $json.oldest_age_hours }}h (próg 40h). Sprawdź zadanie pg_cron 'purge-zip-inner-images' (cron.job / cron.job_run_details), log public.storage_purge_runs oraz obecność/ważność sekretu Vault 'service_role_key'."
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "details",
+              "displayName": "details",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 6h": {
+      "main": [
+        [
+          {
+            "node": "Check Stale Zip Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check now (manual)": {
+      "main": [
+        [
+          {
+            "node": "Check Stale Zip Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Stale Zip Images": {
+      "main": [
+        [
+          {
+            "node": "If Stale",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Stale": {
+      "main": [
+        [
+          {
+            "node": "Alert Stale Purge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": {
+    "node:Every 6h": {
+      "recurrenceRules": [
+        18
+      ]
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "d2f6b6f7-299d-455c-bbf4-40b1a5a20186",
+  "activeVersionId": "d2f6b6f7-299d-455c-bbf4-40b1a5a20186",
+  "versionCounter": 2,
+  "triggerCount": 2,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-15T13:12:17.059Z",
+      "createdAt": "2026-06-15T13:12:17.059Z",
+      "role": "workflow:owner",
+      "workflowId": "2L4W4OQ7Qmmnl1Z1",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

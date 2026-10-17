@@ -1,0 +1,204 @@
+services:
+  n8n-postgres:
+    image: postgres:16
+    container_name: n8n-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: n8n
+      POSTGRES_USER: n8n
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - n8n-postgres-data:/var/lib/postgresql/data
+    networks:
+      - n8n-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  n8n-redis:
+    image: redis:7-alpine
+    container_name: n8n-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - n8n-redis-data:/data
+    networks:
+      - n8n-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  n8n-main:
+    image: n8nio/n8n:2.22.5
+    container_name: n8n-main
+    restart: unless-stopped
+    # Memory hardening (ADR-051 Block 6): on this 8 GB box Docling wants ≥4 GB when loaded, so an
+    # unbounded n8n process (Node's default heap ceiling here is ~2.2 GB) could crowd it out. mem_limit
+    # is the cgroup ceiling; NODE_OPTIONS heap ceiling sits BELOW it so a runaway hits a JS heap OOM
+    # (fails its own execution, container restarts) instead of the kernel OOM-killing Docling.
+    mem_limit: 1024m
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=768"
+      N8N_EXECUTIONS_MODE: queue
+      QUEUE_BULL_REDIS_HOST: n8n-redis
+      QUEUE_BULL_REDIS_PORT: "6379"
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: n8n-postgres
+      DB_POSTGRESDB_PORT: "5432"
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      TZ: ${TZ}
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL}   # makes execution links in alerts clickable (ADR-025)
+      WEBHOOK_URL: ${WEBHOOK_URL}                   # public base for generated webhook/form URLs (ADR-012)
+      # Execution-data pruning (ADR-036 Block 10): base64 images ride in execution data, so bound it.
+      # Prune deletes historical execution records (node I/O) older than MAX_AGE or beyond MAX_COUNT.
+      # Durable business record lives in Supabase agent_runs (NOT pruned); this only GCs n8n's debug payload.
+      EXECUTIONS_DATA_PRUNE: "true"                 # default true; explicit
+      EXECUTIONS_DATA_MAX_AGE: "168"                # hours = 7 days (was n8n default 336 = 14 days)
+      EXECUTIONS_DATA_PRUNE_MAX_COUNT: "5000"       # keep at most 5000 executions (was default 10000)
+      # Task-runner task timeout (ADR-051 Block 7): the default 300s killed the parallel image batch
+      # (Generate Images Parallel) mid-flight and surfaced it as a CRITICAL. Raised to 900s (15 min) to
+      # fit 2 full gpt-image-2 waves (~176s/image, cap 5 = 10 images). The batch Code node carries an
+      # internal soft-deadline (840s) that returns partial results gracefully BELOW this hard ceiling.
+      # GLOBAL: applies to every Code-node task; the image batch is the only long-running one.
+      N8N_RUNNERS_TASK_TIMEOUT: "900"
+    volumes:
+      - n8n-main-data:/home/node/.n8n
+    networks:
+      - n8n-internal
+    depends_on:
+      n8n-postgres:
+        condition: service_healthy
+      n8n-redis:
+        condition: service_healthy
+
+  n8n-worker:
+    image: n8nio/n8n:2.22.5
+    container_name: n8n-worker
+    restart: unless-stopped
+    command: worker
+    # Memory hardening (ADR-051 Block 6): image generation runs HERE (the parallel batch's base64 images
+    # ride execution data), so the worker is the runaway risk. Same scheme as n8n-main: mem_limit cgroup
+    # ceiling + a lower NODE_OPTIONS heap ceiling, sized to leave Docling its 4 GB on the 8 GB host.
+    mem_limit: 1024m
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=768"
+      N8N_EXECUTIONS_MODE: queue
+      QUEUE_BULL_REDIS_HOST: n8n-redis
+      QUEUE_BULL_REDIS_PORT: "6379"
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: n8n-postgres
+      DB_POSTGRESDB_PORT: "5432"
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      TZ: ${TZ}
+      N8N_CONCURRENCY_PRODUCTION_LIMIT: ${N8N_WORKER_CONCURRENCY}
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL}   # execution links in alerts (ADR-025)
+      WEBHOOK_URL: ${WEBHOOK_URL}                   # public base for generated webhook/form URLs (ADR-012)
+      EXECUTIONS_DATA_PRUNE: "true"                 # pruning runs on main; set here too for parity (ADR-036 Block 10)
+      EXECUTIONS_DATA_MAX_AGE: "168"                # hours = 7 days
+      EXECUTIONS_DATA_PRUNE_MAX_COUNT: "5000"
+      # Task-runner task timeout (ADR-051 Block 7): image generation runs HERE, so this is the binding
+      # ceiling for the parallel batch. 900s (was default 300s) fits 2 full gpt-image-2 waves; the batch
+      # Code node's 840s internal soft-deadline degrades gracefully below it. See n8n-main for detail.
+      N8N_RUNNERS_TASK_TIMEOUT: "900"
+    networks:
+      - n8n-internal
+    depends_on:
+      n8n-postgres:
+        condition: service_healthy
+      n8n-redis:
+        condition: service_healthy
+
+  # LiteLLM gateway — single front door for model calls (ADR-024). Internal only:
+  # only n8n reaches it at http://litellm:4000. Signs Bedrock correctly and returns
+  # exact token usage (which the native n8n node swallows). Config in litellm-config.yaml.
+  litellm:
+    image: ghcr.io/berriai/litellm@sha256:75543fa1d73989b7aefba49c910989f7886f63210520e30b39dbbc580a41826f  # LiteLLM v1.87.0, pinned by digest 2026-06-03 (ADR-011)
+    container_name: litellm
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "127.0.0.1:4000:4000"   # loopback only (SSH-tunnel for debugging); never public
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      # Key management (ADR-051): DB-backed virtual keys + per-key revocation/spend. Reuses the
+      # n8n-postgres container via a SEPARATE `litellm` database (create it BEFORE first deploy —
+      # see ADR-051 runbook; LiteLLM runs its key-store migrations on boot). STORE_MODEL_IN_DB stays
+      # false so model_list is sourced from the committed litellm-config.yaml, never the DB.
+      DATABASE_URL: postgresql://n8n:${POSTGRES_PASSWORD}@n8n-postgres:5432/litellm
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}     # encrypts stored virtual keys at rest; set in .env, never commit
+      STORE_MODEL_IN_DB: "false"
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION_NAME: ${AWS_REGION_NAME}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}   # direct API (non-GDPR tasks, ADR-030)
+      TAVILY_API_KEY: ${TAVILY_API_KEY}         # web search backend (ADR-034)
+      # Image generation providers (ADR-036) — optional; step-down covers missing keys
+      STABILITY_API_KEY: ${STABILITY_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      VERTEX_PROJECT: ${VERTEX_PROJECT:-}
+      VERTEX_LOCATION: ${VERTEX_LOCATION:-}
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/vertex-key.json
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}   # unused — Gemini routes via vertex_ai/ + ADC (ADR-038/039)
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+      - ./vertex-key.json:/secrets/vertex-key.json:ro
+    networks:
+      - n8n-internal
+    depends_on:
+      n8n-postgres:
+        condition: service_healthy   # litellm now needs the `litellm` DB (key management, ADR-051)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Docling extraction service — converts documents (docx, xlsx, csv, pdf, pptx, images)
+  # to markdown + block list for the multimodal input pipeline (ADR-036).
+  # CPU-only mode; layout models need ≥ 4 GB RAM on the VPS.
+  # n8n reaches it at http://docling:5001 (internal). Loopback port for SSH-tunnel debugging.
+  docling:
+    image: quay.io/docling-project/docling-serve@sha256:c7ba482fdb3275deac4a8a2d6e4490a8e1ffdcdf20020aaad5d250e8cc114e4e  # pinned 2026-06-09 (ADR-011)
+    container_name: docling
+    restart: unless-stopped
+    environment:
+      # ADR-048 Block 5: deliberate, pinned Docling concurrency bound (was image-default workers=2 / OMP=4 = 8-thread
+      # demand on 4 cores). 2 workers x 2 threads = 4 cores exactly -> max 2 concurrent conversions, rest queue
+      # server-side (max_sync_wait=120s); a multi-doc zip burst cannot saturate the box. Pinned so an image bump
+      # can't silently revert the worker count.
+      DOCLING_SERVE_ENG_LOC_NUM_WORKERS: "2"
+      OMP_NUM_THREADS: "2"
+    ports:
+      - "127.0.0.1:5001:5001"   # loopback only — never public
+    networks:
+      - n8n-internal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s   # layout models take ~60–90 s to load on first start
+
+volumes:
+  n8n-postgres-data:
+  n8n-redis-data:
+  n8n-main-data:
+
+networks:
+  n8n-internal:
+    driver: bridge

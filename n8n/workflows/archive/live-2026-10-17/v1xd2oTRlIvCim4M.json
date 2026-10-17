@@ -1,0 +1,286 @@
+{
+  "updatedAt": "2026-08-07T14:44:24.190Z",
+  "createdAt": "2026-08-07T14:43:01.256Z",
+  "id": "v1xd2oTRlIvCim4M",
+  "name": "Flow: Post Alert (gated)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "severity",
+              "type": "string"
+            },
+            {
+              "name": "source",
+              "type": "string"
+            },
+            {
+              "name": "message",
+              "type": "string"
+            },
+            {
+              "name": "details",
+              "type": "string"
+            },
+            {
+              "name": "alert_key",
+              "type": "string"
+            },
+            {
+              "name": "list_id",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "This repo's wrapper around the agent system's Post Alert (v1) seam. Callers pass the same four fields Post Alert takes, plus two:\n\nalert_key — which bucket this alert is rate-limited in. Alerts sharing a key share a window, so pick it by CAUSE, not by call site. If two nodes report the same underlying problem they should share a key.\n\nlist_id — OPTIONAL, and only where the value is trustworthy. When the list is one flow.lists.is_excluded marks out of scope (a template or sandbox list that appears in no chart), the alert is dropped and counted separately. Never pass a list id read from an unverified webhook payload: an attacker who could name an excluded list could silence the bad-signature alert."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=select * from flow.alert_gate_check(p_key => '{{ ($('When Called').first().json.alert_key || 'flow/unkeyed').replaceAll(\"'\", \"''\") }}', p_list_id => nullif('{{ ($('When Called').first().json.list_id || '').toString().replaceAll(\"'\", \"''\") }}', ''));",
+        "options": {}
+      },
+      "id": "alert-gate",
+      "name": "Alert Gate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "notes": "At most one alert per key per window reaches the channel; the rest are counted and reported by the next one that does. Migration 011.\n\nFAIL-OPEN, and that is the opposite posture from Write Status Events in the producer — deliberately. The error output goes straight to Post Alert, so if the database is unreachable the alert is sent UNGATED rather than swallowed. A gate whose job is to reduce noise must never become a new way to lose an alert; the cost of failing open is a possible storm during a database outage, and during a database outage the producer is already raising CRITICALs.\n\nThe `for update` inside flow.alert_gate_check is what makes this work under the case it exists for: 96 producer executions arriving in two seconds. Without the row lock they would all read \"not posted recently\" and all post, which is the storm itself. Verified with 30 concurrent calls: exactly one posted, 29 counted."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "g1",
+              "leftValue": "={{ $json.should_post }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "should-post",
+      "name": "Should Post?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ],
+      "notes": "False means one of two things, and flow.alert_gate.gate_reason says which: `rate_limited` (a near-identical alert went out within the window — this one is counted and reported by the next) or `excluded_list` (the task is in a template or sandbox list and appears in no chart, so the alert was never worth sending)."
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "={{ $('When Called').first().json.severity }}",
+            "source": "={{ $('When Called').first().json.source }}",
+            "message": "={{ $('When Called').first().json.message }}{{ ($json.suppressed_since || 0) > 0 ? ' [+' + $json.suppressed_since + ' podobnych alertow pominieto w tym oknie]' : '' }}",
+            "details": "={{ $('When Called').first().json.details }}{{ $json.gate_reason ? '' : ' | UWAGA: bramka alertow (flow.alert_gate_check) byla niedostepna, alert przepuszczono bez ograniczania.' }}{{ ($json.suppressed_since || 0) > 0 ? ' | Pominietych alertow o tym samym kluczu: ' + $json.suppressed_since + '. Pelny licznik: select * from flow.alert_gate order by alert_key;' : '' }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "post-alert",
+      "name": "Post Alert",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        220
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "The agent system's centralized seam (contracts/agent-system.md, id YSCdHlmdf3p9XEUx). NEVER edited from this repo.\n\nonError continueRegularOutput is the fix for the 2026-08-07 cascade. Post Alert writes a ClickUp comment, so it is rate-limited by the same ClickUp bucket the alert storm is saturating — it answers 429 exactly when it is busiest. Previously that throw propagated back through the calling alert node and FAILED the producer execution, which made n8n invoke Error Handler (v1), which called Post Alert again, which was also rate-limited. 96 events became 192 failed alert executions and zero delivered alerts.\n\nCLAUDE.md's rule is the general form: a degradation alert must not break the main path. It applies here as much as at the call site.\n\nThe underlying defect — Post Alert has no retry, no backoff and no queue, so a rate-limited alert is simply gone — is NOT fixed by this and cannot be from here, because that workflow belongs to Haxe_agent_system. Raise it there."
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "posted",
+              "type": "boolean",
+              "value": "={{ $('Alert Gate').first().json.should_post !== false }}"
+            },
+            {
+              "id": "r2",
+              "name": "gate_reason",
+              "type": "string",
+              "value": "={{ $('Alert Gate').first().json.gate_reason || 'gate_unavailable' }}"
+            },
+            {
+              "id": "r3",
+              "name": "alert_key",
+              "type": "string",
+              "value": "={{ $('When Called').first().json.alert_key || 'flow/unkeyed' }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "return",
+      "name": "Return",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        880,
+        300
+      ],
+      "notes": "The SOLE terminal leaf, and that is a hard requirement rather than tidiness. A sub-workflow returns the output of whichever node n8n considers last, and with branching that is non-deterministic — so both the posted and the suppressed paths converge here. Nothing downstream reads this today; callers treat the alert as fire-and-forget. It exists so the return value is defined rather than accidental.\n\nEvery field is read from $('Alert Gate') by NAME, never from $json. The first live test caught why: on the posted path $json here is Post Alert's ClickUp comment object, which has no gate_reason, so the node reported `gate_unavailable` on a run where the gate had worked perfectly. Wrong in the one direction that matters — it would have sent someone debugging a future storm looking for a database outage that never happened."
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Alert Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Gate": {
+      "main": [
+        [
+          {
+            "node": "Should Post?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Post?": {
+      "main": [
+        [
+          {
+            "node": "Post Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Alert": {
+      "main": [
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "timezone": "Europe/Warsaw",
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "ff0a94ef-cdea-43a4-8e0d-c165e0b825f5",
+  "activeVersionId": "ff0a94ef-cdea-43a4-8e0d-c165e0b825f5",
+  "versionCounter": 2,
+  "triggerCount": 0,
+  "tags": [
+    {
+      "updatedAt": "2026-08-07T08:47:56.370Z",
+      "createdAt": "2026-08-07T08:47:56.370Z",
+      "id": "DXFc9QNvYvnQxnPd",
+      "name": "flow"
+    }
+  ],
+  "shared": [
+    {
+      "updatedAt": "2026-08-07T14:43:01.256Z",
+      "createdAt": "2026-08-07T14:43:01.256Z",
+      "role": "workflow:owner",
+      "workflowId": "v1xd2oTRlIvCim4M",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

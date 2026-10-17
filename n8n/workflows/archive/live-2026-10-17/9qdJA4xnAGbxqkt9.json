@@ -1,0 +1,445 @@
+{
+  "updatedAt": "2026-06-27T11:03:42.021Z",
+  "createdAt": "2026-06-09T15:43:12.758Z",
+  "id": "9qdJA4xnAGbxqkt9",
+  "name": "Execute LLM Call (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        304
+      ],
+      "notes": "Inputs: all Invoke Model fields + pass-through for Post Reply (reviewer_user_id, triggering_comment_id, web_sources) + image_blocks_json (input image refs, ADR-036 Block 5). image_blocks_json doubles as the resolver's input_image_refs_json (Block 12).",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "prompt"
+            },
+            {
+              "name": "impact"
+            },
+            {
+              "name": "modality"
+            },
+            {
+              "name": "task_type"
+            },
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "triggered_by"
+            },
+            {
+              "name": "invocation_type"
+            },
+            {
+              "name": "caller_user_id"
+            },
+            {
+              "name": "process_type"
+            },
+            {
+              "name": "reviewer_user_id"
+            },
+            {
+              "name": "triggering_comment_id"
+            },
+            {
+              "name": "web_sources"
+            },
+            {
+              "name": "image_blocks_json"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "call-invoke-model",
+      "name": "Call Invoke Model",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        224,
+        304
+      ],
+      "notes": "onError=continueErrorOutput so LLM failures route to local Reset+Alert instead of errorWorkflow with no task context. ADR-063 Block 4: the bare drafting call now FORCES deliver_output (tool_choice in Invoke Model) and returns the answer as STRUCTURED output_blocks_json + delivered_via_tool (the Anthropic/LiteLLM tool-call API serializes the block array as validated JSON) — the free-text completion + tolerant Parse Output Blocks parser are gone. completion is kept only as the no-deliver-output text fallback.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "XcOIVdZnVCCWNPeb",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "prompt": "={{ $json.prompt }}",
+            "impact": "={{ $json.impact }}",
+            "modality": "={{ $json.modality || 'text' }}",
+            "task_type": "={{ $json.task_type }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}",
+            "image_blocks_json": "={{ $json.image_blocks_json || '[]' }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "call-image-resolver",
+      "name": "Call Image Resolver",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        672,
+        304
+      ],
+      "notes": "ADR-063 Block 4: turns the agent's STRUCTURED deliver_output blocks (output_blocks_json + delivered_via_tool, captured by Invoke Model from the forced tool call) into {image_manifest, rendered_delta, total_image_cost_pln, image_models, warnings}. output_message carries Invoke Model's completion as the no-deliver-output text fallback only. input_image_refs_json = input image refs (image_blocks_json, carrying source_ref) for embed_input resolution. NO onError: a resolver throw is a genuine stage failure -> propagates to the orchestrator's global Error Handler (CRITICAL + status rollback, ADR-025 reactive layer), no partial post. Internal failures (gen/embed/ceiling) come back as warnings, not throws. Runs BEFORE Sum Task Cost so image_gen agent_runs rows are counted.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "znDqcfgXK6CNte20",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "output_blocks_json": "={{ $('Call Invoke Model').first().json.output_blocks_json }}",
+            "impact": "={{ $('When Called').first().json.impact }}",
+            "input_image_refs_json": "={{ $('When Called').first().json.image_blocks_json || '[]' }}",
+            "clickup_task_id": "={{ $('When Called').first().json.clickup_task_id }}",
+            "triggered_by": "={{ $('When Called').first().json.triggered_by }}",
+            "invocation_type": "={{ $('When Called').first().json.invocation_type }}",
+            "caller_user_id": "={{ $('When Called').first().json.caller_user_id }}",
+            "process_type": "={{ $('When Called').first().json.process_type }}",
+            "delivered_via_tool": "={{ $('Call Invoke Model').first().json.delivered_via_tool }}",
+            "output_message": "={{ $('Call Invoke Model').first().json.completion }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "has-warnings",
+      "name": "Has Warnings?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1328,
+        304
+      ],
+      "notes": "Block 12: resolver returned >=1 warning (embed-miss / gen-failed / count-ceiling) -> WARN. true -> Alert Resolver Warnings -> Return; false -> Return. Mutually exclusive at runtime so Return LLM Result fires once.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "w1",
+              "leftValue": "={{ Array.isArray($('Call Image Resolver').first().json.warnings) ? $('Call Image Resolver').first().json.warnings.length : 0 }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "alert-resolver-warnings",
+      "name": "Alert Resolver Warnings",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1552,
+        208
+      ],
+      "notes": "WARN for per-image gen failure / embed-ref miss / count-ceiling drop (resolver warnings[]). Non-blocking: reconverges into Return LLM Result; the comment still posts with the resolver's placeholder ops.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "multimodal/resolver",
+            "message": "Resolver obrazów zgłosił ostrzeżenia — komentarz opublikowano z zastępnikami dla problematycznych bloków.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; warnings={{ JSON.stringify($('Call Image Resolver').first().json.warnings) }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "return-llm-result",
+      "name": "Return LLM Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        304
+      ],
+      "notes": "Block 12: returns text attribution (completion/model/cost_pln) + resolver outputs (rendered_delta, image_manifest, image_models, total_image_cost_pln) + Post Reply pass-through. Sole branch-free terminal.",
+      "parameters": {
+        "jsCode": "// SOLE TERMINAL of the success path (sub-workflow return determinism). Reads everything via\n// absolute refs so the incoming item (Has Warnings? false / Alert Resolver Warnings /\n// Alert Cost Sync Failed) doesn't matter. Carries the resolver's delta + manifest to Stage C (Block 12).\nconst wc = $('When Called').first().json;\nconst mr = $('Call Invoke Model').first().json;\nconst rs = $('Call Image Resolver').first().json;\nreturn [{ json: {\n  completion: mr.completion || '',\n  rendered_delta: rs.rendered_delta || [],\n  image_manifest: rs.image_manifest || [],\n  image_models: rs.image_models || [],\n  total_image_cost_pln: rs.total_image_cost_pln || 0,\n  model: mr.model || '',\n  cost_pln: mr.cost_pln,\n  clickup_task_id: wc.clickup_task_id,\n  reviewer_user_id: wc.reviewer_user_id,\n  triggering_comment_id: wc.triggering_comment_id || '',\n  web_sources: wc.web_sources || '[]'\n} }];"
+      }
+    },
+    {
+      "id": "reset-status-on-failure",
+      "name": "Reset Status on Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        448,
+        480
+      ],
+      "notes": "Clears [AI] Status agenta when Invoke Model fails — prevents task stuck at 'W trakcie'.",
+      "parameters": {
+        "method": "DELETE",
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}/field/30130652-01c2-451b-954a-c36a455790fe",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "alert-invoke-failed",
+      "name": "Alert Invoke Model Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        672,
+        480
+      ],
+      "notes": "CRITICAL alert when the LLM call fails.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "execute-llm/invoke-model",
+            "message": "Wywołanie modelu LLM nie powiodło się — agent nie ukończył zadania.",
+            "details": "=task={{ $('When Called').first().json.clickup_task_id }}; error={{ ($json.error && $json.error.message) || JSON.stringify($json.error) || 'unknown' }}; jeśli 429/cooldown: zrestartuj LiteLLM: cd /opt/haxe-agents && docker compose restart litellm"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "call-write-cost-field",
+      "name": "Call Write Cost Field",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        880,
+        300
+      ],
+      "notes": "Bare lane cost write-back, now via the shared Write Cost Field (v1) sub-workflow (unification: both lanes write CU '[AI] Koszt akcji [PLN]' through ONE path). Runs AFTER Call Image Resolver so the SUM includes per-generate image_gen rows. The sub-workflow is internally fail-soft (WARNs + returns on DB/CU error); onError=continueRegularOutput here too so a cost-sync hiccup never blocks Return LLM Result. The comment footer still uses the per-run cost (Invoke Model) via Return LLM Result, unchanged.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "GoFPwWsSQOHnrClH",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ $('When Called').first().json.clickup_task_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Call Invoke Model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Invoke Model": {
+      "main": [
+        [
+          {
+            "node": "Call Image Resolver",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reset Status on Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Image Resolver": {
+      "main": [
+        [
+          {
+            "node": "Call Write Cost Field",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Warnings?": {
+      "main": [
+        [
+          {
+            "node": "Alert Resolver Warnings",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return LLM Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Resolver Warnings": {
+      "main": [
+        [
+          {
+            "node": "Return LLM Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reset Status on Failure": {
+      "main": [
+        [
+          {
+            "node": "Alert Invoke Model Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Invoke Model Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Write Cost Field": {
+      "main": [
+        [
+          {
+            "node": "Has Warnings?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "binaryMode": "separate"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "bed12de8-9abb-4742-951c-771fb5007bf2",
+  "activeVersionId": "bed12de8-9abb-4742-951c-771fb5007bf2",
+  "versionCounter": 8,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-09T15:43:12.758Z",
+      "createdAt": "2026-06-09T15:43:12.758Z",
+      "role": "workflow:owner",
+      "workflowId": "9qdJA4xnAGbxqkt9",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

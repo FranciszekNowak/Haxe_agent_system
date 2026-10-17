@@ -1,0 +1,829 @@
+{
+  "updatedAt": "2026-07-17T09:40:08.866Z",
+  "createdAt": "2026-06-18T09:45:57.839Z",
+  "id": "4K1w78hJ7JhsUwdN",
+  "name": "Sync Agent Definitions (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "schedule",
+      "name": "Every 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        200
+      ],
+      "notes": "ADR-053 Block 2: re-pushes the ClickUp global-rules doc into the four tier agents' static system every 6h. Idempotent — the run SKIPS any agent whose baked rules hash + conventions version already match (no version inflation). The freshness dead-man's-switch is a SEPARATE workflow that catches drift even if this job dies.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "manual",
+      "name": "Run on Demand",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        360
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        520
+      ],
+      "notes": "Test/on-demand entry via scripts/test-subworkflow.mjs. Optional input {force:true} bypasses the skip check and re-versions every agent (used for DoD verification).",
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "get-key",
+      "name": "Get Anthropic Key",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        360
+      ],
+      "notes": "Reads the anthropic_api_key Vault secret via public.get_anthropic_key() (migration 034). Code nodes can't use n8n credentials and $env/$vars are unavailable here (CLAUDE.md), so a credentialed Postgres read is how the workflow obtains the key.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_anthropic_key() as key;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "get-rules",
+      "name": "Get CU Rules",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        460,
+        360
+      ],
+      "notes": "Reads the global-rules ClickUp doc (Docs v3, text/md) — the SAME endpoint Load Agent Rules uses in assemble-context-and-build-prompt. The global page is q7wz-44812 inside doc q7wz-16892.",
+      "parameters": {
+        "url": "https://api.clickup.com/api/v3/workspaces/761759/docs/q7wz-16892/pages?content_format=text%2Fmd",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "extract-rules",
+      "name": "Extract Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        360
+      ],
+      "notes": "Flattens the nested pages tree, picks page q7wz-44812 (.content). rules_present guards against syncing an EMPTY rules body over the agents (which would silently wipe their rules).",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const body = ($input.first().json.body) || $input.first().json || [];\nconst pages = Array.isArray(body) ? body : (body.pages || []);\nconst all = [];\n(function flat(arr){ for (const p of (arr||[])) { all.push(p); if (p.pages) flat(p.pages); } })(pages);\nconst page = all.find(p => p.id === 'q7wz-44812');\nconst rules_md = (page && page.content) ? String(page.content) : '';\nconst rules_present = !!rules_md && rules_md.trim().length > 50;\nconst date_edited = page ? (page.date_edited || page.date_updated || null) : null;\nreturn [{ json: { rules_md, rules_present, date_edited, page_found: !!page } }];"
+      }
+    },
+    {
+      "id": "rules-present",
+      "name": "Rules Present?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        900,
+        360
+      ],
+      "notes": "False -> the SSOT doc was unreadable/empty: abort the sync with a CRITICAL rather than baking empty rules into the agents (silent-degradation guard).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.rules_present }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "alert-rules-missing",
+      "name": "Alert Rules Missing",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1120,
+        540
+      ],
+      "notes": "CRITICAL via Post Alert (v1). Sync aborts here — agents keep their last-good rules rather than being overwritten with nothing.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "managed-agents/sync",
+            "message": "Sync agentów przerwany — dokument zasad ogólnych (ClickUp q7wz-44812) nie wczytał się albo jest pusty.",
+            "details": "=Nie nadpisano agentów pustymi zasadami. Sprawdź dostępność doc q7wz-16892 / strony q7wz-44812 oraz poświadczenie ClickUp. page_found={{ $json.page_found }}."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "hash-rules",
+      "name": "Hash Rules",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        280
+      ],
+      "notes": "SHA256(hex) of the rules markdown. Must be done with the native Crypto node — Code nodes have no crypto on this instance (CLAUDE.md). The freshness dead-man's-switch hashes the SAME content the SAME way and compares against what each live agent carries.",
+      "parameters": {
+        "action": "hash",
+        "type": "SHA256",
+        "value": "={{ $json.rules_md }}",
+        "dataPropertyName": "rules_sha256",
+        "encoding": "hex",
+        "binaryData": false
+      }
+    },
+    {
+      "id": "build-system",
+      "name": "Build System",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        280
+      ],
+      "notes": "Composes the static system = framing + CU global rules (verbatim) + the technical output contract + tools/skills description + a provenance marker carrying rules_sha256 + conventions_version. Also emits the tools[] and skills[] arrays for the agent body. Bump CONV when editing the conventions text to force a re-sync.",
+      "parameters": {
+        "jsCode": "const inp = $input.first().json;\nconst rules = inp.rules_md;\nconst sha = inp.rules_sha256;\nconst CONV = 20;\n\nconst framing = [\n  '# Tożsamość i kontrakt techniczny (stały)',\n  'Jesteś uniwersalnym agentem Haxe uruchamianym do jednego konkretnego zadania w ClickUp. Poniżej masz globalne zasady firmy (utrzymywane w ClickUp jako jedyne źródło prawdy) oraz stały kontrakt techniczny formatu odpowiedzi. Szczegóły zadania, preferencje osoby zlecającej, komentarze i ewentualne obrazy wejściowe otrzymasz w wiadomości użytkownika.'\n].join('\\n');\n\nconst contract = [\n  '# Format odpowiedzi (kontrakt techniczny — OBOWIĄZKOWY)',\n  'Swoją FINALNĄ odpowiedź dostarczasz WYŁĄCZNIE przez JEDNO wywołanie narzędzia deliver_output, na samym końcu pracy. Cokolwiek napiszesz poza tym wywołaniem (w treści wiadomości) NIE dotrze do odbiorcy.',\n  'deliver_output ma jeden parametr: markdown — CAŁA Twoja odpowiedź jako zwykły tekst markdown po polsku (nagłówki, listy, tabele, pogrubienia, linki). Pisz naturalnie, tak jak piszesz odpowiedź dla człowieka. NIE umieszczaj tu tablicy JSON, obiektów ani „bloków” — to ma być czysta proza markdown.',\n  'OBRAZY wstawiasz INLINE w treści markdown, w miejscu, w którym mają się pojawić, standardową składnią obrazu markdown:',\n  '  - Obraz WYGENEROWANY: najpierw wywołaj generate_image (zwróci file_id), potem wstaw w markdown ![krótki opis](file_id) — DOKŁADNIE to file_id.',\n  '  - Obraz ISTNIEJĄCY (załącznik zadania): ![opis](ref) — użyj wartości ref z sekcji „Załączone obrazy”.',\n  'Przeplatanie tekstu i obrazów wychodzi samo — obraz renderuje się dokładnie tam, gdzie wstawisz ![](…) w tekście. Nie musisz nic „układać w kolejności” ani wołać dodatkowych narzędzi.',\n  'Zasady:',\n  '- Treść pisz jako zwykły markdown. Zachowuj miękką strukturę, pomijając puste sekcje: „## Wyniki”, „## Pytania do zlecającego”, „## Decyzje i kompromisy”, a na końcu „## Sugestie do procesu”.',\n  '- NOWY obraz tworzysz WYŁĄCZNIE wywołując narzędzie generate_image (patrz sekcja Narzędzia); dopiero potem wstawiasz zwrócone file_id w markdown przez ![opis](file_id). Samo wywołanie generate_image NIE pokazuje obrazu — musisz go wstawić w treści. NIGDY nie wstawiaj file_id, którego narzędzie nie zwróciło w tej sesji.',\n  '- Pliki biurowe (xlsx, docx, pptx, pdf): twórz je odpowiednią umiejętnością i ZAPISZ do wyjść sesji. System dołączy KAŻDY taki plik jako załącznik do komentarza ClickUp AUTOMATYCZNIE — nie wstawiasz go przez ![](…) i nie podajesz file_id. W treści WSPOMNIJ o pliku (nazwa + co zawiera), aby odbiorca wiedział, co dostał. Jeśli w pliku biurowym osadzasz obraz wygenerowany przez generate_image, NAJPIERW pobierz jego bajty z download_url (patrz sekcja Narzędzia), a potem osadź — wygenerowanego obrazu nie osadzisz przez sam file_id.',\n  '- Jeśli obrazy ani pliki nie są potrzebne, wywołaj deliver_output z samym tekstem markdown. Nawet trywialna odpowiedź MUSI przejść przez deliver_output — to jedyny kanał dostarczenia.',\n  '- Jeśli uznasz, że zadanie nie jest dla AI, odmawiasz jego wykonania lub nie możesz go ukończyć — i tak MUSISZ dostarczyć tę konkluzję (powód i ewentualną rekomendację) jako tekst markdown w deliver_output. NIGDY nie kończ pustym deliver_output bez treści ani plików: pusty wynik jest traktowany jako niedostarczenie i NIE trafia do odbiorcy.'\n].join('\\n');\n\nconst toolsDesc = [\n  '# Narzędzia i umiejętności',\n  '- Wyszukiwanie w sieci (web_search) jest wbudowane — używaj go, gdy zadanie wymaga aktualnych lub zewnętrznych informacji. Korzystaj z równoległych zapytań i syntezy; NIGDY nie umieszczaj danych osobowych w treści zapytania.',\n  '- Generowanie obrazów: aby utworzyć NOWY obraz, WYWOŁAJ narzędzie generate_image z parametrami { prompt (opis obrazu), clickup_task_id (OBOWIĄZKOWE — skopiuj DOKŁADNIE identyfikator zadania podany w wiadomości pod nagłówkiem „Identyfikator zadania ClickUp (clickup_task_id)”; bez niego koszt obrazu nie zostanie przypisany do zadania), aspect_ratio (np. \"1:1\"), opcjonalnie reference_file_ids (gdy chcesz wierności realnemu produktowi z załączonego zdjęcia), opcjonalnie size \"SZERxWYS\" w pikselach TYLKO gdy użytkownik prosi o konkretną rozdzielczość }. Narzędzie wykona się w tle i zwróci file_id; ten file_id wstaw w treści markdown wywołania deliver_output jako ![krótki opis](file_id), aby obraz został dostarczony inline. Generuj obraz tylko gdy zadanie tego wymaga. Narzędzie zwraca dla KAŻDEGO obrazu file_id ORAZ download_url (krótkotrwały podpisany link do pobrania bajtów obrazu). Aby pokazać obraz INLINE w odpowiedzi — wstaw ![opis](file_id) w tekście markdown. Aby OSADZIĆ obraz WEWNĄTRZ pliku biurowego (pptx/docx/xlsx/pdf) — pobierz bajty z download_url tego obrazu do sesji (np. narzędziem bash/skryptem), a potem osadź obraz w dokumencie; sam file_id NIE wystarcza do osadzenia w pliku biurowym, bo plik z Files API nie jest pobieralny. Jeśli pobranie z download_url się nie powiedzie, użyj grafiki wektorowej zamiast wygenerowanego obrazu i kontynuuj.',\n  '- Umiejętności dokumentowe (docx, xlsx, pptx, pdf): używaj ich, gdy zadanie wymaga wygenerowania pliku biurowego, i zapisz wynik do wyjść sesji; system dołączy go automatycznie jako załącznik do komentarza (nie podawaj file_id pliku w odpowiedzi).', '- Wyszukiwanie powiązanego kontekstu w ClickUp (zakres uprawnień osoby zlecającej): jeśli masz dostępne narzędzia clickup_* (np. clickup_search, clickup_filter_tasks, clickup_get_task, clickup_get_task_comments, clickup_get_workspace_hierarchy, clickup_get_document_pages, clickup_get_custom_fields), używaj ich z własnej inicjatywy, aby znaleźć POWIĄZANE zadania, dokumenty, komentarze i pola niestandardowe istotne dla bieżącego zadania. Te narzędzia są ograniczone do uprawnień osoby, która Cię uruchomiła (widzisz wyłącznie to, co ona widzi w ClickUp) i służą wyłącznie do ODCZYTU — nie twórz ani nie modyfikuj niczego w ClickUp. Kontekst samego zadania wyzwalającego masz już w wiadomości; narzędzia clickup_* służą do szukania DODATKOWYCH powiązanych informacji. Jeśli narzędzia clickup_* nie są dostępne, pracuj na podstawie dostarczonego kontekstu i nie zgłaszaj tego jako błędu.', '- Ekstrakcja zawartości załączników (extract_clickup_task): narzędzia clickup_* zwracają opisy, komentarze i pola, ale NIE treść załączonych plików. Gdy powiązane zadanie ma załączniki (dokumenty, obrazy), których treść jest istotna dla bieżącego zadania, WYWOŁAJ extract_clickup_task z { clickup_task_id } tego zadania — zwróci wyekstrahowaną treść dokumentów (tekst) oraz obrazy (jako wizję), wyłącznie w zakresie Twoich uprawnień. Najpierw ROZPOZNAJ przez clickup_* co warto pobrać, potem ekstrahuj tylko istotne zadania (nie ekstrahuj masowo). Jeśli nie masz dostępu do zadania, narzędzie zwróci informację o braku dostępu — uszanuj to.', '- KONTEKST SAMEGO ZADANIA WYZWALAJACEGO pobierasz na zadanie (nie ma go juz w calosci w wiadomosci - masz tylko: preferencje osoby, wiadomosc wywolujaca, wage zadania, tytul zadania oraz ewentualne obrazy wejsciowe; OPIS zadania nie jest juz w wiadomosci - pobierz go przez get_task_details, gdy potrzebujesz specyfikacji). Piec narzedzi ograniczonych do TEGO zadania (system podaje identyfikator, nie mozesz go zmienic): get_task_comments (komentarze i odpowiedzi w watkach; opcjonalnie { limit, since }); get_parent_chain (tytuly i opisy zadan nadrzednych; opcjonalnie { depth }); list_attachments (lista zalacznikow: attachment_id, nazwa, typ, rozmiar - bez tresci); get_attachment ({ attachment_id } - tresc JEDNEGO zalacznika: dokument jako tekst, obraz jako wizja); get_task_details (zwraca tytul, opis/specyfikacje i status zadania wyzwalajacego - wywolaj gdy do wykonania zadania potrzebujesz pelnego opisu zadania). Strategia: pobieraj TYLKO to, czego wymaga zadanie - przy trywialnym pytaniu nie wywoluj zadnego z nich. Po zalacznik: najpierw list_attachments, potem get_attachment dla wybranego attachment_id. Zalaczniki ZIP rozwijaja sie w list_attachments na liste plikow wewnetrznych (kazdy z attachment_id w formacie \"<zip>:<indeks>\"); aby pobrac JEDEN plik z archiwum, podaj jego zagniezdzony attachment_id do get_attachment (nie pobierasz wtedy calego archiwum, tylko ten jeden plik). Te cztery narzedzia dotycza WYLACZNIE zadania wyzwalajacego; do POWIAZANYCH innych zadan uzywaj narzedzi clickup_* (zakres uprawnien osoby) oraz extract_clickup_task.', '- OBRAZY WEJSCIOWE zadania (sekcja „Załączone obrazy” w wiadomości): na tej sesji NIE są automatycznie przekazane jako wizja — masz tylko ich listę (ref + nazwa). Aby ZOBACZYĆ taki obraz, wywołaj get_attachment z jego attachment_id (= wartość ref). Ale aby WSTAWIĆ go do odpowiedzi inline przez ![opis](ref) albo użyć jako reference_file_ids w generate_image, podaj wartość ref WPROST z listy — to działa bez pobierania (get_attachment jest potrzebny tylko gdy sam musisz zobaczyć treść obrazu).'\n].join('\\n');\n\nconst provenance = '<!-- HAXE-AGENT-PROVENANCE rules_sha256=' + sha + ' conventions_version=' + CONV + ' source=clickup:q7wz-44812 -->';\n\nconst system = [framing, '', '# Globalne zasady działania agentów (źródło: ClickUp — jedyne źródło prawdy)', '', rules, '', contract, '', toolsDesc, '', provenance].join('\\n');\n\n// ADR-055 (Block 5.3): generowanie obrazów to teraz narzędzie na samodzielnie hostowanym serwerze MCP\n// (haxe_image), a nie narzędzie custom po stronie klienta. mcp_servers deklaruje endpoint BEZ pola auth —\n// bearer jest dołączany per sesję przez Anthropic Vault (config.image_mcp_vault_id) w Execute Agent Session (v1).\n// Sparowany mcp_toolset z permission_policy=always_allow pozwala harnessowi wywołać generate_image\n// w-harnessie (agent.mcp_tool_use), więc obraz nigdy nie wchodzi w pętlę pause/resume.\n// CONV=3 (Block 6): kontrakt obrazów poprawiony — agent MUSI wywołać generate_image i odwołać się do\n// zwróconego file_id (zamiast emitować blok generate z promptem, który na lane managed nie jest realizowany). ADR-054 (Block 3): drugi serwer MCP 'clickup' (mcp.clickup.com/mcp) + sparowany mcp_toolset READ-ONLY (default_config.enabled=false, dozwolone tylko narzędzia odczytu/discovery przez configs) — token MCP-OAuth dołączany per sesję z Anthropic Vault (clickup_mcp_vault_id) w Execute Agent Session; brak czytelnego dla OAuth zakresu read-only, więc read-only egzekwowany allowlistą. Każde dozwolone narzędzie ma własne permission_policy always_allow (API domyślnie ustawia always_ask na default_config). CONV=5 wymusza re-sync. CONV=7 (2026-06-24): wzmocniono zakaz tekstu/preambuly poza tablica blokow — model na zadaniu 869dux9ne dodal zdanie wprowadzajace przed [...], przez co render odrzucil blok obrazu (parse-fallback). CONV=8 (2026-06-24, ADR-057 follow-up): generate_image zyskuje OBOWIAZKOWY parametr clickup_task_id (agent kopiuje id zadania z naglowka wiadomosci) — jedyny kanal atrybucji kosztu obrazu na sciezce MCP (n8n MCP Server Trigger nie udostepnia naglowkow/ciala requestu handlerowi, Block 5.1). CONV=9 (2026-06-25, ADR-061 Block 2): zarejestrowano cztery narzedzia ogona zadania wyzwalajacego (get_task_comments, get_parent_chain, list_attachments, get_attachment) obslugiwane przez Triggering Task Tail Handler (v1) na tokenie bota + sterowanie; floor lane managed nie zawiera juz watku komentarzy, cial zadan nadrzednych ani tekstu zalacznikow (Block 1), wiec agent pobiera je na zadanie tymi narzedziami. CONV=10 (2026-06-26, ADR-061 Block 2b): obrazy WEJSCIOWE zadania sa teraz leniwe na lane managed — floor je listuje (sekcja Zalaczone obrazy), ale NIE laduje jako wizje (input_images_json=[] w Execute Agent Session); agent wola get_attachment by zobaczyc obraz, a embed_input/reference_file_ids dzialaja wprost z wartosci ref. CONV=11 (2026-06-26, ADR-061 Block 2c): list_attachments rozwija archiwa ZIP na pliki wewnetrzne (attachment_id \"<zip>:<indeks>\"), a get_attachment pobiera pojedynczy plik z archiwum po tym zagniezdzonym id (progresywne ujawnianie ZIP zamiast zrzutu calego archiwum). CONV=12 (2026-06-26, ADR-061 Block 2c follow-on): opis zadania nie jest juz ladowany eager w floor lane managed - agent pobiera go nowym narzedziem get_task_details (tytul zostaje w floor); tail handler list_attachments czyta limity ZIP z config (live). CONV=14 (2026-06-27, ADR-063 Block 5): kontrakt formatu odpowiedzi przelaczony z free-text tablicy JSON na wywolanie narzedzia deliver_output (strukturalny kanal dostarczenia — parsowanie po stronie renderera znika); dodano typ bloku doc (filename) do umieszczania/podpisywania plikow biurowych; render-agent-output i image-resolver konsumuja output_blocks zamiast parseBlockArray. Zob. ADR-063. CONV=15 (2026-06-27, ADR-063 amendment): do opisu pola blocks dodano jawna instrukcje 'Przekaż blocks jako tablicę JSON, nie jako string' — Sonnet czasem serializowal blocks jako string JSON wewnatrz wywolania deliver_output, przez co kapter (Poll Round / Parse Response) odczytywal pusta tablice i render dawal pusty komentarz; kaptery teraz koercuja string->tablice, a delivered+pusto odpala WARN output-adapter/deliver-output-empty. CONV=16 (2026-06-30, ADR-067 Block 3): generate_image zwraca teraz dla kazdego obrazu download_url (krotkotrwaly podpisany link do bajtow w buckecie agent-output-images) obok file_id; kontrakt instruuje agenta, by do OSADZENIA obrazu w pliku biurowym (pptx/docx/xlsx/pdf) pobral bajty z download_url do sesji (Files API purpose=agent nie jest pobieralny), a inline nadal po file_id; fallback przy nieudanym pobraniu -> grafika wektorowa. CONV=19 (2026-07-17, ADR-072 Block 2): kontrakt dostarczania przelaczony z pojedynczego deliver_output({blocks:[...]}) na PLASKIE-SKALARNE wywolania — deliver_output(markdown) jako sygnal ZAKONCZENIA + osobne attach_text/attach_generated_image/attach_input_image, bez zadnej zagniezdzonej tablicy. Powod: Sonnet czasem serializowal tablice blocks do stringa i recznie (blednie) ja escapowal na polskiej prozie (niezaescapowany \" w „...\"), co wracalo do reczno-parsowania modelowego JSON-a (klasa bledu z ADR-063 amend./ADR-071 — jsonrepair, sanitizeStrayValueQuotes). Plaskie skalary usuwaja container do zserializowania, wiec gwarancja escapingu per-string z API pokrywa cala proze i klasa bledu znika strukturalnie. Usunieto typ bloku doc (pliki biurowe dolaczane autorytatywnie z wyjsc sesji, renderer i tak pomijal bloki doc). session-waiter sklada bloki z dziennika zdarzen sesji (assembleFlatBlocks, services/session-waiter/lib/deliver-blocks.mjs), zachowujac przeplatanie po polu order. Zob. ADR-072. CONV=20 (2026-07-17, ADR-072 amendment): kontrakt przelaczony z segmentow attach_* (model ich NIE uzywal — na tescie 869e5wm5u Sonnet zignorowal attach_generated_image/attach_text i wypisal stara tablice blokow do markdown, obraz osierocony, 0 alertow) na NATYWNY markdown: deliver_output(markdown) to cala odpowiedz jako proza, obrazy inline przez ![opis](file_id) (z generate_image) lub ![opis](ref) (zalacznik). Usunieto narzedzia attach_text/attach_generated_image/attach_input_image. Managed agenci odpowiadaja tak, jak sa zaprojektowani (final message), zamiast walczyc z priorem modelu przez obcy protokol wielowywolaniowy. session-waiter parsuje markdown -> bloki po ![](...) i zglasza WARN przy degradacji (tablica-JSON-w-markdown, osierocony obraz) — services/session-waiter/lib/deliver-blocks.mjs. Kontener zagniezdzony dalej nie istnieje (klasa misescape z ADR-063/071 pozostaje martwa). Zob. ADR-072 (amended).\nconst mcp_servers = [ { type: 'url', url: 'https://agents.skalus.com/mcp/haxe-image-gen', name: 'haxe_image' }, { type: 'url', url: 'https://mcp.clickup.com/mcp', name: 'clickup' } ];\n\nconst extract_clickup_task_tool = { type: 'custom', name: 'extract_clickup_task', description: 'Pobiera i ekstrahuje tresc zalacznikow zadania ClickUp (dokumenty -> tekst, obrazy -> wizja), w zakresie uprawnien osoby ktora uruchomila agenta. Uzyj po znalezieniu powiazanego zadania narzedziami clickup_*, gdy tresc jego zalacznikow jest istotna (narzedzia clickup_* nie zwracaja tresci plikow). Zadanie spoza Twoich uprawnien -> zwroci brak dostepu (nie obchodz tego). Tylko odczyt.', input_schema: { type: 'object', properties: { clickup_task_id: { type: 'string', description: 'Identyfikator zadania ClickUp, ktorego zalaczniki maja zostac wyekstrahowane.' } }, required: ['clickup_task_id'] } };\nconst deliver_output_tool = { type: 'custom', name: 'deliver_output', description: 'Sygnał ZAKOŃCZENIA i dostarczenie FINALNEJ odpowiedzi. Wywołaj DOKŁADNIE RAZ, na samym końcu pracy. Parametr markdown to CAŁA odpowiedź jako zwykły tekst markdown po polsku; obrazy wstawiaj INLINE w treści składnią ![opis](file_id) (file_id z generate_image) lub ![opis](ref) (załącznik wejściowy). NIE przekazuj tablicy JSON ani obiektów-bloków — tylko prozę markdown.', input_schema: { type: 'object', properties: { markdown: { type: 'string', description: 'CAŁA finalna odpowiedź jako zwykły markdown po polsku (nagłówki, listy, tabele, pogrubienia, linki). Obrazy wstawiaj INLINE składnią ![opis](file_id) — file_id zwrócone przez generate_image dla nowego obrazu, albo ref załącznika z sekcji „Załączone obrazy” dla istniejącego. NIE umieszczaj tu tablicy JSON ani obiektów-bloków; to ma być czysta proza markdown.' } } } };\nconst tools = [\n  { type: 'agent_toolset_20260401' },\n  { type: 'mcp_toolset', mcp_server_name: 'haxe_image', default_config: { enabled: true, permission_policy: { type: 'always_allow' } } }, { type: 'mcp_toolset', mcp_server_name: 'clickup', default_config: { enabled: false }, configs: ['clickup_get_workspace_hierarchy','clickup_search','clickup_filter_tasks','clickup_get_task','clickup_get_task_comments','clickup_get_threaded_comments','clickup_get_custom_fields','clickup_get_document_pages','clickup_list_document_pages','clickup_get_folder','clickup_get_list','clickup_get_workspace_members','clickup_find_member_by_name','clickup_resolve_assignees'].map(function(n){ return { name: n, enabled: true, permission_policy: { type: 'always_allow' } }; }) }, extract_clickup_task_tool, deliver_output_tool, { type: 'custom', name: 'get_task_comments', description: 'Pobiera komentarze (i odpowiedzi w watkach) zadania wyzwalajacego, na ktorym Cie uruchomiono. Zakres ograniczony do tego zadania (identyfikator podaje system, nie podajesz go). Uzyj, gdy do wykonania zadania potrzebna jest historia dyskusji. Opcjonalnie: limit (ile najnowszych) lub since (znacznik czasu w ms). Tylko odczyt.', input_schema: { type: 'object', properties: { limit: { type: 'integer', description: 'Maksymalna liczba najnowszych komentarzy (opcjonalne).' }, since: { type: 'string', description: 'Zwroc tylko komentarze nie starsze niz ten znacznik czasu w ms epoki (opcjonalne).' } } } }, { type: 'custom', name: 'get_parent_chain', description: 'Pobiera lancuch zadan nadrzednych zadania wyzwalajacego (tytuly i opisy, od najogolniejszego do najblizszego). Zakres ograniczony do tego zadania. Uzyj, gdy potrzebny jest kontekst nadrzedny (cel projektu, wytyczne z zadania-rodzica). Opcjonalnie depth ogranicza do najblizszych N poziomow. Tylko odczyt.', input_schema: { type: 'object', properties: { depth: { type: 'integer', description: 'Maksymalna liczba najblizszych poziomow nadrzednych (opcjonalne).' } } } }, { type: 'custom', name: 'list_attachments', description: 'Zwraca liste zalacznikow zadania wyzwalajacego (attachment_id, nazwa, typ MIME, rozmiar) BEZ tresci. Archiwa ZIP sa rozwijane: kazdy plik wewnatrz ma zagniezdzony attachment_id w formacie \"<zip>:<indeks>\". Tani indeks: wywolaj, aby zdecydowac ktore zalaczniki sa istotne, zanim pobierzesz tresc przez get_attachment. Zakres ograniczony do tego zadania. Tylko odczyt.', input_schema: { type: 'object', properties: {} } }, { type: 'custom', name: 'get_attachment', description: 'Pobiera i ekstrahuje TRESC jednego zalacznika zadania wyzwalajacego: dokument jako tekst, obraz jako wizje. Najpierw uzyj list_attachments, aby poznac attachment_id. Aby pobrac POJEDYNCZY plik z archiwum ZIP, podaj jego zagniezdzony attachment_id w formacie \"<zip>:<indeks>\" (pobierzesz tylko ten plik, nie cale archiwum). Zakres ograniczony do zalacznikow tego zadania. Tylko odczyt.', input_schema: { type: 'object', properties: { attachment_id: { type: 'string', description: 'attachment_id zwrocony przez list_attachments.' } }, required: ['attachment_id'] } }, { type: 'custom', name: 'get_task_details', description: 'Zwraca tytul, opis (pelna specyfikacje) i status zadania wyzwalajacego, na ktorym Cie uruchomiono. OPIS zadania nie jest juz domyslnie zaladowany w wiadomosci - wywolaj to narzedzie, gdy do wykonania zadania potrzebujesz pelnej tresci opisu/specyfikacji zadania. Zakres ograniczony do tego zadania (identyfikator podaje system, nie podajesz go). Tylko odczyt.', input_schema: { type: 'object', properties: {} } }\n];\nconst skills = [\n  { type: 'anthropic', skill_id: 'docx', version: 'latest' },\n  { type: 'anthropic', skill_id: 'xlsx', version: 'latest' },\n  { type: 'anthropic', skill_id: 'pptx', version: 'latest' },\n  { type: 'anthropic', skill_id: 'pdf', version: 'latest' }\n];\n\nreturn [{ json: { system, rules_sha256: sha, conventions_version: CONV, tools, skills, mcp_servers, system_len: system.length } }];"
+      }
+    },
+    {
+      "id": "get-agents",
+      "name": "Get Agent Rows",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1560,
+        280
+      ],
+      "notes": "One row per distinct model_id (4 agents): the two Sonnet impact rows collapse to one. agent_id null => create; else the Decide Action node decides update vs skip.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select distinct on (model_id) impact, tier_label, model_id, agent_name, agent_id, agent_version, rules_sha256, conventions_version from agent_routing where active and model_id is not null and model_id <> '' order by model_id, (agent_id is null) desc;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "decide-action",
+      "name": "Decide Action",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        280
+      ],
+      "notes": "Per agent: create (no agent_id) / update (rules hash or conventions version changed, or force=true) / skip (already current — avoids version inflation).",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const bs = $('Build System').first().json;\nconst curSha = bs.rules_sha256, curConv = bs.conventions_version;\nlet force = false;\ntry { const wc = $('When Called').first().json; if (wc && (wc.force === true || wc.force === 'true')) force = true; } catch(e){}\nreturn $input.all().map(it => {\n  const j = it.json;\n  let action;\n  if (!j.agent_id) action = 'create';\n  else if (force) action = 'update';\n  else if (j.rules_sha256 !== curSha || (j.conventions_version || 0) !== curConv) action = 'update';\n  else action = 'skip';\n  return { json: Object.assign({}, j, { action: action, needs_write: action !== 'skip' }) };\n});"
+      }
+    },
+    {
+      "id": "needs-write",
+      "name": "Needs Write?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2000,
+        280
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.needs_write }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "skipped",
+      "name": "Skipped (current)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2220,
+        460
+      ],
+      "notes": "Agent already carries the current rules hash + conventions version. No API call (avoids needless new versions).",
+      "parameters": {}
+    },
+    {
+      "id": "upsert",
+      "name": "Upsert Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2220,
+        200
+      ],
+      "notes": "POST /v1/agents (create) when agent_id is empty, else POST /v1/agents/{id} (new version) — never recreate (Block 0; archive is permanent). Body = name+model+system+tools+skills. Error output routes to a CRITICAL with the HTTP detail; the successful agents still write back. main[1] is the error branch.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.anthropic.com/v1/agents{{ $json.agent_id ? '/' + $json.agent_id : '' }}",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $('Get Anthropic Key').first().json.key }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "managed-agents-2026-04-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ name: $json.agent_name, model: $json.model_id, system: $('Build System').first().json.system, tools: $('Build System').first().json.tools, skills: $('Build System').first().json.skills, mcp_servers: $('Build System').first().json.mcp_servers }, $json.agent_id ? { version: $json.agent_version } : {})) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "writeback",
+      "name": "Writeback Routing",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2440,
+        120
+      ],
+      "notes": "Records agent_id, version, the baked rules hash + conventions version, and synced_at onto EVERY routing row sharing this model_id (so both Sonnet rows stay consistent). Keyed on the response's model.id (object on read) with a string fallback.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update agent_routing set agent_id = $1, agent_version = $2, rules_sha256 = $3, conventions_version = $4, synced_at = now(), updated_at = now() where model_id = $5;",
+        "options": {
+          "queryReplacement": "={{ $json.id }},{{ $json.version }},{{ $('Build System').first().json.rules_sha256 }},{{ $('Build System').first().json.conventions_version }},{{ ($json.model && $json.model.id) ? $json.model.id : $json.model }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "aggregate",
+      "name": "Aggregate Writes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2660,
+        120
+      ],
+      "notes": "Collapses the per-agent writeback stream to a single item so Verify Synced runs exactly once.",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const bs = $('Build System').first().json;\nreturn [{ json: { written: $input.all().length, rules_sha256: bs.rules_sha256, conventions_version: bs.conventions_version } }];"
+      }
+    },
+    {
+      "id": "verify",
+      "name": "Verify Synced",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2880,
+        120
+      ],
+      "notes": "Post-condition assertion read fresh from the DB (independent of the in-flow items): are ALL active routing rows now on the current rules hash + conventions version with a non-null agent_id? Catches a tier whose upsert failed (its row stays stale).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select bool_and(agent_id is not null and rules_sha256 = $1 and conventions_version = $2) as all_synced, count(*) as total, coalesce(string_agg(distinct tier_label, ', ') filter (where agent_id is null or rules_sha256 is distinct from $1 or conventions_version is distinct from $2), '') as stale_tiers from agent_routing where active and model_id is not null and model_id <> '';",
+        "options": {
+          "queryReplacement": "={{ $json.rules_sha256 }},{{ $json.conventions_version }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "all-synced",
+      "name": "All Synced?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3100,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.all_synced }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "sync-ok",
+      "name": "Sync OK",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3320,
+        40
+      ],
+      "notes": "Terminal for the healthy path. Silent on purpose — a successful sync must not post to the Alerts task every 6h.",
+      "parameters": {}
+    },
+    {
+      "id": "alert-incomplete",
+      "name": "Alert Sync Incomplete",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        3320,
+        220
+      ],
+      "notes": "CRITICAL via Post Alert (v1): at least one tier is NOT on the current rules. The next scheduled run self-heals the stale tiers (idempotent); this surfaces it loudly meanwhile.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "managed-agents/sync",
+            "message": "Sync agentów niekompletny — nie wszystkie tiery są na najnowszych zasadach.",
+            "details": "=Tiery niezsynchronizowane: {{ $json.stale_tiers }}. Sprawdź ostatnie wykonanie Sync Agent Definitions (v1) i alerty managed-agents/sync. Do czasu naprawy te tiery niosą starsze zasady."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "alert-upsert-failed",
+      "name": "Alert Upsert Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        2440,
+        320
+      ],
+      "notes": "CRITICAL via Post Alert (v1) with the HTTP error + which tier failed. Routed from Upsert Agent's error output so one tier failing doesn't abort the others.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "CRITICAL",
+            "source": "managed-agents/sync",
+            "message": "Nie udało się utworzyć/zaktualizować agenta Managed Agents.",
+            "details": "=Tier: {{ $('Decide Action').item.json.tier_label }} (model {{ $('Decide Action').item.json.model_id }}). Błąd: {{ (($json.error||{}).message) || $json.error || JSON.stringify($json).slice(0,300) }}. Sprawdź klucz Anthropic, nagłówek beta managed-agents-2026-04-01 oraz poprawność tools/skills."
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        }
+      }
+    },
+    {
+      "id": "touch-checked",
+      "name": "Touch Checked",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2440,
+        460
+      ],
+      "notes": "ADR-053 freshness fix: the skip path means 'this model's agent already carries the current rules hash + conventions version'. Stamp synced_at = now() so the freshness dead-man's-switch reads it as a liveness heartbeat ('sync ran and CONFIRMED current'), not only as 'an agent was rewritten'. Without this, a stable doc made every scheduled skip leave synced_at untouched, so Agent Rules Freshness Check (v1) fired a false 'sync >24h' WARN even though sync ran every 6h and content matched. Keyed per model_id, mirroring Writeback Routing.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update agent_routing set synced_at = now(), updated_at = now() where active and model_id = $1;",
+        "options": {
+          "queryReplacement": "={{ $json.model_id }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Every 6h": {
+      "main": [
+        [
+          {
+            "node": "Get Anthropic Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run on Demand": {
+      "main": [
+        [
+          {
+            "node": "Get Anthropic Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Get Anthropic Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Anthropic Key": {
+      "main": [
+        [
+          {
+            "node": "Get CU Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get CU Rules": {
+      "main": [
+        [
+          {
+            "node": "Extract Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Rules": {
+      "main": [
+        [
+          {
+            "node": "Rules Present?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rules Present?": {
+      "main": [
+        [
+          {
+            "node": "Hash Rules",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Rules Missing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash Rules": {
+      "main": [
+        [
+          {
+            "node": "Build System",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build System": {
+      "main": [
+        [
+          {
+            "node": "Get Agent Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Agent Rows": {
+      "main": [
+        [
+          {
+            "node": "Decide Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide Action": {
+      "main": [
+        [
+          {
+            "node": "Needs Write?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Write?": {
+      "main": [
+        [
+          {
+            "node": "Upsert Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skipped (current)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Agent": {
+      "main": [
+        [
+          {
+            "node": "Writeback Routing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Upsert Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Writeback Routing": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Writes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Writes": {
+      "main": [
+        [
+          {
+            "node": "Verify Synced",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Synced": {
+      "main": [
+        [
+          {
+            "node": "All Synced?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All Synced?": {
+      "main": [
+        [
+          {
+            "node": "Sync OK",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Sync Incomplete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skipped (current)": {
+      "main": [
+        [
+          {
+            "node": "Touch Checked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": {
+    "node:Every 6h": {
+      "recurrenceRules": [
+        18
+      ]
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "f189de03-4185-4ac0-b8d7-35ab3b5a2554",
+  "activeVersionId": "f189de03-4185-4ac0-b8d7-35ab3b5a2554",
+  "versionCounter": 25,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-18T09:45:57.839Z",
+      "createdAt": "2026-06-18T09:45:57.839Z",
+      "role": "workflow:owner",
+      "workflowId": "4K1w78hJ7JhsUwdN",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

@@ -1,0 +1,186 @@
+{
+  "updatedAt": "2026-08-18T07:11:52.792Z",
+  "createdAt": "2026-08-18T07:11:52.792Z",
+  "id": "n3mIHnH0GMRuPNkf",
+  "name": "Flow: Monday Email (preview)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -460,
+        0
+      ],
+      "notes": "Inputs: to_email (where every render goes) and employee_user_id (which person's filtered view to render alongside the management one). A When-Called trigger rather than a Manual Trigger because n8n's public API cannot fire a manual trigger at all — only webhook, form, chat and sub-workflow calls can be driven from outside the UI. Drive it with scripts/test-subworkflow.mjs in the agent repo.",
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "to_email"
+            },
+            {
+              "name": "employee_user_id"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "build",
+      "name": "Build Preview",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -240,
+        0
+      ],
+      "notes": "Renders exactly what the live Monday send would produce — the same flow.monday_email(p_user_id) function, no copy — for two audiences: the management view (null) and one employee's filtered view. Both rows are addressed to the SAME to_email, which is the whole point: a preview must never reach a real recipient. The subject is prefixed [PODGLĄD] so a preview can never be mistaken for the Monday send sitting next to it in the inbox.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select $1::text as to_email, '[PODGLĄD] ' || m.subject as subject, m.html from (select null::bigint as uid union all select $2::bigint) r cross join lateral flow.monday_email(r.uid) m order by r.uid nulls first;",
+        "options": {
+          "queryReplacement": "={{ $json.to_email }}, {{ $json.employee_user_id }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "send",
+      "name": "Send Preview",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        -20,
+        0
+      ],
+      "notes": "Same SMTP credential and same From as the live send, so what arrives is byte-for-byte what a recipient would get apart from the subject prefix. Writes NO flow.sync_runs row: the dead-man's switch watches for a real Monday send, and a preview must not be able to satisfy it.",
+      "parameters": {
+        "fromEmail": "Haxe Flow <agent@haxe.com>",
+        "toEmail": "={{ $json.to_email }}",
+        "subject": "={{ $json.subject }}",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "id": "BL2bF1DAZvl9TTIc",
+          "name": "Flow SMTP (zenbox)"
+        }
+      },
+      "webhookId": "3ca9cd54-64e2-489a-b4dc-efb09e3fee02"
+    },
+    {
+      "id": "done",
+      "name": "Done",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        200,
+        0
+      ],
+      "notes": "Single linear terminal with one leaf node, per this repo's rule about sub-workflow returns: with any branching, which node n8n calls 'last' is non-deterministic.",
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={{ { \"sent_to\": $json.to_email, \"subject\": $json.subject } }}",
+        "options": {}
+      },
+      "executeOnce": true
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Build Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Preview": {
+      "main": [
+        [
+          {
+            "node": "Send Preview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Preview": {
+      "main": [
+        [
+          {
+            "node": "Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "timezone": "Europe/Warsaw",
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "01e96f3c-f496-4ca0-a702-c2741ac2fea2",
+  "activeVersionId": "01e96f3c-f496-4ca0-a702-c2741ac2fea2",
+  "versionCounter": 1,
+  "triggerCount": 0,
+  "tags": [
+    {
+      "updatedAt": "2026-08-07T08:47:56.370Z",
+      "createdAt": "2026-08-07T08:47:56.370Z",
+      "id": "DXFc9QNvYvnQxnPd",
+      "name": "flow"
+    }
+  ],
+  "shared": [
+    {
+      "updatedAt": "2026-08-18T07:11:52.792Z",
+      "createdAt": "2026-08-18T07:11:52.792Z",
+      "role": "workflow:owner",
+      "workflowId": "n3mIHnH0GMRuPNkf",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

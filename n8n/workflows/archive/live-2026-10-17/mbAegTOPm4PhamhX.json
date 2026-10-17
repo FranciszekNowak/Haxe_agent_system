@@ -1,0 +1,283 @@
+{
+  "updatedAt": "2026-06-30T19:05:40.683Z",
+  "createdAt": "2026-06-30T19:02:44.891Z",
+  "id": "mbAegTOPm4PhamhX",
+  "name": "Session Waiter Tool Bridge (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "bridge-webhook",
+      "name": "Bridge Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        240,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "ADR-066 Block 6: the session-waiter's client-tool servicing entry. The external waiter (Node, services/session-waiter) POSTs a pending client-side custom tool here; this thin wrapper delegates to the SSOT n8n handlers (Triggering Task Tail Handler / ClickUp Extract Tool Handler) and returns the user.custom_tool_result content array. headerAuth (X-Watchdog-Key, the shared waiter<->n8n key) - n8n /webhook/* is public via nginx, so this MUST be authed (the tail handler reads task data with the bot token).",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "session-waiter-tool-bridge",
+        "responseMode": "responseNode",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "3ydBksESwiUW2rFV",
+          "name": "Storage Watchdog Header Auth"
+        }
+      },
+      "webhookId": "e6fecc67-3eff-4a90-9573-1eb2406f180a"
+    },
+    {
+      "id": "is-extract",
+      "name": "Is extract_clickup_task?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        460,
+        300
+      ],
+      "notes": "Route by tool_name: extract_clickup_task -> ClickUp Extract Tool Handler (caller-scoped REST attachment extraction); everything else (get_task_comments / get_parent_chain / list_attachments / get_attachment / get_task_details) -> Triggering Task Tail Handler. generate_image and clickup_* are in-harness MCP (ADR-055/054) and never reach here.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-extract",
+              "leftValue": "={{ $json.body.tool_name }}",
+              "rightValue": "extract_clickup_task",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "call-extract-handler",
+      "name": "Call Extract Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        680,
+        200
+      ],
+      "notes": "ADR-054 Block 4b ClickUp Extract Tool Handler (y985MgyA5lCxOFCH). clickup_task_id comes from the agent's tool_input (the related task it wants to read), NOT the triggering task. onError=continueErrorOutput so a failure still resolves the tool (no session deadlock).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "y985MgyA5lCxOFCH",
+          "mode": "list",
+          "cachedResultName": "ClickUp Extract Tool Handler (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ (JSON.parse($json.body.tool_input_json || '{}').clickup_task_id) || '' }}",
+            "caller_user_id": "={{ $json.body.caller_user_id }}",
+            "clickup_scope": "={{ $json.body.clickup_scope }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "call-tail-handler",
+      "name": "Call Tail Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        680,
+        420
+      ],
+      "notes": "Triggering Task Tail Handler (Ouo0BlYOw92DUXIh): get_task_comments / get_parent_chain / list_attachments / get_attachment / get_task_details on the triggering task. onError=continueErrorOutput so a failure still resolves the tool (no session deadlock).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "Ouo0BlYOw92DUXIh",
+          "mode": "list",
+          "cachedResultName": "Triggering Task Tail Handler (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "tool_name": "={{ $json.body.tool_name }}",
+            "clickup_task_id": "={{ $json.body.clickup_task_id }}",
+            "tool_input_json": "={{ $json.body.tool_input_json }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "build-bridge-response",
+      "name": "Build Bridge Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        300
+      ],
+      "notes": "Normalize the handler output into {tool_result_content_json, new_warnings_json}. If the handler threw (no content), build a fail-soft text result + a WARN - the waiter ALWAYS posts a tool result, so a handler failure degrades the run, never deadlocks the session. runOnceForEachItem so the 4 incoming (extract/tail x success/error) connections do NOT trigger per-connection re-runs (only the one fired branch delivers an item).",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const h = $json || {};\nlet content = h.tool_result_content_json;\nlet warns = h.new_warnings_json;\nif (!content) {\n  content = JSON.stringify([{ type: 'text', text: 'Pobranie kontekstu zadania nie powiodlo sie (blad narzedzia). Pracuj na podstawie dostepnego kontekstu i nie zglaszaj tego jako bledu.' }]);\n  warns = JSON.stringify([{ source: 'session-waiter/tool-bridge-failed', err: String((h.error && (h.error.message || h.error)) || 'brak wyniku narzedzia').slice(0, 300), severity: 'WARN' }]);\n}\nreturn { json: { tool_result_content_json: content, new_warnings_json: warns || '[]', status: h.status || 'ok' } };"
+      }
+    },
+    {
+      "id": "respond-bridge",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1140,
+        300
+      ],
+      "notes": "Return the normalized tool result to the waiter, which posts it as user.custom_tool_result and resumes the session.",
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Bridge Webhook": {
+      "main": [
+        [
+          {
+            "node": "Is extract_clickup_task?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is extract_clickup_task?": {
+      "main": [
+        [
+          {
+            "node": "Call Extract Handler",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Tail Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Extract Handler": {
+      "main": [
+        [
+          {
+            "node": "Build Bridge Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Bridge Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Tail Handler": {
+      "main": [
+        [
+          {
+            "node": "Build Bridge Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Bridge Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Bridge Response": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "7a41fd2f-82aa-4a00-af41-bdecd0c14d6d",
+  "activeVersionId": "7a41fd2f-82aa-4a00-af41-bdecd0c14d6d",
+  "versionCounter": 2,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-30T19:02:44.891Z",
+      "createdAt": "2026-06-30T19:02:44.891Z",
+      "role": "workflow:owner",
+      "workflowId": "mbAegTOPm4PhamhX",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

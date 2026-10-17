@@ -1,0 +1,548 @@
+{
+  "updatedAt": "2026-06-18T13:45:54.648Z",
+  "createdAt": "2026-06-18T10:21:35.017Z",
+  "id": "2VkZN5UeqVk6MDLW",
+  "name": "Upload Input Images (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ],
+      "notes": "ADR-053 Block 3 — Files-API input path. Inputs: input_images_json (JSON string of Read Input's image blocks [{type:image, ref, mime, source_ref, alt, order}] — also accepts {url} alias / {att_id}); clickup_task_id (for warning context). Caller (Stage B, Block 5) forwards Read Input's image-typed blocks. Test entry via scripts/test-subworkflow.mjs.",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "input_images_json"
+            },
+            {
+              "name": "clickup_task_id"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "get-key",
+      "name": "Get Anthropic Key",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        300
+      ],
+      "notes": "Reads the anthropic_api_key Vault secret via SECURITY DEFINER getter public.get_anthropic_key() (migration 034). Code nodes can't use n8n credentials and $env/$vars are unavailable on this CE (CLAUDE.md), so a credentialed Postgres read is how a workflow obtains the secret. Returns {key} (null if unseeded). A hard DB failure throws -> errorWorkflow CRITICAL (reactive layer).",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select public.get_anthropic_key() as key;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "parse-images",
+      "name": "Parse Images",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "notes": "Parse input_images_json -> image refs, embed the Anthropic key + task id into each element. Emits ONE item { key, clickup_task_id, images[], do_upload, key_missing, no_images }. do_upload=false when key unreachable OR no images -> rides the false branch to Merge as the no-work sentinel so the single terminal Aggregate still runs (mirrors Read Input's _passthrough). Splitting happens downstream via Split Out (itemList pairing), so $('Split Out Images').item recovers metadata after the fetch wipes $json.",
+      "parameters": {
+        "jsCode": "const key = ((($input.first() || {}).json || {}).key || '').toString().trim();\nlet taskId = null;\ntry { taskId = $('When Called').first().json.clickup_task_id || null; } catch (e) {}\nlet images = [];\ntry {\n  const raw = $('When Called').first().json.input_images_json;\n  const parsed = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);\n  if (Array.isArray(parsed)) {\n    images = parsed\n      .filter(b => b && (b.ref || b.url) && (b.type ? b.type === 'image' : true))\n      .map((b, i) => ({\n        ref: b.ref || b.url,\n        mime: b.mime || 'image/jpeg',\n        source_ref: (b.source_ref != null ? b.source_ref : (b.att_id != null ? b.att_id : ('img_' + i))),\n        alt: b.alt || b.title || null,\n        order: (b.order != null ? b.order : i),\n        key: key,\n        clickup_task_id: taskId\n      }));\n  }\n} catch (e) { images = []; }\nconst do_upload = !!key && images.length > 0;\nreturn [{ json: { key, clickup_task_id: taskId, images, do_upload, key_missing: !key, no_images: images.length === 0 } }];"
+      }
+    },
+    {
+      "id": "should-upload",
+      "name": "Should Upload?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        300
+      ],
+      "notes": "true -> Split Out Images -> fetch+upload. false (no key OR no images) -> the single sentinel item rides to Merge (input 3) so Aggregate always runs and returns a well-formed empty map (+ key-unreachable WARN if the key was missing). main[1] is the IF false branch, not an error output.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-do-upload",
+              "leftValue": "={{ $json.do_upload }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "split-images",
+      "name": "Split Out Images",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        880,
+        180
+      ],
+      "notes": "Fan the images array into one item per image (itemList pairing). Each item = { ref, mime, source_ref, alt, order, key, clickup_task_id }. Downstream nodes recover metadata via $('Split Out Images').item.json after Fetch (responseFormat:file) replaces $json with response metadata (same idiom Read Input uses for Build Text Block).",
+      "parameters": {
+        "fieldToSplitOut": "images",
+        "options": {}
+      }
+    },
+    {
+      "id": "fetch-bytes",
+      "name": "Fetch Image Bytes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        180
+      ],
+      "notes": "GET the image ref to a binary property (no base64 in JSON; off-heap). ClickUp pre-signed and Supabase-signed URLs need no auth header. responseFormat:file. onError:continueErrorOutput -> a fetch failure (expired URL, 404, network) routes to Build Dropped Fetch -> WARN + drop, the block continues (silent-failure mode: un-fetchable image).",
+      "parameters": {
+        "url": "={{ $json.ref }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "prep-binary",
+      "name": "Prep Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        120
+      ],
+      "notes": "Ensure the binary part is well-formed for the Files-API multipart: set mimeType from Split Out's mime and a deterministic fileName when the fetch response omitted Content-Disposition (some signed URLs do). Mirrors Read Input's zip filename fixer. Runs once per item on the fetch-success branch only.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst meta = $('Split Out Images').item.json;\nif (item.binary && item.binary.data) {\n  const b = item.binary.data;\n  b.mimeType = b.mimeType || meta.mime || 'image/jpeg';\n  if (!b.fileName) {\n    const ext = String(b.mimeType.split('/')[1] || 'jpg').replace('jpeg', 'jpg').split('+')[0];\n    const safe = String(meta.source_ref != null ? meta.source_ref : (meta.order != null ? meta.order : 'img')).replace(/[^a-zA-Z0-9._-]/g, '_');\n    b.fileName = 'input_' + safe + '.' + ext;\n  }\n}\nreturn item;"
+      }
+    },
+    {
+      "id": "upload-file",
+      "name": "Upload to Files API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        120
+      ],
+      "notes": "POST /v1/files multipart (file part + purpose=agent) with anthropic-beta: files-api-2025-04-14 (Block 0 spec). Key sourced via paired item from Split Out (Code nodes can't read the cred). Returns {id:file_..., filename, mime_type, size_bytes, downloadable:false}. onError:continueErrorOutput -> upload failure (oversize 413, auth, network) routes to Build Dropped Upload -> WARN + drop; the task proceeds text-only rather than failing (silent-failure mode).",
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/files",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $('Split Out Images').item.json.key }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "files-api-2025-04-14"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "purpose",
+              "value": "agent"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "build-ok",
+      "name": "Build OK Entry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        60
+      ],
+      "notes": "Upload success -> map entry { ok:true, file_id, url(=input ref), source_ref, mime, alt, order }. The {file_id<->url} map Stage B carries into the session (the Agent Session contract's input_file_refs). alwaysOutputData so an empty input still emits (filtered by Aggregate) and the Merge append never stalls on an empty branch (Read Input note).",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const meta = $('Split Out Images').item.json;\nconst up = $json || {};\nreturn { json: {\n  ok: true,\n  file_id: up.id || null,\n  url: meta.ref,\n  source_ref: meta.source_ref,\n  mime: up.mime_type || meta.mime || 'image/jpeg',\n  alt: meta.alt || null,\n  order: meta.order\n} };"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "build-dropped-fetch",
+      "name": "Build Dropped Fetch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        360
+      ],
+      "notes": "Fetch failure -> dropped entry { ok:false, warn_source:'files-api/fetch-failed', source_ref, err }. Aggregate turns it into a returned WARN. alwaysOutputData so the empty (no-failure) case still emits and the Merge append never stalls.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const meta = $('Split Out Images').item.json;\nconst e = $json || {};\nconst err = (e.error && (e.error.message || e.error)) || e.message || 'fetch_failed';\nreturn { json: { ok: false, source_ref: meta.source_ref, warn_source: 'files-api/fetch-failed', err: String(err).slice(0, 300), alt: meta.alt || null } };"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "build-dropped-upload",
+      "name": "Build Dropped Upload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        260
+      ],
+      "notes": "Upload failure -> dropped entry { ok:false, warn_source:'files-api/upload-failed', source_ref, err }. Aggregate turns it into a returned WARN; the task proceeds text-only. alwaysOutputData so the empty case still emits and Merge append never stalls.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const meta = $('Split Out Images').item.json;\nconst e = $json || {};\nconst err = (e.error && (e.error.message || e.error)) || e.message || 'upload_failed';\nreturn { json: { ok: false, source_ref: meta.source_ref, warn_source: 'files-api/upload-failed', err: String(err).slice(0, 300), alt: meta.alt || null } };"
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "merge",
+      "name": "Merge",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1980,
+        300
+      ],
+      "notes": "Converge OK entries (0), dropped-fetch (1), dropped-upload (2), and the no-work sentinel (3, IF false) into ONE stream so Aggregate keeps a SINGLE input (a run-once-for-all-items node with N inputs runs once per connection and drops items — CLAUDE.md trap). Append = concat; tolerant of empty branches (same as Read Input's 5-input Merge, plus alwaysOutputData upstream).",
+      "parameters": {
+        "numberInputs": 4
+      }
+    },
+    {
+      "id": "aggregate",
+      "name": "Aggregate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        300
+      ],
+      "notes": "SOLE TERMINAL (single input via Merge -> branch-free deterministic return, CLAUDE.md). Returns { file_map:[{file_id,url,source_ref,mime,alt,order}], warnings:[{source,source_ref,err,severity}], clickup_task_id, uploaded_count, dropped_count }. Warnings are RETURNED, not fired — Stage B (Block 5) fires them via Post Alert (v1), mirroring Read Input -> Stage A. no_images is NOT a warning (legitimately no input images).",
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json).filter(j => j && (j.ok === true || j.ok === false || j.do_upload === false));\nconst oks = rows.filter(j => j.ok === true && j.file_id);\nconst okNoId = rows.filter(j => j.ok === true && !j.file_id);\nconst drops = rows.filter(j => j.ok === false);\nconst sentinel = rows.find(j => j.do_upload === false);\nconst file_map = oks.map(j => ({ file_id: j.file_id, url: j.url, source_ref: j.source_ref, mime: j.mime, alt: j.alt, order: j.order }));\nconst warnings = [];\nfor (const d of drops) warnings.push({ source: d.warn_source || 'files-api/upload-failed', source_ref: d.source_ref, err: d.err || 'unknown', severity: 'WARN' });\nfor (const d of okNoId) warnings.push({ source: 'files-api/upload-no-id', source_ref: d.source_ref, err: 'upload succeeded but no file_id returned', severity: 'WARN' });\nif (sentinel && sentinel.key_missing) warnings.push({ source: 'files-api/key-unreachable', err: 'anthropic key not reachable from Vault; proceeding text-only', severity: 'WARN' });\nlet taskId = null;\ntry { taskId = $('When Called').first().json.clickup_task_id || null; } catch (e) {}\nif (!taskId) { const f = rows.find(j => j.clickup_task_id); taskId = f ? f.clickup_task_id : null; }\nreturn [{ json: { file_map, warnings, clickup_task_id: taskId, uploaded_count: file_map.length, dropped_count: drops.length + okNoId.length } }];"
+      }
+    },
+    {
+      "id": "upsert-file-map",
+      "name": "Upsert File Map",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2420,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into public.agent_input_file_map (file_id, url, mime, source_ref)\nselect file_id, url, mime, source_ref\nfrom jsonb_to_recordset($1::jsonb) as x(file_id text, url text, mime text, source_ref text)\nwhere file_id is not null\non conflict (file_id) do update set url = excluded.url, mime = excluded.mime, source_ref = excluded.source_ref;",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.file_map || []) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "notes": "ADR-055 Block 5.2: persist the file_id->{url,mime,source_ref} map to agent_input_file_map so the image MCP tool handler can resolve generate_image reference_file_ids -> signed URLs WITHOUT session context (Block 5.1). Additive + fail-soft: onError=continueRegularOutput + alwaysOutputData so a DB write failure NEVER blocks the upload return (Final Return re-reads Aggregate and appends a WARN). Empty file_map -> jsonb_to_recordset('[]') -> 0 rows -> no-op (the common no-input-images case). on conflict refreshes url/mime/source_ref.",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "final-return",
+      "name": "Final Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const out = $('Aggregate').first().json || {};\nconst up = $input.first();\nconst failed = !!(up && up.json && up.json.error);\nconst warnings = Array.isArray(out.warnings) ? out.warnings.slice() : [];\nif (failed) warnings.push({ source: 'agent-input-file-map/write-failed', err: 'failed to persist file_id->url map; image MCP reference resolution may fail for these images', severity: 'WARN' });\nreturn [{ json: Object.assign({}, out, { warnings: warnings }) }];"
+      },
+      "notes": "SOLE TERMINAL (return-determinism idiom, CLAUDE.md). Re-reads Aggregate's canonical output {file_map, warnings, clickup_task_id, uploaded_count, dropped_count} so the agent_input_file_map write side-effect can't corrupt the return. Appends an agent-input-file-map/write-failed WARN (returned for Stage B to fire) if the upsert errored — a failed map write silently degrades later reference resolution, so it must surface."
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Get Anthropic Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Anthropic Key": {
+      "main": [
+        [
+          {
+            "node": "Parse Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Images": {
+      "main": [
+        [
+          {
+            "node": "Should Upload?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Upload?": {
+      "main": [
+        [
+          {
+            "node": "Split Out Images",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Split Out Images": {
+      "main": [
+        [
+          {
+            "node": "Fetch Image Bytes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Image Bytes": {
+      "main": [
+        [
+          {
+            "node": "Prep Binary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Dropped Fetch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep Binary": {
+      "main": [
+        [
+          {
+            "node": "Upload to Files API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to Files API": {
+      "main": [
+        [
+          {
+            "node": "Build OK Entry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Dropped Upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build OK Entry": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Dropped Fetch": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Build Dropped Upload": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate": {
+      "main": [
+        [
+          {
+            "node": "Upsert File Map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert File Map": {
+      "main": [
+        [
+          {
+            "node": "Final Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "1e434a7b-90ca-462a-95b4-5a1a56fcda73",
+  "activeVersionId": "1e434a7b-90ca-462a-95b4-5a1a56fcda73",
+  "versionCounter": 3,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-18T10:21:35.017Z",
+      "createdAt": "2026-06-18T10:21:35.017Z",
+      "role": "workflow:owner",
+      "workflowId": "2VkZN5UeqVk6MDLW",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

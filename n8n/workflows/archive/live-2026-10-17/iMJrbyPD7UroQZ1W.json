@@ -1,0 +1,154 @@
+{
+  "updatedAt": "2026-06-12T14:45:30.754Z",
+  "createdAt": "2026-06-12T14:45:22.110Z",
+  "id": "iMJrbyPD7UroQZ1W",
+  "name": "Storage Watchdog Intake (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "wh",
+      "name": "Watchdog Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "storage-watchdog-7e06358ac257ad20",
+        "responseMode": "onReceived",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "3ydBksESwiUW2rFV",
+          "name": "Storage Watchdog Header Auth"
+        }
+      },
+      "notes": "External (host systemd) disk/DB watchdog posts here. Header-auth gated (X-Watchdog-Key). Dead-man's-switch must live OUTSIDE n8n (it watches the host that runs n8n); this thin intake only forwards into the Post Alert seam.",
+      "webhookId": "73536272-2085-4f2a-93f4-ce5befe491b1"
+    },
+    {
+      "id": "call-alert",
+      "name": "Call Post Alert",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        240,
+        200
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list",
+          "cachedResultName": "Post Alert (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "={{ $json.body.severity }}",
+            "source": "={{ $json.body.source }}",
+            "message": "={{ $json.body.message }}",
+            "details": "={{ $json.body.details }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "id": "details",
+              "displayName": "details",
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "notes": "Forwards the host watchdog's severity/source/message/details into Post Alert (v1) -> ClickUp Alerts task. Keeps the swappable alert seam."
+    }
+  ],
+  "connections": {
+    "Watchdog Webhook": {
+      "main": [
+        [
+          {
+            "node": "Call Post Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "80984711-d6c5-4755-966f-fb05a30f6060",
+  "activeVersionId": "80984711-d6c5-4755-966f-fb05a30f6060",
+  "versionCounter": 1,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-12T14:45:22.110Z",
+      "createdAt": "2026-06-12T14:45:22.110Z",
+      "role": "workflow:owner",
+      "workflowId": "iMJrbyPD7UroQZ1W",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

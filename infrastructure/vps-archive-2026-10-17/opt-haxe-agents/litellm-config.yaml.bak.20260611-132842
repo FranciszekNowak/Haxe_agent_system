@@ -1,0 +1,123 @@
+# LiteLLM gateway config (ADR-024, ADR-030). Committed — contains NO secrets.
+# AWS credentials, region, Anthropic API key, and the master key are injected
+# from the VPS .env as environment variables (see docker-compose.yml `litellm`
+# service + .env.example).
+#
+# Two provider tiers (ADR-030):
+#   -direct aliases  -> Anthropic API (latest models, non-GDPR tasks)
+#   -bedrock aliases -> AWS Bedrock EU eu-central-1 (GDPR-compliant tasks)
+#
+# `model_name` is the alias stored in Supabase `model_routing.litellm_model`.
+# Routing chooses the alias based on (impact, personal_data); the gateway
+# resolves it to the underlying model+provider here.
+#
+# NOTE: Bedrock cross-region EU inference-profile strings must be smoke-tested
+# on first deploy (same discipline as ADR-021/023).
+
+model_list:
+  # ── Anthropic direct (non-GDPR default) ─────────────────────────────────────
+  - model_name: haxe-haiku-4-5-direct
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: haxe-sonnet-4-6-direct
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: haxe-opus-4-8-direct
+    litellm_params:
+      model: anthropic/claude-opus-4-8
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Mythos-class, GA 2026-06-09 (ADR-037). Used by 'Krytycznie ważne' (non-PD).
+  - model_name: haxe-fable-5-direct
+    litellm_params:
+      model: anthropic/claude-fable-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # ── Bedrock EU eu-central-1 (GDPR — personal_data=true) ─────────────────────
+  - model_name: haxe-haiku-4-5-bedrock
+    litellm_params:
+      model: bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0
+      aws_region_name: os.environ/AWS_REGION_NAME
+
+  - model_name: haxe-sonnet-4-6-bedrock
+    litellm_params:
+      model: bedrock/eu.anthropic.claude-sonnet-4-6
+      aws_region_name: os.environ/AWS_REGION_NAME
+
+  - model_name: haxe-opus-4-5-bedrock
+    litellm_params:
+      model: bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0
+      aws_region_name: os.environ/AWS_REGION_NAME
+
+  # haxe-fable-5-bedrock — NOT YET ENABLED. Bedrock per-account model access for
+  # eu.anthropic.claude-fable-5 returns AccessDeniedException (probed 2026-06-10).
+  # Grant model access in the AWS Bedrock console (eu-central-1), then uncomment
+  # and point model_routing 'Krytycznie ważne' personal_data=true at this alias.
+  # - model_name: haxe-fable-5-bedrock
+  #   litellm_params:
+  #     model: bedrock/eu.anthropic.claude-fable-5
+  #     aws_region_name: os.environ/AWS_REGION_NAME
+
+  # ── Gemini via Vertex AI global (GDPR multimodal input — ADR-038) ──────────────
+  # Global endpoint: inference may route outside EU. GDPR basis: Vertex AI DPA + SCCs.
+  # gemini-2.5-flash deprecated June 2026; gemini-3.x not yet available in EU regions.
+  # Auth: ADC via GOOGLE_APPLICATION_CREDENTIALS (mounted service account key, docker-compose.yml).
+  # Revisit vertex_location when 3.x models land in an EU region.
+
+  - model_name: haxe-gemini-flash-eu
+    litellm_params:
+      model: vertex_ai/gemini-3.5-flash
+      vertex_project: os.environ/VERTEX_PROJECT
+      vertex_location: global
+
+  - model_name: haxe-gemini-pro-eu
+    litellm_params:
+      model: vertex_ai/gemini-3.1-pro-preview
+      vertex_project: os.environ/VERTEX_PROJECT
+      vertex_location: global
+
+  # ── Image generation (ADR-036) ───────────────────────────────────────────────
+  # Tiered by impact: low → Stability, medium → Vertex AI, high → DALL-E 3.
+  # No eu_only requirement — image payloads carry no personal data (spec 0.1).
+  # Aliases match model_routing.litellm_model seeds from migration 012.
+  # API keys injected from .env; see .env.example for required variable names.
+  # Replace model IDs if the listed versions become unavailable at build time.
+
+  - model_name: stability/stable-diffusion-3-5
+    litellm_params:
+      model: stability/stable-diffusion-3-5
+      api_key: os.environ/STABILITY_API_KEY
+
+  - model_name: vertex_ai/imagegeneration@006
+    litellm_params:
+      model: vertex_ai/imagegeneration@006
+      vertex_project: os.environ/VERTEX_PROJECT
+      vertex_location: os.environ/VERTEX_LOCATION
+
+  - model_name: openai/dall-e-3
+    litellm_params:
+      model: openai/dall-e-3
+      api_key: os.environ/OPENAI_API_KEY
+
+litellm_settings:
+  drop_params: true          # ignore provider-unsupported params instead of erroring
+
+# Web search backend (ADR-034). The agent owns a multi-round agentic loop in n8n
+# ("Model Turn (v1)") that executes each query via LiteLLM's
+# POST /v1/search/haxe-web-search (the search_tools entry below) -> Tavily, threading
+# tool results back over multiple rounds. We do NOT use LiteLLM's websearch_interception
+# callback — it was single-round and produced empty answers on multi-round research, so
+# it was removed (2026-06-09). Tavily api_key is injected from the VPS .env
+# (TAVILY_API_KEY); committed config holds NO secret. See .env.example.
+search_tools:
+  - search_tool_name: haxe-web-search
+    litellm_params:
+      search_provider: tavily
+      api_key: os.environ/TAVILY_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

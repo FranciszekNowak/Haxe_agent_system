@@ -1,0 +1,1096 @@
+{
+  "updatedAt": "2026-06-26T08:04:33.750Z",
+  "createdAt": "2026-06-25T11:38:13.026Z",
+  "id": "Ouo0BlYOw92DUXIh",
+  "name": "Triggering Task Tail Handler (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        400
+      ],
+      "notes": "ADR-061 Block 2 — services the TRIGGERING task's tail as client-side custom tools from Execute Agent Session's poll loop. IN: tool_name (get_task_comments|get_parent_chain|list_attachments|get_attachment), clickup_task_id (the TRIGGERING task id, set by n8n from the trigger — the scope pin; the agent CANNOT widen it), tool_input_json (the agent's raw tool input — only limit/since/depth/attachment_id are read from it, never a task id). OUT: { status, tool_result_content_json (a user.custom_tool_result content[] the agent SEES), new_warnings_json:'[]', new_images_json:'[]' }. All reads are on the BOT token (the caller @-mentioned the agent here -> has access; bot has access; byte-identical — per-user scoping earns its keep only for OTHER-task discovery, which stays on the clickup_* MCP). Branch-free terminal (Return re-reads Merge Result). The handler SELF-ALERTS a WARN on a side branch (Should Warn? -> Post Alert) on its own failure modes and returns new_warnings_json='[]' so the session does NOT double-fire; reused sub-workflows (Assemble Task Context) keep their own side-branch alerts.",
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "tool_name"
+            },
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "tool_input_json"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "route-tool",
+      "name": "Route Tool",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        400
+      ],
+      "notes": "Route by tool_name to the right reused reader. 0 comments -> Assemble Task Context (v1); 1 parents -> Assemble Parent Context (v1); 2 attachments -> bot GET /task (native attachment index, NO extraction); 3 attachment -> Read Input (v1) single-attachment mode (only_att_id) + Upload Input Images (v1) for vision. Fallback (4 unknown) -> Build Unknown Result (defensive: Execute Agent Session only routes the 4 known names, so this is a routing-bug guard that still answers the agent + WARNs).",
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c-comments",
+                    "leftValue": "={{ $json.tool_name }}",
+                    "rightValue": "get_task_comments",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "comments"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c-parents",
+                    "leftValue": "={{ $json.tool_name }}",
+                    "rightValue": "get_parent_chain",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "parents"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c-attachments",
+                    "leftValue": "={{ $json.tool_name }}",
+                    "rightValue": "list_attachments",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "attachments"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c-attachment",
+                    "leftValue": "={{ $json.tool_name }}",
+                    "rightValue": "get_attachment",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "attachment"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c-details",
+                    "leftValue": "={{ $json.tool_name }}",
+                    "rightValue": "get_task_details",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "details"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "unknown"
+        }
+      }
+    },
+    {
+      "id": "call-task-context",
+      "name": "Call Assemble Task Context",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        520,
+        80
+      ],
+      "notes": "get_task_comments: reuse Assemble Task Context (v1) (eL3fJuRMpzVRuVUT) — the triggering task's comments + interleaved threaded replies on the bot token. It SELF-ALERTS on fetch/reply failure (its own side-branch Post Alert), so Build Comments Result only adds a WARN for a TOTAL sub-call failure (onError -> no task_comments key). onError=continueRegularOutput so a sub-call failure degrades to a structured tool result, never throws into the session.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "eL3fJuRMpzVRuVUT",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ $('When Called').first().json.clickup_task_id }}",
+            "triggering_comment_text": "",
+            "caller_user_id": ""
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "build-comments-result",
+      "name": "Build Comments Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        80
+      ],
+      "notes": "Shape Assemble Task Context's task_comments into a user.custom_tool_result text block. Optional tool args: limit (cap most-recent N) + since (ms-epoch floor). An empty thread is LEGITIMATE (no WARN). WARN only when the sub-call returned no task_comments key at all (total failure caught by onError). new_warnings_json='[]' (handler self-alerts on the side branch).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet input = {}; try { input = JSON.parse(wc.tool_input_json || '{}') || {}; } catch (e) {}\nconst limit = Number(input.limit) > 0 ? Number(input.limit) : 0;\nconst since = input.since ? Number(input.since) : 0;\nlet sr = {}; try { sr = $('Call Assemble Task Context').first().json || {}; } catch (e) {}\nlet comments = Array.isArray(sr.task_comments) ? sr.task_comments : null;\nlet ws = '', wm = '', wd = '';\nif (comments === null) {\n  ws = 'managed-agents/tail-comments-failed';\n  wm = 'Pobranie komentarzy zadania ' + taskId + ' nie powiodlo sie (narzedzie get_task_comments).';\n  wd = 'task=' + taskId;\n  comments = [];\n}\nif (since) comments = comments.filter(function(c){ return Number((c && c.date) || 0) >= since; });\nlet used = comments;\nif (limit && comments.length > limit) used = comments.slice(0, limit);\nconst lines = [];\nlines.push('Komentarze zadania ' + taskId + ' (' + used.length + (limit && comments.length > limit ? ' z ' + comments.length : '') + '):');\nif (used.length === 0) lines.push('(brak komentarzy)');\nfor (const c of used) { lines.push(((c && c.author) || 'nieznany') + ': ' + ((c && c.text) || '')); }\nconst content = [{ type: 'text', text: lines.join('\\n') }];\nreturn [{ json: {\n  status: ws ? 'partial' : (used.length ? 'ok' : 'empty'),\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: ws, _warn_msg: wm, _warn_details: wd\n} }];"
+      }
+    },
+    {
+      "id": "call-parent-context",
+      "name": "Call Assemble Parent Context",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        520,
+        280
+      ],
+      "notes": "get_parent_chain: reuse Assemble Parent Context (v1) (qgM37HdQj78Rn090) — depth-bounded ancestor titles/descriptions on the bot token. Its Fetch L0 throws on a bad id; onError=continueRegularOutput here catches it -> Build Parents Result detects no current_task and WARNs. A task with NO parent legitimately returns ancestor_chain=[] (no WARN).",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "qgM37HdQj78Rn090",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "taskId": "={{ $('When Called').first().json.clickup_task_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "build-parents-result",
+      "name": "Build Parents Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        280
+      ],
+      "notes": "Shape Assemble Parent Context's ancestor_chain (general -> nearest) into a text block. Optional tool arg depth caps to the nearest N ancestors. No parent -> a clear 'no parents' answer (no WARN). WARN only when current_task is absent (the sub-call failed). new_warnings_json='[]' (self-alert).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet input = {}; try { input = JSON.parse(wc.tool_input_json || '{}') || {}; } catch (e) {}\nconst depth = Number(input.depth) > 0 ? Number(input.depth) : 0;\nlet ctx = {}; try { ctx = $('Call Assemble Parent Context').first().json || {}; } catch (e) {}\nlet chain = Array.isArray(ctx.ancestor_chain) ? ctx.ancestor_chain : null;\nlet ws = '', wm = '', wd = '';\nif (chain === null || !ctx.current_task) {\n  ws = 'managed-agents/tail-parents-failed';\n  wm = 'Pobranie kontekstu nadrzednego zadania ' + taskId + ' nie powiodlo sie (narzedzie get_parent_chain).';\n  wd = 'task=' + taskId;\n  chain = chain || [];\n}\nlet used = chain.slice().reverse();\nif (depth && used.length > depth) used = used.slice(used.length - depth);\nconst lines = [];\nif (used.length === 0) {\n  lines.push('Zadanie ' + taskId + ' nie ma zadan nadrzednych (brak lancucha rodzicow).');\n} else {\n  lines.push('Lancuch zadan nadrzednych zadania ' + taskId + ' (od najogolniejszego do najblizszego), ' + used.length + ' poziom(ow):');\n  for (const a of used) { lines.push(''); lines.push('## ' + ((a && a.name) || '(bez nazwy)')); if (a && a.description) lines.push(a.description); }\n}\nconst content = [{ type: 'text', text: lines.join('\\n') }];\nreturn [{ json: {\n  status: ws ? 'partial' : 'ok',\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: ws, _warn_msg: wm, _warn_details: wd\n} }];"
+      }
+    },
+    {
+      "id": "get-attachment-list",
+      "name": "Get Attachment List",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        480
+      ],
+      "notes": "list_attachments: bot GET /api/v2/task/{id} for ClickUp's NATIVE attachment index (id/title/extension/mimetype/size) — NO bytes, NO Docling (cheap metadata-first, ADR-061 decision #3). Same endpoint Read Input's Get Task uses. onError=continueRegularOutput + retry so a transient ClickUp blip degrades to a structured 'list failed' tool result + WARN instead of throwing into the session.",
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "build-attachments-result",
+      "name": "Build Attachments Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        460
+      ],
+      "notes": "Shape the task's attachments[] into a cheap index the agent reads to decide what to pull: one line per attachment with attachment_id, title, mime/ext, size. ADR-061 Block 2c: each ZIP attachment also nests its INNER manifest inline (indented), each inner file as attachment_id=\"<zip>:<idx>\" with name/type/size (route=drop entries flagged [POMINIETO]); the agent pulls ONE inner file via get_attachment(\"<zip>:<idx>\"). Manifests come from Fetch Zip Manifest (aligned by order with Build Zip Manifest Reqs[kind=zip]). No attachments -> legitimate empty (no WARN). WARN when the GET failed (no attachments array) OR a zip manifest failed (entries=null -> the zip is still listed plain, agent can pull the whole archive). new_warnings_json='[]' (self-alert via Should Warn?).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet task = {}; try { task = $('Get Attachment List').first().json || {}; } catch (e) {}\nlet atts = Array.isArray(task.attachments) ? task.attachments : null;\nlet ws = '', wm = '', wd = '';\nif (atts === null) {\n  ws = 'managed-agents/tail-attachments-failed';\n  wm = 'Pobranie listy zalacznikow zadania ' + taskId + ' nie powiodlo sie (narzedzie list_attachments).';\n  wd = 'task=' + taskId;\n  atts = [];\n}\nlet zipReqs = []; try { zipReqs = $('Build Zip Manifest Reqs').all().map(function(i){ return i.json; }).filter(function(r){ return r && r.kind === 'zip'; }); } catch (e) {}\nlet zipResps = []; try { zipResps = $('Fetch Zip Manifest').all().map(function(i){ return i.json; }); } catch (e) {}\nconst manifestByZip = {};\nlet zipFailed = 0;\nfor (let k = 0; k < zipReqs.length; k++) {\n  const resp = zipResps[k] || {};\n  const entries = Array.isArray(resp.entries) ? resp.entries : null;\n  manifestByZip[zipReqs[k].zip_att_id] = entries;\n  if (entries === null) zipFailed++;\n}\nif (zipFailed > 0 && !ws) {\n  ws = 'managed-agents/tail-zip-manifest-failed';\n  wm = 'Nie udalo sie odczytac zawartosci ' + zipFailed + ' archiwum ZIP zadania ' + taskId + ' (list_attachments); archiwum nadal mozna pobrac w calosci przez get_attachment.';\n  wd = 'task=' + taskId + '; zip_failed=' + zipFailed;\n}\nconst items = atts.map(function(a){ return { attachment_id: String((a && a.id) || ''), title: (a && a.title) || '', ext: String((a && a.extension) || '').toLowerCase(), mime: String((a && a.mimetype) || '').toLowerCase(), size_bytes: Number((a && a.size) || 0) }; });\nconst lines = [];\nlines.push('Zalaczniki zadania ' + taskId + ' (' + items.length + '):');\nif (items.length === 0) lines.push('(brak zalacznikow)');\nfor (const it of items) {\n  lines.push('- attachment_id=\"' + it.attachment_id + '\" | ' + (it.title || '(bez nazwy)') + ' | ' + (it.mime || it.ext || '?') + ' | ' + (it.size_bytes ? Math.round(it.size_bytes / 1024) + ' KB' : '? KB'));\n  const entries = manifestByZip[it.attachment_id];\n  if (entries === null) {\n    lines.push('    (nie udalo sie odczytac zawartosci archiwum - pobierz cale przez get_attachment z tym attachment_id)');\n  } else if (entries) {\n    if (entries.length === 0) lines.push('    (archiwum bez obslugiwanych plikow)');\n    for (const e of entries) {\n      const ref = e.att_id || (it.attachment_id + ':' + e.index);\n      const drop = e.route === 'drop' ? (' [POMINIETO: ' + (e.drop_reason || 'drop') + ']') : '';\n      lines.push('    - attachment_id=\"' + ref + '\" | ' + (e.name || '(bez nazwy)') + ' | ' + (e.mime || e.ext || '?') + ' | ' + (e.size ? Math.round(e.size / 1024) + ' KB' : '? KB') + drop);\n    }\n  }\n}\nlines.push('');\nlines.push('Aby pobrac TRESC konkretnego zalacznika (dokument -> tekst, obraz -> wizja), wywolaj get_attachment z { attachment_id } z powyzszej listy. Pliki WEWNATRZ archiwum ZIP maja zagniezdzony attachment_id w formacie \"<zip>:<indeks>\" - podaj go do get_attachment, aby pobrac pojedynczy plik z archiwum (nie cale archiwum).');\nconst content = [{ type: 'text', text: lines.join('\\n') }];\nreturn [{ json: {\n  status: ws ? 'partial' : (items.length ? 'ok' : 'empty'),\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: ws, _warn_msg: wm, _warn_details: wd\n} }];"
+      }
+    },
+    {
+      "id": "build-read-args",
+      "name": "Build Read Input Args",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        660
+      ],
+      "notes": "get_attachment: parse attachment_id from the agent's tool_input_json and emit { clickup_task_id, only_att_id } for Read Input single-attachment mode. _missing_id guards the Has Att Id? branch: an EMPTY only_att_id must NOT reach Read Input (empty = no filter = extract ALL attachments), so a missing id routes to Build Missing Id Result instead.",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet input = {}; try { input = JSON.parse(wc.tool_input_json || '{}') || {}; } catch (e) {}\nconst onlyAttId = String(input.attachment_id || input.att_id || '').trim();\nreturn [{ json: { clickup_task_id: taskId, only_att_id: onlyAttId, _missing_id: !onlyAttId } }];"
+      }
+    },
+    {
+      "id": "has-att-id",
+      "name": "Has Att Id?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        740,
+        660
+      ],
+      "notes": "TRUE: attachment_id present -> Read Input (single) extracts that ONE attachment. FALSE: no id -> Build Missing Id Result guides the agent to list_attachments first (and does NOT extract everything).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-has-id",
+              "leftValue": "={{ $json.only_att_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "call-read-input",
+      "name": "Call Read Input (single)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        960,
+        600
+      ],
+      "notes": "get_attachment: Read Input (v1) (zgGpONulGMohQQqI) on the BOT token (no as_user_token) with only_att_id set -> its Explode Attachments filters to that ONE attachment (ADR-061 Block 0 single-attachment mode). Returns { blocks, clickup_task_id, warnings } for just that attachment (Docling text for docs; an image block for images). No match -> the no-attachment passthrough -> blocks=[] -> Build Attachment Result answers 'not found' + WARN. onError=continueRegularOutput so an extraction failure degrades, never throws.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "zgGpONulGMohQQqI",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "only_att_id": "={{ $json.only_att_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "upload-tail-images",
+      "name": "Upload Tail Images",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1180,
+        600
+      ],
+      "notes": "If the pulled attachment is an IMAGE, upload it to the Files API via Upload Input Images (v1) (2VkZN5UeqVk6MDLW) so the agent SEES it as a vision block (file_id), mirroring the extract handler. input_images_json = Read Input's image-typed blocks. onError=continueRegularOutput so an upload failure degrades to a text marker per image (Build Attachment Result), never throws. For a document (no image blocks) Upload returns an empty file_map and this is a no-op.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "2VkZN5UeqVk6MDLW",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "input_images_json": "={{ JSON.stringify((((($('Call Read Input (single)').first()||{}).json||{}).blocks)||[]).filter(function(b){ return b && b.type === 'image' && ['image/png','image/jpeg','image/jpg','image/gif','image/webp'].indexOf(String(b.mime||'').toLowerCase()) >= 0; })) }}",
+            "clickup_task_id": "={{ $('When Called').first().json.clickup_task_id }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "build-attachment-result",
+      "name": "Build Attachment Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        600
+      ],
+      "notes": "Mirror of the extract handler's Build Extract Result (bot path, no as-U denial): blocks sorted by order -> text verbatim (incl. [BRAK..] markers) + image blocks resolved to {type:image,source:{type:file,file_id}} from the upload file_map (a failed upload -> a text marker). Empty (id not found / extraction empty) -> a clear 'not found, check list_attachments' result + WARN. [BRAK markers or failed images -> partial + WARN. new_warnings_json='[]' (self-alert); new_images_json='[]' (a pulled image is CONSUMED by the agent, not a produced output file).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet argsId = ''; try { argsId = $('Build Read Input Args').first().json.only_att_id || ''; } catch (e) {}\nconst ri = (($('Call Read Input (single)').first() || {}).json) || {};\nconst blocks = Array.isArray(ri.blocks) ? ri.blocks : [];\nconst up = (($('Upload Tail Images').first() || {}).json) || {};\nconst fileMap = Array.isArray(up.file_map) ? up.file_map : [];\nconst fileById = {};\nfor (const f of fileMap) { if (f && f.file_id) { if (f.order != null) fileById['o:' + f.order] = f.file_id; if (f.source_ref != null) fileById['s:' + f.source_ref] = f.file_id; if (f.url) fileById['r:' + f.url] = f.file_id; } }\nconst sorted = blocks.slice().sort(function(a, b){ return ((a && a.order) || 0) - ((b && b.order) || 0); });\nconst body = [];\nlet docCount = 0, imgCount = 0, imgFailed = 0, brak = 0;\nfor (const b of sorted) {\n  if (!b) continue;\n  if (b.type === 'text') { const md = b.md || ''; if (md) { body.push({ type: 'text', text: md }); if (md.indexOf('[BRAK') === 0) brak++; else docCount++; } }\n  else if (b.type === 'image') { const fid = fileById['o:' + b.order] || (b.source_ref != null ? fileById['s:' + b.source_ref] : null) || (b.ref ? fileById['r:' + b.ref] : null); if (fid) { body.push({ type: 'image', source: { type: 'file', file_id: fid } }); imgCount++; } else { imgFailed++; body.push({ type: 'text', text: '[obraz niedostepny: ' + (b.alt || b.source_ref || '') + ']' }); } }\n}\nconst found = body.length > 0;\nlet ws = '', wm = '', wd = '';\nif (!found) {\n  ws = 'managed-agents/tail-attachment-empty';\n  wm = 'Zalacznik ' + argsId + ' zadania ' + taskId + ' nie zwrocil tresci (get_attachment) - byc moze nie istnieje lub ekstrakcja zawiodla.';\n  wd = 'task=' + taskId + '; attachment=' + argsId;\n} else if (imgFailed > 0 || brak > 0) {\n  ws = 'managed-agents/tail-attachment-partial';\n  wm = 'Ekstrakcja zalacznika ' + argsId + ' zadania ' + taskId + ' czesciowa (get_attachment).';\n  wd = 'task=' + taskId + '; attachment=' + argsId + '; brak=' + brak + '; obrazy_niepobrane=' + imgFailed;\n}\nconst header = found\n  ? ('Tresc zalacznika ' + argsId + ' zadania ' + taskId + ': ' + docCount + ' dok., ' + imgCount + ' obr.' + (imgFailed ? (' (' + imgFailed + ' obr. nie pobrano)') : ''))\n  : ('Nie znaleziono tresci zalacznika ' + argsId + ' w zadaniu ' + taskId + '. Sprawdz attachment_id przez list_attachments.');\nconst content = [{ type: 'text', text: header }].concat(body);\nreturn [{ json: {\n  status: found ? ((imgFailed || brak) ? 'partial' : 'ok') : 'empty',\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: ws, _warn_msg: wm, _warn_details: wd\n} }];"
+      }
+    },
+    {
+      "id": "build-missing-id",
+      "name": "Build Missing Id Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        760
+      ],
+      "notes": "get_attachment called with no attachment_id: answer the agent with guidance (call list_attachments first) so the session resumes. This is the AGENT's input error, not a system failure -> NO WARN (avoid channel noise).",
+      "parameters": {
+        "jsCode": "const content = [{ type: 'text', text: 'Narzedzie get_attachment wymaga parametru attachment_id. Najpierw wywolaj list_attachments, aby poznac attachment_id zalacznikow tego zadania, a nastepnie wywolaj get_attachment z wybranym attachment_id.' }];\nreturn [{ json: {\n  status: 'error',\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: '', _warn_msg: '', _warn_details: ''\n} }];"
+      }
+    },
+    {
+      "id": "build-unknown",
+      "name": "Build Unknown Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        860
+      ],
+      "notes": "Defensive fallback: an unknown tool_name (Execute Agent Session only routes the 4 known names, so reaching here is a routing bug). Answer the agent 'not supported' so the session never stalls, and WARN (this should never fire in normal operation).",
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst name = wc.tool_name || 'unknown';\nconst content = [{ type: 'text', text: 'Narzedzie \"' + name + '\" nie jest obslugiwane przez ten handler. Pracuj na podstawie dostepnego kontekstu.' }];\nreturn [{ json: {\n  status: 'error',\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: 'managed-agents/tail-unknown-tool', _warn_msg: 'Tail handler otrzymal nieznane narzedzie: ' + name, _warn_details: 'tool=' + name\n} }];"
+      }
+    },
+    {
+      "id": "merge-result",
+      "name": "Merge Result",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1700,
+        400
+      ],
+      "notes": "Converge the five mutually-exclusive branches (0 comments, 1 parents, 2 attachments, 3 get_attachment-ok, 4 errors=missing-id+unknown) into ONE stream. Append; exactly one branch executes per call. Return re-reads this node so the contract is deterministic (branch-free terminal rule).",
+      "parameters": {
+        "numberInputs": 6
+      }
+    },
+    {
+      "id": "should-warn",
+      "name": "Should Warn?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1920,
+        400
+      ],
+      "notes": "Side branch off the canonical result: TRUE when a Build node set _warn_source (a real handler failure mode: comments/parents/attachments/extraction failure, or unknown tool). TRUE -> Post Alert (one WARN). FALSE -> straight to Merge Tail. Both rejoin at Merge Tail -> Return; Return re-reads Merge Result so the alert side-trip can't corrupt the returned contract (mirrors Execute Agent Session).",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-warn",
+              "leftValue": "={{ $json._warn_source }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "post-alert",
+      "name": "Post Alert",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        2140,
+        280
+      ],
+      "notes": "Centralized Post Alert (v1) seam (ADR-025, YSCdHlmdf3p9XEUx) — WARN, never post to ClickUp directly. Fires on the handler's own failure modes (the reused Assemble Task Context fires its OWN comment/reply alerts separately). onError=continueRegularOutput so an alert-channel hiccup never breaks the handler return. No loop risk: trigger is executeWorkflow (the session), not a webhook watching the Alerts task.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YSCdHlmdf3p9XEUx",
+          "mode": "list"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "={{ $json._warn_source }}",
+            "message": "={{ $json._warn_msg }}",
+            "details": "={{ $json._warn_details }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "merge-tail",
+      "name": "Merge Tail",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2360,
+        400
+      ],
+      "notes": "Rejoin the alerted (input 0) and not-alerted (input 1) paths into the single terminal input. Append; exactly one executes.",
+      "parameters": {
+        "numberInputs": 2
+      }
+    },
+    {
+      "id": "return",
+      "name": "Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2580,
+        400
+      ],
+      "notes": "SOLE TERMINAL. Re-reads Merge Result's first item (the canonical result, NOT Merge Tail's direct input which Post Alert would have replaced — research-the-web return-determinism idiom) and returns the clean handler contract { status, tool_result_content_json, new_images_json, new_warnings_json } that Execute Agent Session's Build Tail Result Text consumes. Internal _warn_* fields are dropped here.",
+      "parameters": {
+        "jsCode": "const r = ($('Merge Result').first() || {}).json || {};\nreturn [{ json: {\n  status: r.status || 'ok',\n  tool_result_content_json: r.tool_result_content_json || JSON.stringify([{ type: 'text', text: 'Brak wyniku narzedzia.' }]),\n  new_images_json: r.new_images_json || '[]',\n  new_warnings_json: r.new_warnings_json || '[]'\n} }];"
+      }
+    },
+    {
+      "id": "808646e8-1aea-42ac-8717-e0f3234be774",
+      "name": "Build Zip Manifest Reqs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        460
+      ],
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet caps = { max_entries: 50, max_file_mb: 25, max_total_mb: 250 };\ntry { const cfg = $('Lookup Zip Caps (Tail)').first().json || {}; caps = { max_entries: Number(cfg.zip_max_entries) || 50, max_file_mb: Number(cfg.zip_max_file_mb) || 25, max_total_mb: Number(cfg.zip_max_total_uncompressed_mb) || 250 }; } catch (e) {}\nlet task = {}; try { task = $('Get Attachment List').first().json || {}; } catch (e) {}\nconst atts = Array.isArray(task.attachments) ? task.attachments : [];\nconst isZip = function(a){ const e = String((a && a.extension) || '').toLowerCase(); const m = String((a && a.mimetype) || '').toLowerCase(); return e === 'zip' || m === 'application/zip' || m === 'application/x-zip-compressed'; };\nconst out = [];\nfor (const a of atts) {\n  if (!isZip(a)) continue;\n  out.push({ json: { kind: 'zip', zip_att_id: String((a && a.id) || ''), url: (a && (a.url || a.url_w_query)) || '', title: (a && a.title) || 'archive.zip', task_id: taskId, caps: caps } });\n}\nif (out.length === 0) out.push({ json: { kind: 'none', task_id: taskId } });\nreturn out;"
+      },
+      "notes": "ADR-061 Block 2c: emit one item per ZIP attachment of the triggering task ({kind:'zip', zip_att_id, url, title, task_id}) so Fetch Zip Manifest can pull each archive's INNER manifest (cheap, no extraction). No zips -> a single {kind:'none'} sentinel so the chain still reaches Build Attachments Result (a 0-item Code node would skip everything downstream). Reads the same attachment index Get Attachment List fetched."
+    },
+    {
+      "id": "c5460671-2936-4311-9b70-2cdbfd3ee215",
+      "name": "Is Zip Req?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        900,
+        460
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c-is-zip-req",
+              "leftValue": "={{ $json.kind }}",
+              "rightValue": "zip",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "notes": "TRUE (kind=zip) -> Fetch Zip Manifest pulls that archive's inner manifest. FALSE (the kind='none' sentinel, no zips) -> straight to Merge Manifests so Build Attachments Result still runs. Exactly one branch fires per item; with >=1 zip only TRUE fires (N items), with 0 zips only FALSE fires (1 sentinel)."
+    },
+    {
+      "id": "97d22bfe-7bd9-4232-9793-7b600f1201a6",
+      "name": "Fetch Zip Manifest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        380
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://zip-extractor:8080/extract",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $json.url, task_id: $json.task_id, attachment_id: $json.zip_att_id, parent_title: $json.title, manifest_only: true, caps: $json.caps }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "notes": "ADR-061 Block 2c: POST the zip's pre-signed ClickUp url to the zip-extractor in MANIFEST mode (manifest_only:true) -> central-directory walk only: names/sizes/types/routes + <zip>:<idx> att_ids, NO byte read / upload / sign. Runs once per zip item. Caps omitted -> service defaults (50/25/250) which equal config; entry indices are cap-independent so they still align with get_attachment's single-entry materialize. onError continueRegularOutput + retry: a manifest failure degrades to no entries (Build Attachments Result lists the zip plain + WARNs), never throws.",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "b144cbc5-2fcd-4129-a420-27121ad7624e",
+      "name": "Merge Manifests",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1300,
+        460
+      ],
+      "parameters": {
+        "numberInputs": 2
+      },
+      "notes": "ADR-061 Block 2c: rejoin the zip branch (input 0, Fetch Zip Manifest) and the no-zip branch (input 1, Is Zip Req? false) into ONE input for Build Attachments Result (a Code node with two incoming connections would run once per connection). Append; exactly one input fires per run (mirrors Merge Result)."
+    },
+    {
+      "id": "0812bdd5-1d60-4558-b311-b0381252f512",
+      "name": "Lookup Zip Caps (Tail)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        500,
+        620
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select\n  max(value::int) filter (where key = 'zip_max_entries')               as zip_max_entries,\n  max(value::int) filter (where key = 'zip_max_file_mb')               as zip_max_file_mb,\n  max(value::int) filter (where key = 'zip_max_total_uncompressed_mb') as zip_max_total_uncompressed_mb\nfrom config;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "EjK3iACTbSNRDhVz",
+          "name": "Postgres / supabase connection"
+        }
+      },
+      "notes": "ADR-061 Block 2c follow-on: read the LIVE zip caps from config so list_attachments' manifest-mode extractor call uses the SAME caps as get_attachment's single-entry materialize (Read Input's Zip Caps). Chained LINEARLY before Build Zip Manifest Reqs so it always executes first (avoids the unexecuted-node race that bit Read Input's parallel Lookup). onError continueRegularOutput + alwaysOutputData so a DB blip degrades to defaults 50/25/250 (Build Zip Manifest Reqs falls back) instead of failing list_attachments.",
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "6b9cdffc-f9c2-4542-9a04-5d7029d53487",
+      "name": "Get Task Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        1040
+      ],
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('When Called').first().json.clickup_task_id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {}
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      },
+      "notes": "get_task_details: bot GET /api/v2/task/{id} for the TRIGGERING task's own title + description + status (ADR-061 Block 2c follow-on — the managed floor no longer loads the description eagerly; the agent pulls it here when the request needs the task spec). Same endpoint as Get Attachment List. onError continueRegularOutput + retry so a ClickUp blip degrades to a 'details failed' result + WARN instead of throwing into the session.",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "5bffcf88-8334-407b-a892-72a9ac71733c",
+      "name": "Build Details Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        1040
+      ],
+      "parameters": {
+        "jsCode": "const wc = $('When Called').first().json || {};\nconst taskId = wc.clickup_task_id || '';\nlet task = {}; try { task = $('Get Task Details').first().json || {}; } catch (e) {}\nconst hasTask = !!(task && (task.id || task.name));\nlet ws = '', wm = '', wd = '';\nif (!hasTask) {\n  ws = 'managed-agents/tail-details-failed';\n  wm = 'Pobranie szczegolow zadania ' + taskId + ' nie powiodlo sie (narzedzie get_task_details).';\n  wd = 'task=' + taskId;\n}\nconst name = (task && task.name) || '';\nconst desc = (task && (task.markdown_description || task.description || task.text_content)) || '';\nconst status = (task && task.status && (task.status.status || task.status)) || '';\nconst lines = [];\nlines.push('Szczegoly zadania ' + taskId + ':');\nlines.push('Tytul: ' + (name || '(bez nazwy)'));\nif (status) lines.push('Status: ' + status);\nlines.push('');\nlines.push('Opis zadania:');\nlines.push(desc ? desc : '(brak opisu)');\nconst content = [{ type: 'text', text: lines.join('\\n') }];\nreturn [{ json: {\n  status: ws ? 'partial' : 'ok',\n  tool_result_content_json: JSON.stringify(content),\n  new_images_json: '[]',\n  new_warnings_json: '[]',\n  _warn_source: ws, _warn_msg: wm, _warn_details: wd\n} }];"
+      },
+      "notes": "Shape the triggering task's title + description (markdown_description preferred) + status into a user.custom_tool_result text block. The managed floor lists only the title and a 'call get_task_details for the spec' hint, so this is where the agent actually reads the description. WARN only when the GET failed (no task object). new_warnings_json='[]' (self-alert via Should Warn?)."
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Route Tool",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Tool": {
+      "main": [
+        [
+          {
+            "node": "Call Assemble Task Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call Assemble Parent Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Attachment List",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Read Input Args",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Task Details",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Unknown Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Assemble Task Context": {
+      "main": [
+        [
+          {
+            "node": "Build Comments Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Comments Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Assemble Parent Context": {
+      "main": [
+        [
+          {
+            "node": "Build Parents Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Parents Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Build Attachments Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Build Read Input Args": {
+      "main": [
+        [
+          {
+            "node": "Has Att Id?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Att Id?": {
+      "main": [
+        [
+          {
+            "node": "Call Read Input (single)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Missing Id Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Read Input (single)": {
+      "main": [
+        [
+          {
+            "node": "Upload Tail Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Tail Images": {
+      "main": [
+        [
+          {
+            "node": "Build Attachment Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Attachment Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Build Missing Id Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Build Unknown Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Merge Result": {
+      "main": [
+        [
+          {
+            "node": "Should Warn?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Warn?": {
+      "main": [
+        [
+          {
+            "node": "Post Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Tail",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Post Alert": {
+      "main": [
+        [
+          {
+            "node": "Merge Tail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Tail": {
+      "main": [
+        [
+          {
+            "node": "Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Zip Manifest Reqs": {
+      "main": [
+        [
+          {
+            "node": "Is Zip Req?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Zip Req?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Zip Manifest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Manifests",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Fetch Zip Manifest": {
+      "main": [
+        [
+          {
+            "node": "Merge Manifests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Manifests": {
+      "main": [
+        [
+          {
+            "node": "Build Attachments Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Attachment List": {
+      "main": [
+        [
+          {
+            "node": "Lookup Zip Caps (Tail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Zip Caps (Tail)": {
+      "main": [
+        [
+          {
+            "node": "Build Zip Manifest Reqs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Task Details": {
+      "main": [
+        [
+          {
+            "node": "Build Details Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Details Result": {
+      "main": [
+        [
+          {
+            "node": "Merge Result",
+            "type": "main",
+            "index": 5
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "timezone": "Europe/Warsaw",
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "457607bd-c392-47f5-8dd2-3d074dcfdb1d",
+  "activeVersionId": "457607bd-c392-47f5-8dd2-3d074dcfdb1d",
+  "versionCounter": 5,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-25T11:38:13.026Z",
+      "createdAt": "2026-06-25T11:38:13.026Z",
+      "role": "workflow:owner",
+      "workflowId": "Ouo0BlYOw92DUXIh",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

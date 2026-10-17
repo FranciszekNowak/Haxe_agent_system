@@ -1,0 +1,119 @@
+{
+  "updatedAt": "2026-06-03T11:53:45.630Z",
+  "createdAt": "2026-06-03T11:52:36.975Z",
+  "id": "YSCdHlmdf3p9XEUx",
+  "name": "Post Alert (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "exec-trigger",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "severity",
+              "type": "string"
+            },
+            {
+              "name": "source",
+              "type": "string"
+            },
+            {
+              "name": "message",
+              "type": "string"
+            },
+            {
+              "name": "details",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "post-comment",
+      "name": "Post to Alerts Task",
+      "type": "n8n-nodes-base.clickUp",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ],
+      "notes": "Centralized alert seam (ADR-025). Posts to the Alerts & Health task (869dj2z2c) and notifies watchers/assignee. To add email/Slack later, add a node here — single place.",
+      "parameters": {
+        "authentication": "accessToken",
+        "resource": "comment",
+        "operation": "create",
+        "commentOn": "task",
+        "id": "869dj2z2c",
+        "commentText": "=**[{{ $json.severity }}] {{ $json.source }}**\n{{ $json.message }}\n\n{{ $json.details }}",
+        "additionalFields": {
+          "notifyAll": true
+        }
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "QRrgf6hteyGWSJyv",
+          "name": "ClickUp account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Post to Alerts Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "d73c0a98-a5fb-4f29-bba6-a6e40c9f786b",
+  "activeVersionId": "d73c0a98-a5fb-4f29-bba6-a6e40c9f786b",
+  "versionCounter": 1,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-03T11:52:36.975Z",
+      "createdAt": "2026-06-03T11:52:36.975Z",
+      "role": "workflow:owner",
+      "workflowId": "YSCdHlmdf3p9XEUx",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

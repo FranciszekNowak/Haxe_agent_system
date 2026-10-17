@@ -1,0 +1,549 @@
+{
+  "updatedAt": "2026-06-13T15:01:19.974Z",
+  "createdAt": "2026-06-09T10:24:04.089Z",
+  "id": "BdZ9Chhqs691Ljlk",
+  "name": "Research the web (v1)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "when-called",
+      "name": "When Called",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "litellm_model"
+            },
+            {
+              "name": "messages"
+            },
+            {
+              "name": "max_tokens",
+              "type": "number"
+            },
+            {
+              "name": "temperature"
+            },
+            {
+              "name": "depth",
+              "type": "number"
+            },
+            {
+              "name": "max_depth",
+              "type": "number"
+            },
+            {
+              "name": "acc_in",
+              "type": "number"
+            },
+            {
+              "name": "acc_out",
+              "type": "number"
+            },
+            {
+              "name": "acc_usd",
+              "type": "number"
+            },
+            {
+              "name": "acc_searches",
+              "type": "number"
+            },
+            {
+              "name": "sources"
+            },
+            {
+              "name": "tavily_max_results",
+              "type": "number"
+            },
+            {
+              "name": "calls"
+            },
+            {
+              "name": "clickup_task_id"
+            },
+            {
+              "name": "caller_user_id"
+            },
+            {
+              "name": "process_type"
+            },
+            {
+              "name": "triggered_by"
+            },
+            {
+              "name": "invocation_type"
+            },
+            {
+              "name": "impact"
+            },
+            {
+              "name": "fallback_model"
+            },
+            {
+              "name": "acc_fell_back"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "prep-request",
+      "name": "Prep Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const t = $json;\nlet messages = [];\ntry { messages = JSON.parse(t.messages || '[]'); } catch (e) {}\nconst body = { model: t.litellm_model, max_tokens: Number(t.max_tokens) || 4000, messages: messages };\nbody.tools = [{ name: 'web_search', description: 'Wyszukaj w internecie aktualne informacje (ceny, biezace wydarzenia, specyfikacje, swieze fakty). Uzyj, gdy potrzebujesz danych spoza swojej wiedzy. Wykonaj wszystkie potrzebne zapytania w jednej turze, a nastepnie odpowiedz.', input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Zapytanie do wyszukiwarki' } }, required: ['query'] } }];\nconst temp = t.temperature;\nif (temp !== null && temp !== '' && temp !== undefined) { body.temperature = Number(temp); }\nreturn [{ json: { body: body } }];"
+      }
+    },
+    {
+      "id": "parse-turn",
+      "name": "Parse Turn",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const trig = $('When Called').first().json;\nconst resp = $('Call Messages').first().json || {};\nconst body = resp.body || {};\nconst headers = resp.headers || {};\nconst served = (resp.model_used != null && String(resp.model_used).trim() !== '') ? String(resp.model_used).trim() : trig.litellm_model;\nconst fell_back_round = (resp.fell_back === true || resp.fell_back === 'true');\nconst usage = body.usage || {};\nconst inTok = Number(usage.input_tokens || 0);\nconst outTok = Number(usage.output_tokens || 0);\nconst ch = (headers['x-litellm-response-cost'] != null && headers['x-litellm-response-cost'] !== '') ? headers['x-litellm-response-cost'] : headers['x-litellm-response-cost-original'];\nconst usd = (ch != null && ch !== '') ? Number(ch) : 0;\nconst content = Array.isArray(body.content) ? body.content : [];\nlet text = '';\nconst queries = [];\nfor (const b of content) {\n  if (b && b.type === 'text' && b.text) { text += b.text; }\n  else if (b && b.type === 'tool_use' && b.name === 'web_search') { queries.push({ tool_use_id: b.id, query: (b.input && b.input.query) || '' }); }\n}\nconst depth = Number(trig.depth || 0);\nconst maxDepth = Number(trig.max_depth || 5);\nconst stop = body.stop_reason || '';\nconst acc_in = Number(trig.acc_in || 0) + inTok;\nconst acc_out = Number(trig.acc_out || 0) + outTok;\nconst acc_usd = Number(trig.acc_usd || 0) + usd;\nconst acc_searches = Number(trig.acc_searches || 0);\nconst acc_fell_back = (trig.acc_fell_back === true || trig.acc_fell_back === 'true') || fell_back_round;\nlet prevSources = []; try { prevSources = JSON.parse(trig.sources || '[]'); } catch (e) {}\nlet prevMessages = []; try { prevMessages = JSON.parse(trig.messages || '[]'); } catch (e) {}\nlet prevCalls = []; try { prevCalls = JSON.parse(trig.calls || '[]'); } catch (e) {}\nprevCalls = prevCalls.concat([{ call_type: 'research_round', model_used: served, input_tokens: inTok, output_tokens: outTok, usd_cost: usd }]);\nconst needs_search = stop === 'tool_use' && queries.length > 0 && depth < maxDepth;\nconst capped = stop === 'tool_use' && queries.length > 0 && depth >= maxDepth;\nreturn [{ json: { needs_search: needs_search, capped: capped, text: text, stop: stop, queries: queries, assistant_content: content, depth: depth, maxDepth: maxDepth, acc_in: acc_in, acc_out: acc_out, acc_usd: acc_usd, acc_searches: acc_searches, acc_fell_back: acc_fell_back, prevSources: prevSources, prevMessages: prevMessages, prevCalls: prevCalls, litellm_model: trig.litellm_model, fallback_model: trig.fallback_model, max_tokens: trig.max_tokens, temperature: trig.temperature, tavily_max_results: trig.tavily_max_results, clickup_task_id: trig.clickup_task_id, caller_user_id: trig.caller_user_id, process_type: trig.process_type, triggered_by: trig.triggered_by, invocation_type: trig.invocation_type, impact: trig.impact } }];"
+      }
+    },
+    {
+      "id": "needs-search",
+      "name": "Needs Search?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.needs_search }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "emit-queries",
+      "name": "Emit Queries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        180
+      ],
+      "parameters": {
+        "jsCode": "const q = $json.queries || [];\nreturn q.map(function (x) { return { json: { tool_use_id: x.tool_use_id, query: x.query } }; });"
+      }
+    },
+    {
+      "id": "call-search",
+      "name": "Call Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        180
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://litellm:4000/v1/search/haxe-web-search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query: $json.query, max_results: ($('Parse Turn').first().json.tavily_max_results || 5) }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "396fqTZqWdFosVpT",
+          "name": "LiteLLM master key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "build-next",
+      "name": "Build Next",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        180
+      ],
+      "parameters": {
+        "jsCode": "const pt = $('Parse Turn').first().json;\nconst emits = $('Emit Queries').all();\nconst searches = $input.all();\nconst NL = String.fromCharCode(10);\nconst toolResults = [];\nconst newSources = (pt.prevSources || []).slice();\nconst seen = {};\nfor (const s of newSources) { if (s && s.url) seen[s.url] = true; }\nconst searchCalls = [];\nlet searchUsd = 0;\nfor (let i = 0; i < emits.length; i++) {\n  const tuid = emits[i].json.tool_use_id;\n  let results = [];\n  let scost = 0;\n  try {\n    const it = (searches[i] && searches[i].json) ? searches[i].json : {};\n    const bodyR = it.body || it;\n    results = (bodyR && bodyR.results) || [];\n    const hh = it.headers || {};\n    const hc = (hh['x-litellm-response-cost'] != null && hh['x-litellm-response-cost'] !== '') ? hh['x-litellm-response-cost'] : hh['x-litellm-response-cost-original'];\n    if (hc != null && hc !== '') scost = Number(hc);\n  } catch (e) {}\n  let txt = '';\n  for (const r of results) {\n    txt += '- ' + (r.title || '') + ' (' + (r.url || '') + ')' + NL + (r.snippet || '') + NL + NL;\n    if (r && r.url && !seen[r.url]) { seen[r.url] = true; newSources.push({ url: r.url, title: r.title || r.url }); }\n  }\n  if (!txt) { txt = 'Brak wynikow.'; }\n  toolResults.push({ type: 'tool_result', tool_use_id: tuid, content: txt });\n  searchCalls.push({ call_type: 'web_search', model_used: 'tavily', input_tokens: 0, output_tokens: 0, usd_cost: scost });\n  searchUsd += scost;\n}\nconst messages2 = (pt.prevMessages || []).slice();\nmessages2.push({ role: 'assistant', content: pt.assistant_content });\nmessages2.push({ role: 'user', content: toolResults });\nconst newCalls = (pt.prevCalls || []).concat(searchCalls);\nreturn [{ json: { litellm_model: pt.litellm_model, messages: JSON.stringify(messages2), max_tokens: pt.max_tokens, temperature: pt.temperature, tavily_max_results: pt.tavily_max_results, depth: (pt.depth || 0) + 1, max_depth: pt.maxDepth, acc_in: pt.acc_in, acc_out: pt.acc_out, acc_usd: (Number(pt.acc_usd || 0) + searchUsd), acc_searches: (pt.acc_searches || 0) + emits.length, sources: JSON.stringify(newSources), calls: JSON.stringify(newCalls), clickup_task_id: pt.clickup_task_id, caller_user_id: pt.caller_user_id, process_type: pt.process_type, triggered_by: pt.triggered_by, invocation_type: pt.invocation_type, impact: pt.impact, fallback_model: pt.fallback_model, acc_fell_back: pt.acc_fell_back } }];"
+      }
+    },
+    {
+      "id": "recurse",
+      "name": "Recurse",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1760,
+        180
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "BdZ9Chhqs691Ljlk",
+          "mode": "list",
+          "cachedResultName": "Research the web (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "litellm_model": "={{ $json.litellm_model }}",
+            "messages": "={{ $json.messages }}",
+            "max_tokens": "={{ $json.max_tokens }}",
+            "temperature": "={{ $json.temperature }}",
+            "depth": "={{ $json.depth }}",
+            "max_depth": "={{ $json.max_depth }}",
+            "acc_in": "={{ $json.acc_in }}",
+            "acc_out": "={{ $json.acc_out }}",
+            "acc_usd": "={{ $json.acc_usd }}",
+            "acc_searches": "={{ $json.acc_searches }}",
+            "sources": "={{ $json.sources }}",
+            "tavily_max_results": "={{ $json.tavily_max_results }}",
+            "calls": "={{ $json.calls }}",
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "impact": "={{ $json.impact }}",
+            "fallback_model": "={{ $json.fallback_model }}",
+            "acc_fell_back": "={{ $json.acc_fell_back }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "build-final",
+      "name": "Build Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const j = $json;\nconst NL = String.fromCharCode(10);\nlet completion = j.text || '';\nlet web_search_error = false;\nlet web_search_error_code = '';\nconst srcs = j.prevSources || [];\nif (!completion) {\n  if (j.capped) { web_search_error = true; web_search_error_code = 'max_rounds_reached'; completion = 'Agent wykonal maksymalna liczbe rund wyszukiwania, ale nie sformulowal pelnej odpowiedzi. Zawez pytanie lub popros o ponowna probe.'; }\n  else if (j.acc_searches > 0 || srcs.length) { web_search_error = true; web_search_error_code = 'no_final_text'; completion = 'Wyszukiwanie zakonczone, ale model nie zwrocil odpowiedzi tekstowej.'; }\n  if (srcs.length) { completion += NL + NL + 'Znalezione zrodla:' + NL + srcs.map(function (s, i) { return (i + 1) + '. [' + (s.title || s.url) + '](' + s.url + ')'; }).join(NL); }\n}\nreturn [{ json: { completion: completion, sources: srcs, web_search_used: (j.acc_searches > 0) || (srcs.length > 0), web_search_error: web_search_error, web_search_error_code: web_search_error_code, input_tokens: j.acc_in, output_tokens: j.acc_out, usd_cost: j.acc_usd, searches: j.acc_searches, rounds: j.depth, fell_back: (j.acc_fell_back === true || j.acc_fell_back === 'true'), calls: (j.prevCalls || []) } }];"
+      }
+    },
+    {
+      "id": "emit-research-calls",
+      "name": "Emit Research Calls",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const bf = $('Build Final').first().json;\nconst ctx = $('When Called').first().json;\nconst calls = Array.isArray(bf.calls) ? bf.calls : [];\nif (!calls.length) { return [{ json: { __noop: true } }]; }\nreturn calls.map(function (c) { return { json: {\n  clickup_task_id: ctx.clickup_task_id || null,\n  caller_user_id: ctx.caller_user_id || null,\n  process_type: ctx.process_type || null,\n  triggered_by: 'search_step',\n  invocation_type: ctx.invocation_type || 'explicit',\n  impact: ctx.impact || null,\n  model_used: c.model_used || null,\n  input_tokens: (c.input_tokens != null) ? c.input_tokens : null,\n  output_tokens: (c.output_tokens != null) ? c.output_tokens : null,\n  usd_cost: (c.usd_cost != null) ? c.usd_cost : null\n} }; });"
+      }
+    },
+    {
+      "id": "call-log-model-run",
+      "name": "Call Log Model Run",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1540,
+        420
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "ztSIUkp9ytbG1xpE",
+          "mode": "list",
+          "cachedResultName": "Log Model Run (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "clickup_task_id": "={{ $json.clickup_task_id }}",
+            "caller_user_id": "={{ $json.caller_user_id }}",
+            "process_type": "={{ $json.process_type }}",
+            "triggered_by": "={{ $json.triggered_by }}",
+            "invocation_type": "={{ $json.invocation_type }}",
+            "model_used": "={{ $json.model_used }}",
+            "impact": "={{ $json.impact }}",
+            "input_tokens": "={{ $json.input_tokens }}",
+            "output_tokens": "={{ $json.output_tokens }}",
+            "usd_cost": "={{ $json.usd_cost }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput",
+      "notes": "ADR-035: Research the web self-logs its ledger (research_round + tavily rows) at the leaf turn. usd_cost from response headers; Log Model Run owns FX/PLN."
+    },
+    {
+      "id": "final-return",
+      "name": "Final Return",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        420
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: $('Build Final').first().json }];"
+      }
+    },
+    {
+      "id": "fd84ad01-9dd8-4a5e-a48b-ea5e0c795075",
+      "name": "Call Messages",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "jBqu7znBIOMBF9HI",
+          "mode": "list",
+          "cachedResultName": "Call Model with Fallback (v1)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "endpoint_url": "http://litellm:4000/v1/messages",
+            "request_body": "={{ JSON.stringify($json.body) }}",
+            "fallback_model": "={{ $('When Called').first().json.fallback_model }}",
+            "extra_headers": "{\"anthropic-version\":\"2023-06-01\"}",
+            "success_path": ""
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "notes": "ADR-047: calls the shared fallback seam (Call Model with Fallback v1) on /v1/messages. fallback_model = one-tier-below model resolved by decide-research. No onError here: a both-down throw propagates to the errorWorkflow (one CRITICAL); decide-research's onError lets the task finish without findings."
+    }
+  ],
+  "connections": {
+    "When Called": {
+      "main": [
+        [
+          {
+            "node": "Prep Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Turn": {
+      "main": [
+        [
+          {
+            "node": "Needs Search?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Search?": {
+      "main": [
+        [
+          {
+            "node": "Emit Queries",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Emit Queries": {
+      "main": [
+        [
+          {
+            "node": "Call Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Search": {
+      "main": [
+        [
+          {
+            "node": "Build Next",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Next": {
+      "main": [
+        [
+          {
+            "node": "Recurse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Final": {
+      "main": [
+        [
+          {
+            "node": "Emit Research Calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Emit Research Calls": {
+      "main": [
+        [
+          {
+            "node": "Call Log Model Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Log Model Run": {
+      "main": [
+        [
+          {
+            "node": "Final Return",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep Request": {
+      "main": [
+        [
+          {
+            "node": "Call Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Messages": {
+      "main": [
+        [
+          {
+            "node": "Parse Turn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "binaryMode": "separate"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "b66fabdc-0b39-4684-aadd-7ae0478321ef",
+  "activeVersionId": "b66fabdc-0b39-4684-aadd-7ae0478321ef",
+  "versionCounter": 10,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-06-09T10:24:04.089Z",
+      "createdAt": "2026-06-09T10:24:04.089Z",
+      "role": "workflow:owner",
+      "workflowId": "BdZ9Chhqs691Ljlk",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

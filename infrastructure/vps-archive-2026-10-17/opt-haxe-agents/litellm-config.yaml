@@ -1,0 +1,129 @@
+# LiteLLM gateway config (ADR-024, ADR-030, ADR-043). Committed — contains NO secrets.
+# The Anthropic API key, Vertex/OpenAI/Stability/Tavily keys, and the master key are injected
+# from the VPS .env as environment variables (see docker-compose.yml `litellm` service +
+# .env.example).
+#
+# PD-blind global routing (ADR-043): there is no EU-residency / personal_data tier. Models are
+# chosen by capability + modality only. The DPA + SCCs (+ DPF where certified) make non-EU
+# processing lawful, so the Bedrock-EU tier and the Gemini `-eu` alias suffix were removed
+# (migration 021). `model_name` is the alias stored in Supabase `model_routing.litellm_model`;
+# routing selects it by (impact, modality) and the gateway resolves it to the model+provider here.
+#
+#   *-direct aliases  -> Anthropic API (Claude family: text + native vision)
+#   haxe-gemini-*     -> Gemini via Vertex AI (global endpoint) — the multimodal_input route
+#   image-gen aliases -> Vertex gemini-image (Nano Banana / Pro) + OpenAI gpt-image-2 (image OUTPUT tiers)
+
+model_list:
+  # ── Anthropic direct (text + native vision) ─────────────────────────────────
+  - model_name: haxe-haiku-4-5-direct
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: haxe-sonnet-4-6-direct
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: haxe-opus-4-8-direct
+    litellm_params:
+      model: anthropic/claude-opus-4-8
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Mythos-class, GA 2026-06-09 (ADR-037). Used by 'Krytycznie ważne' text.
+  - model_name: haxe-fable-5-direct
+    litellm_params:
+      model: anthropic/claude-fable-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # ── Gemini via Vertex AI, global endpoint (multimodal_input route — ADR-043/042) ──────
+  # Transfer basis: Vertex AI DPA + SCCs (ADR-043; no EU-residency requirement, so vertex_location
+  # is the global endpoint and the alias is no longer `-eu`-pinned).
+  # Auth: ADC via GOOGLE_APPLICATION_CREDENTIALS (mounted service-account key, docker-compose.yml).
+  #
+  # reasoning_effort bounds thinking (Gemini 3.x maps it to thinkingLevel). Gemini 3 Flash
+  # DEFAULTS to thinkingLevel=high, and thinking tokens are billed/counted as OUTPUT tokens —
+  # so default thinking burned ~3.8k–7.7k tokens of the request's max_tokens and truncated the
+  # answer to empty (finish_reason=length, content=null) on the n/d tier (8k cap). Flash serves
+  # the lower tiers (n/d/Niski/Średni) -> 'low' keeps thinking small so the output cap is real
+  # and responses are faster. (reasoning_effort: minimal/low/medium/high; ADR-042.)
+  - model_name: haxe-gemini-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.5-flash
+      vertex_project: os.environ/VERTEX_PROJECT
+      vertex_location: global
+      reasoning_effort: low
+
+  # Pro serves the high tiers (Wysoki/Krytycznie ważne) -> 'high' for deep reasoning; their
+  # 32k output cap leaves ample room for thinking + answer.
+  - model_name: haxe-gemini-pro
+    litellm_params:
+      model: vertex_ai/gemini-3.1-pro-preview
+      vertex_project: os.environ/VERTEX_PROJECT
+      vertex_location: global
+      reasoning_effort: high
+
+  # ── Image generation (ADR-036, Block 8) ──────────────────────────────────────
+  # Tiered by impact (model_routing modality='image', migration 023):
+  #   Niski / __default__ -> Vertex gemini-2.5-flash-image  (Nano Banana)
+  #   Średni              -> Vertex gemini-3-pro-image-preview (Nano Banana Pro)
+  #   Wysoki / Krytycznie -> OpenAI gpt-image-2
+  # `model_name` == model_routing.litellm_model (1:1). API keys/creds injected from .env.
+  #
+  # Why these, not the original SD3.5/Imagen/DALL-E seeds: dall-e-3 deprecated; the entire
+  # Vertex Imagen family is being shut down ~2026-06-24..30 (Google's own migration target is
+  # gemini-2.5-flash-image). gemini-image bills by OUTPUT TOKENS but LiteLLM v1.87.0's cost map
+  # carries a per-image price ($0.039 / $0.134), so its x-litellm-response-cost is reliable.
+  # gpt-image-2 has NO per-image cost in the map (output_cost_per_image=null) -> its cost header
+  # is unreliable; model_routing.fallback_price_per_unit is the static floor (Block 9 WARNs on
+  # cost=0-with-tokens; live price auto-overrides the floor once LiteLLM #26863 lands).
+  #
+  # Vertex auth = ADC via GOOGLE_APPLICATION_CREDENTIALS (mounted key); vertex_location: global
+  # (matches the gemini text aliases — do NOT use os.environ/VERTEX_LOCATION, which is unset and
+  # was only ever for the now-retired us-central1 Imagen route). ADR-043: PD-blind, no EU pin.
+
+  - model_name: vertex_ai/gemini-2.5-flash-image
+    litellm_params:
+      model: vertex_ai/gemini-2.5-flash-image
+      vertex_project: os.environ/VERTEX_PROJECT
+      vertex_location: global
+
+  - model_name: vertex_ai/gemini-3-pro-image-preview
+    litellm_params:
+      model: vertex_ai/gemini-3-pro-image-preview
+      vertex_project: os.environ/VERTEX_PROJECT
+      vertex_location: global
+
+  - model_name: openai/gpt-image-2
+    litellm_params:
+      model: openai/gpt-image-2
+      api_key: os.environ/OPENAI_API_KEY
+
+litellm_settings:
+  drop_params: true          # ignore provider-unsupported params instead of erroring
+  # 429 / rate-limit handling (ADR-051 Block 6). The image batch's concurrency cap bounds simultaneous
+  # in-flight calls but does NOT pace requests-per-minute, so a burst can hit the OpenAI gpt-image-2
+  # rate limit (HTTP 429). Lean on LiteLLM's native retry (buy-before-build): the router retries
+  # retryable errors (429/500/timeout) with exponential backoff and respects the upstream Retry-After
+  # header BEFORE returning to n8n — so a transient 429 is absorbed at the gateway and the image stays
+  # on its routed (top-tier) model instead of silently tier-downgrading. Only a SUSTAINED overload that
+  # exhausts these retries reaches n8n, where the batch's one-tier-below fallback then degrades (loud,
+  # via warnings[]). Proactive rpm pacing was deliberately NOT set: it needs the account's real
+  # images/min limit, which we don't have — guessing one would throttle throughput (see ADR-051).
+  num_retries: 3
+
+# Web search backend (ADR-034). The agent owns a multi-round agentic loop in n8n
+# ("Model Turn (v1)") that executes each query via LiteLLM's
+# POST /v1/search/haxe-web-search (the search_tools entry below) -> Tavily, threading
+# tool results back over multiple rounds. We do NOT use LiteLLM's websearch_interception
+# callback — it was single-round and produced empty answers on multi-round research, so
+# it was removed (2026-06-09). Tavily api_key is injected from the VPS .env
+# (TAVILY_API_KEY); committed config holds NO secret. See .env.example.
+search_tools:
+  - search_tool_name: haxe-web-search
+    litellm_params:
+      search_provider: tavily
+      api_key: os.environ/TAVILY_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

@@ -1,0 +1,198 @@
+{
+  "updatedAt": "2026-08-21T09:42:24.962Z",
+  "createdAt": "2026-08-07T20:16:17.300Z",
+  "id": "kbUCDOTfvosj7Uiw",
+  "name": "Flow: Monday Email",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "sched",
+      "name": "Monday Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -460,
+        0
+      ],
+      "notes": "Monday 07:00 Europe/Warsaw. The most important output in the system, delivered in push form so nobody has to remember to open the dashboard. If the schedule ever stops firing, the flow.sync_jobs row 'monday_email' (migration 015) makes Flow: Sync Freshness Check notice within a week; a thrown failure (SMTP or DB) surfaces immediately through Error Handler (v1) as CRITICAL.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 7,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "build",
+      "name": "Build Email",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -240,
+        0
+      ],
+      "notes": "One row per recipient: the 6 employees (filtered to their own tasks) and the 3 principals (null user_id = the management \"Zarzad\" edition, whole company). Both halves are DATA, read from flow.v_people by role, so changing who is in Zarzad is an update statement rather than an edit here. All content comes from flow.monday_email(p_user_id) - the single email definition (migration 018) - overlaid per person by the user_id argument via a lateral join. A content change is a change to that function alone, not to this node or to nine copies. Send Email runs once per row.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select r.email as to_email, m.subject, m.html from (select user_id, email from flow.v_people where role = 'employee' and email is not null union all select null::bigint, email from flow.v_people where role = 'principal' and email is not null) r cross join lateral flow.monday_email(r.user_id) m;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "send",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        -20,
+        0
+      ],
+      "notes": "SMTP via the Flow SMTP (zenbox) credential, agent@haxe.com. Recipients are the 6 employees (own tasks) plus all 3 principals (management edition), per ADR-009 amendment A3 of 2026-08-21 - the operator lifted the earlier hold on sending Grzegorz and Michal a copy. The management edition names every employee, which is what that hold was protecting; do not widen the list further without the same kind of explicit decision. A send failure throws, so Error Handler (v1) raises CRITICAL immediately.",
+      "parameters": {
+        "fromEmail": "Haxe Flow <agent@haxe.com>",
+        "toEmail": "={{ $json.to_email }}",
+        "subject": "={{ $json.subject }}",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "smtp": {
+          "id": "BL2bF1DAZvl9TTIc",
+          "name": "Flow SMTP (zenbox)"
+        }
+      },
+      "webhookId": "de8e13a9-d975-44b7-a661-337f90503130"
+    },
+    {
+      "id": "record",
+      "name": "Record Run",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        200,
+        0
+      ],
+      "notes": "Feeds the dead-man's switch. flow.sync_jobs row 'monday_email' (check_kind=sync_run, max_age_hours 192) plus this ok row means Flow: Sync Freshness Check warns if a Monday is ever missed. Runs only after a successful send, so a failed send leaves no ok row and the freshness check will notice. Execute Once is set so one send writes ONE row, not one per recipient, and the recipient count is read from Build Email rather than typed - a recipient list that silently shrinks (an email cleared in flow.people) then shows up as a falling number in flow.sync_runs.detail.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=insert into flow.sync_runs (job, started_at, finished_at, ok, detail) values ('monday_email', now(), now(), true, jsonb_build_object('recipients', {{ $('Build Email').all().length }})) returning run_id;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "executeOnce": true
+    }
+  ],
+  "connections": {
+    "Monday Schedule": {
+      "main": [
+        [
+          {
+            "node": "Build Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Email": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email": {
+      "main": [
+        [
+          {
+            "node": "Record Run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "81eplXMD1v5ONhzs"
+  },
+  "staticData": {
+    "node:Monday Schedule": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "523d3d39-4ede-4a69-bb1f-fe7b749ca462",
+  "activeVersionId": "523d3d39-4ede-4a69-bb1f-fe7b749ca462",
+  "versionCounter": 8,
+  "triggerCount": 1,
+  "tags": [
+    {
+      "updatedAt": "2026-08-07T08:47:56.370Z",
+      "createdAt": "2026-08-07T08:47:56.370Z",
+      "id": "DXFc9QNvYvnQxnPd",
+      "name": "flow"
+    }
+  ],
+  "shared": [
+    {
+      "updatedAt": "2026-08-07T20:16:17.300Z",
+      "createdAt": "2026-08-07T20:16:17.300Z",
+      "role": "workflow:owner",
+      "workflowId": "kbUCDOTfvosj7Uiw",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

@@ -1,0 +1,630 @@
+{
+  "updatedAt": "2026-08-07T14:47:49.009Z",
+  "createdAt": "2026-08-07T11:36:51.431Z",
+  "id": "pHDh4tSFn7IPuiOd",
+  "name": "Flow: CU Status Producer",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "CU Status Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -900,
+        0
+      ],
+      "webhookId": "flow-cu-status-prod-001",
+      "notes": "The observation channel for the whole system. responseMode onReceived answers ClickUp before any work is done, so a slow database or a slow ClickUp read can never turn into a webhook timeout — and ClickUp deletes an endpoint after roughly a hundred consecutive failures, so a timeout is not a retry, it is a step towards losing ingest entirely.\n\noptions.rawBody keeps the exact received bytes in binary `data` for the HMAC below while still parsing $json.body for everything downstream. Both are needed: the signature is over the raw bytes, and re-stringifying the parsed JSON produces different bytes and a signature that never matches.\n\nA SECOND webhook rather than an extension of the agent system's producer, deliberately — see ADR-006. That producer is fail-open because a dropped @-mention is worse than a rare double run; this one is fail-closed because a dropped status event is unrecoverable while a duplicate costs nothing.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cu-status",
+        "responseMode": "onReceived",
+        "options": {
+          "rawBody": true
+        }
+      }
+    },
+    {
+      "id": "telemetry",
+      "name": "Not Telemetry Task?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -680,
+        0
+      ],
+      "notes": "First, before anything else. The alerts task 869dj2z2c is where this system posts its own alerts, and every alert is a ClickUp write that fires the workspace-wide webhook straight back at us. Ingesting our own telemetry as workspace activity would inflate every count and, worse, make the webhook dead-man's switch look healthy while real ingest was dead. The id is pinned as alerts_task_id in contracts/agent-system.md; check-contract.mjs asserts it still exists.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "t1",
+              "leftValue": "={{ $json.body.task_id }}",
+              "rightValue": "869dj2z2c",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "verifysig",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        0
+      ],
+      "notes": "HMAC-SHA256 over the RAW body, hex, compared against the X-Signature header. The pattern is copied unchanged from the agent system's cu-webhook-producer and was re-proved end to end in Block 0 check 6.\n\nIt is a Crypto node and not a Code node because this n8n instance blocks require('crypto'), the global crypto AND $env inside Code nodes, and $vars is a licensed feature it does not have. A Code node therefore has no way to either hash or read a secret. The Crypto node's HMAC action reads its key from a `crypto` credential, which is why ClickUp Flow Webhook HMAC is that credential type. The secret is the one ClickUp generated when the webhook was created; it exists only in this credential and in ClickUp, never in the repository.",
+      "parameters": {
+        "action": "hmac",
+        "type": "SHA256",
+        "binaryData": true,
+        "binaryPropertyName": "data",
+        "dataPropertyName": "computedSig",
+        "encoding": "hex"
+      },
+      "credentials": {
+        "crypto": {
+          "id": "kBdENXAGbc75wQsE",
+          "name": "ClickUp Flow Webhook HMAC"
+        }
+      }
+    },
+    {
+      "id": "sigvalid",
+      "name": "Signature Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -240,
+        0
+      ],
+      "notes": "Reads the header off the webhook node by name rather than off $json, because the Crypto node's output item carries the computed digest, not the request headers.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "s1",
+              "leftValue": "={{ $json.computedSig }}",
+              "rightValue": "={{ $('CU Status Webhook').first().json.headers['x-signature'] }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "alertbadsig",
+      "name": "Alert Bad Signature",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -240,
+        240
+      ],
+      "notes": "Mirrors Alert Bad Signature in the agent producer. A rejected signature is either an attempt to forge events or, far more likely, the credential and the ClickUp webhook secret having drifted apart — which silently stops ALL ingest while every node stays green. Only the first twelve characters of the received signature are logged; the full value is a secret-adjacent token and there is nothing to gain from putting it in a ClickUp comment.\n\nRouted through Flow: Post Alert (gated) rather than calling Post Alert (v1) directly, and onError is continueRegularOutput. Both are fixes for the 2026-08-07 cascade: Post Alert writes a ClickUp comment, so it is rate-limited by the same bucket an alert storm saturates, and without onError its 429 propagated back through this node and failed the whole run — which made n8n call Error Handler (v1), which called Post Alert again. 96 events became 192 failed alert executions and nothing delivered. CLAUDE.md already required this: a degradation alert must not break the main path.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "v1xd2oTRlIvCim4M",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "flow/webhook",
+            "message": "Odrzucono webhook ClickUp na /webhook/cu-status: nieprawidlowy lub brakujacy podpis X-Signature. Zdarzenie statusu NIE zostalo zapisane.",
+            "details": "=task={{ $('CU Status Webhook').first().json.body.task_id }} | event={{ $('CU Status Webhook').first().json.body.event }} | otrzymany podpis={{ ($('CU Status Webhook').first().json.headers['x-signature'] || 'BRAK').toString().slice(0,12) }}… Jesli to nie jest pojedynczy przypadek, sekret webhooka w ClickUp rozjechal sie z poswiadczeniem n8n 'ClickUp Flow Webhook HMAC' i CALY ingest statusow jest martwy. Napraw przez odtworzenie webhooka (webhook_id 0b040039-0b4a-478e-8df1-55d85310ad5a) i wpisanie nowego sekretu do poswiadczenia; potem sprawdz: select count(*) from flow.status_events where source = 'webhook' and received_at > now() - interval '1 day';",
+            "alert_key": "flow/webhook:bad-signature",
+            "list_id": ""
+          }
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "route",
+      "name": "Route Event",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "One webhook subscribes to six ClickUp events and they need three different treatments, so routing happens here rather than in six separate webhooks. ADR-029 in Haxe_agent_system anticipates exactly this: if a producer subscribes to more events, route by event and apply the right gate per route.\n\nstatus  -> taskStatusUpdated, the only event carrying a transition to observe.\ndeleted -> taskDeleted, where fetching the task would 404.\nextra   -> the fallback: taskCreated, taskUpdated, taskMoved, taskAssigneeUpdated, and anything ClickUp adds later. All four only need flow.tasks refreshed, and an unrecognised event refreshing a task is harmless, which is why the fallback is used instead of four more rules.",
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "leftValue": "",
+                  "caseSensitive": true,
+                  "typeValidation": "loose"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "r1",
+                    "leftValue": "={{ $('CU Status Webhook').first().json.body.event }}",
+                    "rightValue": "taskStatusUpdated",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "status"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "leftValue": "",
+                  "caseSensitive": true,
+                  "typeValidation": "loose"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "r2",
+                    "leftValue": "={{ $('CU Status Webhook').first().json.body.event }}",
+                    "rightValue": "taskDeleted",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "deleted"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "writeevents",
+      "name": "Write Status Events",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        -200
+      ],
+      "notes": "The whole point of the system. All the logic lives in flow.ingest_webhook_status_events (migration 008) rather than here, because the name-to-id resolution it performs has a second caller — flow.repair_unresolved_events, run nightly — and the two must resolve identically or the repair would write ids the producer would never have written.\n\nFAIL-CLOSED, and that is the difference from the agent producer: retryOnFail with three tries, and NO onError override, so a database failure that survives the retries throws and Error Handler (v1) raises a CRITICAL. A dropped status event cannot be recovered from anywhere — ClickUp exposes no status history — while a duplicate is free, because clickup_event_id (history_items[].id) is unique and the insert is ON CONFLICT DO NOTHING.\n\nThe body is embedded as a quoted SQL literal with single quotes doubled, which is the complete escape under standard_conforming_strings. Not n8n's Query Parameters: that option splits its value on commas and JSON is full of them.\n\nMigration 009 gave this function a second job: it also moves flow.tasks to the new current status, guarded against out-of-order redelivery. That needs no ClickUp read, which is why it survives in the spaces the borrowed credential cannot see — see the note on Fetch Task.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=select * from flow.ingest_webhook_status_events('{{ JSON.stringify($('CU Status Webhook').first().json.body).replaceAll(\"'\", \"''\") }}'::jsonb);",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "unresolvedif",
+      "name": "Unresolved Status?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        -340
+      ],
+      "notes": "Covers a silent degradation, not a failure. The event was stored — to_status_name is NOT NULL and always populated — but its id could not be resolved, so it is invisible to any view that joins the status dictionary. Nothing throws. The nightly repair in Flow: Reconcile normally clears it within a night, which is exactly the accepted consequence of the operator's decision that the weekly dictionary sync keeps walking spaces only. This WARN exists so the first transition into a newly-adopted status is a known event rather than a surprise.",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "u1",
+              "leftValue": "={{ $json.unresolved_to }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "alertunresolved",
+      "name": "Alert Unresolved Status",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        700,
+        -340
+      ],
+      "notes": "INFO rather than WARN: this is the designed behaviour of a deliberate trade-off, and the nightly repair usually closes it without anyone doing anything. It becomes actionable only if Flow: Reconcile's own 'still unresolved after repair' alert follows it.\n\nRouted through Flow: Post Alert (gated) rather than calling Post Alert (v1) directly, and onError is continueRegularOutput. Both are fixes for the 2026-08-07 cascade: Post Alert writes a ClickUp comment, so it is rate-limited by the same bucket an alert storm saturates, and without onError its 429 propagated back through this node and failed the whole run — which made n8n call Error Handler (v1), which called Post Alert again. 96 events became 192 failed alert executions and nothing delivered. CLAUDE.md already required this: a degradation alert must not break the main path.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "v1xd2oTRlIvCim4M",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "INFO",
+            "source": "flow/webhook",
+            "message": "=Zapisano zdarzenie statusu, ktorego nazwy nie da sie jeszcze zamienic na identyfikator ({{ $json.unresolved_to }} szt.). Zdarzenie NIE zginelo — czeka na nocna naprawe.",
+            "details": "=task={{ $('CU Status Webhook').first().json.body.task_id }} | nierozwiazane: {{ $json.unresolved_note }}. To normalne przy pierwszym przejsciu do nowo wprowadzonego statusu: webhook wyprzedza slownik statusow. Flow: Reconcile naprawia takie wiersze tej samej nocy. Reaguj dopiero, jesli przyjdzie alert 'flow/reconcile' o wierszach nierozwiazanych PO naprawie. Podglad: select * from flow.status_events where to_status_id is null order by occurred_at desc limit 20;",
+            "alert_key": "flow/webhook:unresolved-status",
+            "list_id": "={{ $('CU Status Webhook').first().json.body.history_items?.[0]?.parent_id || '' }}"
+          }
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "fetchtask",
+      "name": "Fetch Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        -160
+      ],
+      "notes": "The webhook payload describes a change; it does not carry the task. flow.tasks needs the whole object — assignees, date_done, date_closed, custom_item_id — so it is read back from ClickUp.\n\nThis runs AFTER the event has been written, deliberately. The event is the irreplaceable thing; the task row is repairable. onError continueErrorOutput therefore routes a ClickUp failure to a WARN on a side branch and lets the run finish, instead of throwing and making a recoverable problem look like the unrecoverable one.\n\nUses `Flow ClickUp` (v1T1NVCSPHhMzl7X), the credential this repository OWNS, and the reason it exists rather than borrowing is a finding from this block. The agent system's `ClickUp account` credential is a different ClickUp user, and it returns HTTP 401 \"You do not have access to this Space\" for tasks in Logistyka-Magazyn (6,073 tasks) and Sprzedaz-PL (403) — 31.7% of the workspace — which this node's alert surfaced within minutes of going live. See ADR-007.\n\nMigration 009 is the belt to this braces: the ingest function two nodes back moves flow.tasks to the new current status with NO ClickUp read at all, because ClickUp PUSHES the webhook rather than us reading it. So the current status survives even if this read fails for any reason. What this node adds on top is date_done, date_closed, assignees and custom_item_id.",
+      "parameters": {
+        "url": "=https://api.clickup.com/api/v2/task/{{ $('CU Status Webhook').first().json.body.task_id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "clickUpApi",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "credentials": {
+        "clickUpApi": {
+          "id": "v1T1NVCSPHhMzl7X",
+          "name": "Flow ClickUp"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "trim",
+      "name": "Trim Task Fields",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        700,
+        -160
+      ],
+      "notes": "Identical to Trim Task Fields in Flow: Reconcile and to trim() in scripts/backfill-tasks.mjs, so all three callers hand flow.upsert_tasks_from_payload the same ClickUp-shaped object and the mapping from a ClickUp task onto our columns is written down exactly once. ONE assignment of type object, because a JavaScript object literal preserves null exactly whereas a typed string field would turn a null parent into an empty string.",
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "task",
+              "type": "object",
+              "value": "={{ ({ id: $json.id, name: $json.name, custom_item_id: $json.custom_item_id, parent: $json.parent, date_created: $json.date_created, date_updated: $json.date_updated, date_done: $json.date_done, date_closed: $json.date_closed, status: $json.status ? { id: $json.status.id, status: $json.status.status, type: $json.status.type, orderindex: $json.status.orderindex } : null, list: $json.list ? { id: $json.list.id, name: $json.list.name } : null, folder: $json.folder ? { id: $json.folder.id, name: $json.folder.name } : null, space: $json.space ? { id: $json.space.id } : null, assignees: ($json.assignees || []).map(a => ({ id: a.id })) }) }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "upserttask",
+      "name": "Upsert Task",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        920,
+        -160
+      ],
+      "notes": "The same ingest function the backfill and the nightly reconcile call, with p_write_drift_events FALSE. False is the important part: the webhook is the OBSERVATION channel. On the status route the observed event has already been written a node earlier, so there is nothing to infer; on the other routes an inferred source='reconcile' event written here would race the same transition arriving as taskStatusUpdated and double-count the episode. Inference stays where it is calibrated — in Flow: Reconcile, whose drift threshold is what tells us the webhook is degrading.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=select * from flow.upsert_tasks_from_payload('[{{ JSON.stringify($json.task).replaceAll(\"'\", \"''\") }}]'::jsonb, false);",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "alertrefresh",
+      "name": "Alert Task Refresh Failed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        700,
+        20
+      ],
+      "notes": "Degradation on a side branch: the status event is already safely stored, only flow.tasks is stale, and the nightly reconcile repairs that. Reported anyway because a persistent failure here means the borrowed ClickUp credential has been rotated or scoped down in the other repository, which check-contract.mjs cannot detect — n8n never returns credential data through its API.\n\nRouted through Flow: Post Alert (gated) rather than calling Post Alert (v1) directly, and onError is continueRegularOutput. Both are fixes for the 2026-08-07 cascade: Post Alert writes a ClickUp comment, so it is rate-limited by the same bucket an alert storm saturates, and without onError its 429 propagated back through this node and failed the whole run — which made n8n call Error Handler (v1), which called Post Alert again. 96 events became 192 failed alert executions and nothing delivered. CLAUDE.md already required this: a degradation alert must not break the main path.",
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "v1xd2oTRlIvCim4M",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "severity": "WARN",
+            "source": "flow/webhook",
+            "message": "Nie udalo sie odczytac zadania z ClickUp po zdarzeniu webhooka. Zdarzenie statusu i biezacy status sa zapisane; brakuje tylko dat zakonczenia i przypisanych osob.",
+            "details": "=task={{ $('CU Status Webhook').first().json.body.task_id }} | event={{ $('CU Status Webhook').first().json.body.event }} | blad: {{ JSON.stringify($json.error || $json).slice(0,300) }}. Nocny Flow: Reconcile naprawi wiersz sam, o ile ma dostep do tej przestrzeni. Jesli blad brzmi 'You do not have access to this Space', to poswiadczenie 'Flow ClickUp' (v1T1NVCSPHhMzl7X) stracilo dostep do kolejnej przestrzeni — dokladnie ten sam objaw, ktory 2026-08-07 ujawnil, ze pozyczone poswiadczenie widzi tylko czesc workspace'u (ADR-007). Sprawdz recznie: GET https://api.clickup.com/api/v2/task/<id> tokenem operatora; jesli tam dziala, a w n8n nie, poswiadczenie nalezy do innego konta niz sadzisz.",
+            "alert_key": "flow/webhook:task-refresh",
+            "list_id": "={{ $('CU Status Webhook').first().json.body.history_items?.[0]?.parent_id || '' }}"
+          }
+        },
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "markdeleted",
+      "name": "Mark Task Deleted",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        180
+      ],
+      "notes": "A deleted task is tombstoned, never removed. Its status events stay and remain correct history, and its completions stay countable; every view filters on deleted_at instead. The task id is passed as a query parameter rather than interpolated, because unlike the integers elsewhere in this repo it is an external string. Flow: Reconcile clears deleted_at again if ClickUp ever returns the task, which is how a restore heals itself.",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "update flow.tasks set deleted_at = now(), synced_at = now() where task_id = $1 and deleted_at is null;",
+        "options": {
+          "queryReplacement": "={{ [ $('CU Status Webhook').first().json.body.task_id ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "CVCBjMUWPWKMcWUQ",
+          "name": "Flow Supabase Writer"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "CU Status Webhook": {
+      "main": [
+        [
+          {
+            "node": "Not Telemetry Task?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Not Telemetry Task?": {
+      "main": [
+        [
+          {
+            "node": "Verify Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Signature": {
+      "main": [
+        [
+          {
+            "node": "Signature Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature Valid?": {
+      "main": [
+        [
+          {
+            "node": "Route Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Bad Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Event": {
+      "main": [
+        [
+          {
+            "node": "Write Status Events",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Task Deleted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Status Events": {
+      "main": [
+        [
+          {
+            "node": "Unresolved Status?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unresolved Status?": {
+      "main": [
+        [
+          {
+            "node": "Alert Unresolved Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Task": {
+      "main": [
+        [
+          {
+            "node": "Trim Task Fields",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert Task Refresh Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trim Task Fields": {
+      "main": [
+        [
+          {
+            "node": "Upsert Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "81eplXMD1v5ONhzs",
+    "timezone": "Europe/Warsaw",
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "a521673e-c8ad-461f-abb7-15a8533f67c5",
+  "activeVersionId": "a521673e-c8ad-461f-abb7-15a8533f67c5",
+  "versionCounter": 4,
+  "triggerCount": 1,
+  "tags": [
+    {
+      "updatedAt": "2026-08-07T08:47:56.370Z",
+      "createdAt": "2026-08-07T08:47:56.370Z",
+      "id": "DXFc9QNvYvnQxnPd",
+      "name": "flow"
+    }
+  ],
+  "shared": [
+    {
+      "updatedAt": "2026-08-07T11:36:51.431Z",
+      "createdAt": "2026-08-07T11:36:51.431Z",
+      "role": "workflow:owner",
+      "workflowId": "pHDh4tSFn7IPuiOd",
+      "projectId": "FAdzBGTpsKq50vt1",
+      "project": {
+        "updatedAt": "2026-05-30T11:23:03.981Z",
+        "createdAt": "2026-05-30T11:18:36.539Z",
+        "id": "FAdzBGTpsKq50vt1",
+        "name": "Franciszek Nowak <franciszek.nowak@haxe.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "a7168750-f980-4fb0-9992-c29ed37438f1"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}
