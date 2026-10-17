@@ -45,9 +45,9 @@ Not touched, because they are separate projects that only share the host: `/opt/
 
 ## Still open
 
-- **ClickUp webhook `66208c81-2e08-4183-925b-3ce56242e504`** on `/webhook/cu-comment`,
-  registered under the agent token. Its workflow is gone, so ClickUp now gets 404s. It
-  waits for the operator's go-ahead before deletion.
+- ~~ClickUp webhook `66208c81-2e08-4183-925b-3ce56242e504` on `/webhook/cu-comment`~~:
+  **deleted on 2026-10-17** with the operator's approval. No webhooks remain under the
+  agent token. The flow-metrics `cu-status` webhook is unaffected.
 - **`Post Alert (v1)` has failed every run since at least 2026-10-10** with "Authorization
   failed - please check your credentials". The `ClickUp account` token itself still
   authenticates against the ClickUp API, so the cause is somewhere else. Until this is
