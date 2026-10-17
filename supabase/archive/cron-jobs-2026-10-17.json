@@ -1,0 +1,3 @@
+[{"jobname":"purge-zip-inner-images","schedule":"0 3,4 * * *","command":" select public.purge_zip_inner_images(); ","active":true}, 
+ {"jobname":"prune-agent-input-file-map","schedule":"0 * * * *","command":" select public.prune_agent_input_file_map(); ","active":true}, 
+ {"jobname":"purge-agent-output-images","schedule":"0 * * * *","command":" select public.purge_agent_output_images(); ","active":true}]
