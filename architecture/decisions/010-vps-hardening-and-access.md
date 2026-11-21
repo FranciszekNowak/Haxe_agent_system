@@ -85,6 +85,46 @@ is disabled as the final hardening step.
 > `formularz-reklamacje-Allegro`, ADR-001, which pins this ADR as the owner of the access
 > model.
 
+> **Update 2026-11-21 (account inventory; root login restricted to keys):** the
+> "single-operator box" premise above no longer holds. A live audit found three login-capable
+> accounts, all with full root-equivalent rights (`wheel` + `docker` + `NOPASSWD: ALL` in
+> `/etc/sudoers.d/<user>`):
+>
+> | Account | UID | Created | Password | SSH keys | Purpose |
+> |---|---|---|---|---|---|
+> | `franciszek` | 1000 | 2026-05-30 | set | `franciszek-haxe`, `haxe_biuro2`, `franciszek@Laptop_FN`, **`michalnowak`** | Operator account |
+> | `softsquad` | 1001 | 2026-09-24 | locked | one RSA key (`added-2026-09-24`) | External developers who deployed `reklamacje.skalus.com.pl` (`/var/www/reklamacje-skalus`) |
+> | `michalnowak` | 1002 | 2026-10-17 | locked | `michalnowak` (ed25519) | Runs the `haxe-pomagamy` cron every 15 min |
+>
+> `root` accepts the keys `franciszek-haxe` and `haxe_biuro2`.
+>
+> Two findings and one change:
+>
+> 1. **The `michalnowak` key is also in `franciszek`'s `authorized_keys`.** The file's
+>    modification time is 2026-11-21 10:58 CET, and the sshd journal shows no login with that
+>    key (`SHA256:ohns6GuDt9G+N/4iHLwjeyMuUvbYZaH3HLtuPM497M8`) since 2026-10-01. It gives
+>    no extra privilege, because `michalnowak` is already root-equivalent, but it removes
+>    attribution: actions taken that way are logged as `franciszek`. It was left in place by
+>    this update (removal was offered, not requested). Prefer the person's own account for
+>    day-to-day work, so the logs show who acted.
+> 2. **Each added account is a full admin.** None of the three is scoped (no limited sudo rules,
+>    no per-service user). On a host that also runs the agent stack and its secrets, any one of
+>    these keys being stolen compromises everything. Narrowing `softsquad` and `michalnowak` to
+>    what their jobs need is open work, not done here.
+> 3. **Change — `PermitRootLogin prohibit-password`.** The main `sshd_config` already said
+>    `prohibit-password`, but the installer drop-in `/etc/ssh/sshd_config.d/01-permitrootlogin.conf`
+>    set `PermitRootLogin yes`. sshd takes the **first** value it reads for a keyword, and the
+>    drop-ins are included near the top of the main file, so the drop-in won. The drop-in was
+>    edited to `prohibit-password` (backup at `/root/01-permitrootlogin.conf.bak-2026-11-21`),
+>    checked with `sshd -t`, and applied with `systemctl reload sshd`. `sshd -T` now reports
+>    `permitrootlogin without-password` (the older name for the same setting). Since
+>    `PasswordAuthentication no` was already in force, the real-world effect is small: root could
+>    already only log in with a key. The change protects against password authentication being
+>    switched back on later. Keyed root login still works for emergencies.
+>
+> Lesson for future sshd edits on this host: check `/etc/ssh/sshd_config.d/` and trust
+> `sudo sshd -T` (the effective config), not `sshd_config` alone.
+
 ## Lessons captured (operational)
 - Almost every access failure during setup was a TIME-BASED lockout
   triggered by rapid retries (OpenSSH penalty, panel rate-limit, VNC
